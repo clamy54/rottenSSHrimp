@@ -8,6 +8,8 @@ to attend its own funeral. Runs on Windows, Linux and macOS.
 
 ![The host tree on the left, an SSH session running top on the right](resources/screenshot.png)
 
+![The host tree on the left, an RDP session running top on the right](resources/screenshot2.png)
+
 One tree of machines, one tab per session, one encrypted file behind it all.
 The load average in that screenshot is 0.12, which is the only time anybody
 takes a screenshot.
