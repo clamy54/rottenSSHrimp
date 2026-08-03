@@ -156,8 +156,15 @@ fi
 dlopen_deps="libfreerdp3-3, libssh2-1t64 | libssh2-1, libsqlite3-0, libsodium23"
 deps="${deps}, ${dlopen_deps}"
 
-sed -e "s/@VERSION@/$ver/" -e "s/@ARCH@/$arch/" -e "s|@DEPENDS@|$deps|" \
-	"$here/control.in" > "$pkg/DEBIAN/control"
+# Substitution bash, PAS sed : les Depends contiennent des alternatives Debian
+# (« libssh2-1t64 | libssh2-1 »), et le premier | de la valeur fermait
+# l'expression s|@DEPENDS@|...| -- « unknown option to `s' ». Ici le
+# remplacement est litteral, aucun caractere n'a de sens special.
+control="$(cat "$here/control.in")"
+control="${control//@VERSION@/$ver}"
+control="${control//@ARCH@/$arch}"
+control="${control//@DEPENDS@/$deps}"
+printf '%s\n' "$control" > "$pkg/DEBIAN/control"
 
 dpkg-deb --build --root-owner-group "$pkg"
 echo "OK -> ${pkg}.deb"
