@@ -1,0 +1,44 @@
+# artefacts Lazarus / FPC
+lib/
+backup/
+rottensshrimp
+rottensshrimp.exe
+RottenSSHrimp.app/
+app/rottensshrimp.res
+app/rottensshrimp.lps
+*.ppu
+*.o
+*.or
+*.a
+*.compiled
+*.lps
+*.dbg
+
+# residus de lien FPC/ld (generes dans le CWD, jamais versionnes)
+linkfiles*.res
+symbol_order*.fpc
+
+# Packaging (dist/): sorties de build, pas versionnees
+dist/*/build/
+dist/windows/output/
+# regeneres a chaque compilation de l'installeur, depuis leurs sources
+dist/windows/third-party.txt
+dist/windows/version.iss
+
+# libvncclient vendorisee: artefacts de build (reproductibles depuis
+# scripts/build-libvnc.sh + third_party/libvnc/patches + SHA256SUMS). La
+# SOURCE correspondante est versionnee, la lib compilee non.
+third_party/libvnc/cache/
+third_party/libvnc/work/
+third_party/libvnc/out/
+
+# Les DLL natives Windows, elles, SONT versionnees (a cote de l'exe, provenance
+# et empreintes dans packaging/windows/DEPS.md): un clone doit compiler et
+# tourner sans une apres-midi de provisioning.
+
+# systeme
+.DS_Store
+Thumbs.db
+*.exe
+*.dmg
+

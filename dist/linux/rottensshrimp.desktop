@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=RottenSSHrimp
+GenericName=Connection Manager
+Comment=SSH, RDP and VNC connection manager
+Exec=rottensshrimp %f
+Icon=rottensshrimp
+Terminal=false
+Categories=Network;RemoteAccess;System;
+Keywords=ssh;rdp;vnc;terminal;remote;
+MimeType=application/x-rottensshrimp-document;
+StartupWMClass=rottensshrimp

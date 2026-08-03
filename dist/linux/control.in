@@ -1,0 +1,21 @@
+Package: rottensshrimp
+Version: @VERSION@
+Section: net
+Priority: optional
+Architecture: @ARCH@
+Maintainer: Cyril Lamy <cyril.lamy@gmail.com>
+Depends: @DEPENDS@
+Description: RottenSSHrimp - SSH, RDP and VNC connection manager
+ A connection manager written in Free Pascal / Lazarus: a folder tree of hosts,
+ tabbed SSH terminals, RDP and VNC sessions, SSH jump hosts, a
+ credential manager, Docker/Podman containers and Kubernetes pods.
+ .
+ Connections and secrets live in a single encrypted .rsh document (Argon2id +
+ XChaCha20-Poly1305): hostnames, usernames and ports are as unreadable at rest
+ as the passwords, so a stolen file without the master password yields no map
+ of your infrastructure.
+ .
+ Free software under GPL v3 or later. Ships a patched libvncclient
+ (GPL-2.0-or-later) whose corresponding source is in
+ /usr/share/doc/rottensshrimp/source/libvnc; see
+ /usr/share/doc/rottensshrimp/LICENSES/THIRD-PARTY-NOTICES.md

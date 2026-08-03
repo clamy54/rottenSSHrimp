@@ -1,0 +1,18 @@
+# Les patchs de securite libvnc et les scripts shell DOIVENT rester en LF :
+# un checkout Windows (autocrlf) les convertissait en CRLF, et « git apply »
+# comme GNU patch refusaient alors de les appliquer (« patch does not apply »,
+# « corrupt patch »). Sans cela, scripts/build-libvnc.sh ne fonctionne pas sur
+# un poste Windows.
+*.patch text eol=lf
+*.sh     text eol=lf
+
+# Scripts Windows en CRLF
+*.ps1 text eol=crlf
+
+# Binaires : jamais de conversion de fin de ligne, jamais de diff textuel
+*.dll    binary
+*.png    binary
+*.ico    binary
+*.icns   binary
+*.ttf    binary
+*.tar.gz binary

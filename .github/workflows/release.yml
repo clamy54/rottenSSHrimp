@@ -1,0 +1,160 @@
+# Release: push d'un tag v* -> build 3 OS -> release GitHub en draft.
+# Les scripts du depot font tout le travail, ici on orchestre seulement.
+# Repetition a blanc: Actions > release > Run workflow (artefacts, pas de release).
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+# un seul run par ref; pas d'annulation en vol (release a moitie faite sinon)
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # garde-fou: tag coherent avec RSSH_VERSION avant de bruler des minutes de build
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extraire RSSH_VERSION et controler le tag
+        id: ver
+        run: |
+          ver="$(sed -n "s/.*RSSH_VERSION *= *'\([^']*\)'.*/\1/p" src/util/uVersion.pas | head -1)"
+          [ -n "$ver" ] || { echo "RSSH_VERSION introuvable dans src/util/uVersion.pas" >&2; exit 1; }
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "v$ver" ]; then
+            echo "tag $GITHUB_REF_NAME != v$ver (RSSH_VERSION): version pas montee ou tag mal nomme" >&2
+            exit 1
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
+  build-macos:
+    needs: guard
+    # arm64. Pas macos-latest: l'image macos-26 refuse le mpkg FPC (format
+    # bundle). macos-14 = Xcode 15.4, le toolchain valide en local; son ld
+    # moderne casse sur les sections objc de FPC, le .lpi force -ld_classic.
+    runs-on: macos-14
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installer Lazarus 4.8 aarch64
+        run: bash .github/install-lazarus-macos.sh
+      - name: Dependances natives
+        # make-app.sh rapatrie ces dylibs dans Contents/Frameworks/ et echoue si
+        # l'une d'elles garde une reference /opt/homebrew apres relocalisation.
+        run: brew install freerdp libssh2 libsodium cmake pkg-config jpeg-turbo
+      - name: Construire RottenSSHrimp.app (release, signature ad hoc)
+        run: bash scripts/make-app.sh --release
+      - name: Empaqueter le .dmg
+        # sans permission TCC le Finder ne repond pas: le script expire au bout
+        # de 30 s et livre un .dmg non style, prevu et pas bloquant
+        run: bash dist/macos/make-dmg.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist/macos/build/RottenSSHrimp-*.dmg
+          if-no-files-found: error
+
+  build-linux:
+    needs: guard
+    runs-on: ubuntu-latest  # amd64
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installer Lazarus
+        uses: gcarreno/setup-lazarus@v3
+        with:
+          lazarus-version: "4.4"  # 4.8 pas encore proposee par setup-lazarus
+          with-cache: false  # le service de cache repond 400 et l'action saute alors le vrai telechargement
+      - name: Dependances de build et d'empaquetage
+        # dpkg-dev pour les Depends calcules, imagemagick pour les icones,
+        # cmake + zlib/jpeg pour la libvncclient vendorisee, freerdp3-dev pour
+        # le shim (obligatoire dans le paquet).
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            dpkg-dev imagemagick cmake pkg-config \
+            zlib1g-dev libjpeg-dev freerdp3-dev libwinpr3-dev
+      - name: Compiler (release)
+        run: bash scripts/build.sh --release
+      - name: Empaqueter le .deb
+        run: bash dist/linux/build-deb.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb
+          path: dist/linux/build/rottensshrimp_*_amd64.deb
+          if-no-files-found: error
+
+  build-windows:
+    needs: guard
+    runs-on: windows-latest  # x64
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installer Lazarus
+        uses: gcarreno/setup-lazarus@v3
+        with:
+          lazarus-version: "4.4"
+          with-cache: false
+      - name: Verifier Inno Setup 6
+        # preinstalle sur windows-latest, ceinture et bretelles si l'image change
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+      - name: Verifier les empreintes des DLL versionnees
+        run: bash scripts/check-win-deps.sh
+      - name: Compiler (release)
+        run: ./scripts/build.ps1 -Release
+      - name: Compiler l'installeur
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" dist\windows\rottensshrimp.iss
+      - name: Zipper l'installeur
+        run: |
+          $setup = Get-ChildItem dist\windows\output\RottenSSHrimp-Setup-*.exe | Select-Object -First 1
+          Compress-Archive -Path $setup.FullName -DestinationPath ($setup.FullName -replace '\.exe$', '.zip') -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-setup
+          path: dist/windows/output/RottenSSHrimp-Setup-*.zip
+          if-no-files-found: error
+
+  release:
+    # publication seulement sur push de tag; un dispatch reste une repetition a blanc
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [guard, build-macos, build-linux, build-windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+      VER: ${{ needs.guard.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Creer la release (draft) avec les 3 fichiers
+        run: |
+          ls -l assets
+          notes="$(printf '%s\n\n%s\n\n%s' \
+            "macOS: the app is ad-hoc signed, not notarized. Gatekeeper blocks the first launch: open the app once, then go to System Settings > Privacy & Security and click Open Anyway." \
+            "Windows: the installer is not Authenticode signed, so SmartScreen will call the publisher unknown. Click More info, then Run anyway. It also needs the Visual C++ 2015-2022 redistributable (VCRUNTIME140 / UCRT)." \
+            "Changes: https://github.com/${GH_REPO}/commits/${TAG}")"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # relance apres echec: la release existe deja, on remplace les fichiers
+            gh release upload "$TAG" assets/* --clobber
+          else
+            gh release create "$TAG" assets/* --draft --title "RottenSSHrimp $VER" --notes "$notes"
+          fi

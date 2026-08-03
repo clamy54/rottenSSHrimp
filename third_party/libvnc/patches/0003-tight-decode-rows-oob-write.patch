@@ -1,0 +1,44 @@
+Correctif de securite (RottenSSHrimp, authore localement)
+
+    libvncclient: borner les lignes decompressees Tight sur la hauteur du rect
+
+    HandleTightBPP() decompresse un flux zlib fourni par le serveur et, a
+    chaque passe, appelle filterFn(client, rx, ry+rowsProcessed, numRows) qui
+    ECRIT numRows lignes dans client->frameBuffer a l'indice de ligne
+    ry+rowsProcessed. Le nombre de lignes reellement decompressees n'est borne
+    NULLE PART par la hauteur annoncee rh: le seul controle (rowsProcessed !=
+    rh) intervient APRES la boucle, donc apres que toutes les ecritures ont eu
+    lieu. Un serveur VNC malveillant (ou un MITM) peut fournir un flux qui se
+    decompresse en plus de rh lignes, provoquant une ecriture hors tas
+    PRE-AUTH pilotee par l'attaquant, avec potentiel d'execution de code.
+
+    La borne d'entree (rx+rw > width || ry+rh > height) ne protege pas: elle
+    valide le rectangle DECLARE, pas le nombre reel de lignes decompressees.
+
+    Correctif: avant chaque appel a filterFn, verifier que numRows tient dans
+    la hauteur restante (rh - rowsProcessed) et echouer sinon.
+
+    Provenance: correctif local, en attente d'integration amont. L'association
+    a un numero de CVE public n'est pas verifiee (indisponible hors ligne); le
+    defaut de code, lui, est constate sur la source epinglee 0.9.15. Voir
+    third_party/libvnc/README.md.
+
+diff --git a/src/libvncclient/tight.c b/src/libvncclient/tight.c
+--- a/src/libvncclient/tight.c
++++ b/src/libvncclient/tight.c
+@@ -341,6 +341,15 @@
+
+       numRows = (bufferSize - zs->avail_out) / rowSize;
+
++      /* Securite: un serveur malveillant peut faire decompresser plus de
++         lignes que la hauteur annoncee (rh). filterFn ecrit alors dans
++         frameBuffer a la ligne ry+rowsProcessed, au-dela de l'allocation
++         -> ecriture hors tas pre-auth. Borner AVANT d'ecrire. */
++      if (numRows < 0 || numRows > rh - rowsProcessed) {
++        rfbClientLog("Tight: decompressed scanlines exceed rectangle height.\n");
++        return FALSE;
++      }
++
+       filterFn(client, rx, ry+rowsProcessed, numRows);
+
+       extraBytes = bufferSize - zs->avail_out - numRows * rowSize;

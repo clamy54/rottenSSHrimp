@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Hardened runtime. Le principe: n'accorder QUE ce que
+	  l'application utilise reellement. Tout ce qui n'est pas ici est refuse.
+
+	  Volontairement ABSENT:
+	  - allow-unsigned-executable-memory / allow-jit: aucun code genere a
+	    l'execution.
+	  - disable-library-validation: les dylibs embarquees sont signees de la
+	    meme identite que l'app, la validation doit rester active. L'ajouter
+	    ouvrirait le chargement de n'importe quelle bibliotheque tierce.
+	  - disable-executable-page-protection, debugger.
+	  - com.apple.security.cs.allow-dyld-environment-variables: laisserait un
+	    DYLD_INSERT_LIBRARIES detourner nos bibliotheques natives.
+	-->
+
+	<!-- SSH et RDP sortants: c'est la fonction meme du produit -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+</dict>
+</plist>

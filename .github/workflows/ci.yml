@@ -1,0 +1,100 @@
+# CI: compilation sur les trois plateformes, plus la garde ABI FreeRDP.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installer Lazarus
+        uses: gcarreno/setup-lazarus@v3
+        with:
+          lazarus-version: "4.4"  # 4.8 pas encore proposee par setup-lazarus
+          with-cache: false  # le service de cache repond 400 et l'action saute alors le vrai telechargement
+      - name: En-tetes FreeRDP (pour le shim)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config freerdp3-dev libwinpr3-dev
+      - name: Compiler (release)
+        run: bash scripts/build.sh --release
+
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installer Lazarus
+        uses: gcarreno/setup-lazarus@v3
+        with:
+          lazarus-version: "4.4"
+          with-cache: false
+      - name: Compiler (release)
+        run: ./scripts/build.ps1 -Release
+      # Un document de provenance aux empreintes perimees ne prouve plus rien:
+      # c'est arrive, 9 sur 11 apres un re-provisioning oublie.
+      - name: Verifier les empreintes des DLL versionnees
+        run: bash scripts/check-win-deps.sh
+
+  build-macos:
+    # arm64. Pas macos-latest: l'image macos-26 refuse le mpkg FPC (format
+    # bundle). macos-14 = Xcode 15.4, le toolchain valide en local; son ld
+    # moderne casse sur les sections objc de FPC, le .lpi force -ld_classic.
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installer Lazarus 4.8 aarch64
+        # pas setup-lazarus ici: sur macOS il ne pose que la variante x86_64
+        # (l'app sortirait en Intel/Rosetta) et s'arrete a 4.4.
+        run: bash .github/install-lazarus-macos.sh
+      - name: Compiler (release)
+        run: bash scripts/build.sh --release
+
+  # Les offsets de structs FreeRDP sont ecrits en dur (bindings/freerdp), mais
+  # la bibliotheque vient de la DISTRIBUTION: rien ne garantit qu'une autre la
+  # compile avec les memes options. On confronte donc la table aux vrais
+  # en-tetes sur plusieurs distributions, pour le savoir avant les utilisateurs.
+  # L'application se protege deja a l'execution (temoins de disposition, repli
+  # sur recopie integrale); ce job sert a corriger la table, pas a la securite.
+  rdp-offsets:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: debian:testing
+            install: apt-get update && apt-get install -y --no-install-recommends gcc pkg-config freerdp3-dev libwinpr3-dev
+          - distro: ubuntu:latest
+            install: apt-get update && apt-get install -y --no-install-recommends gcc pkg-config freerdp3-dev libwinpr3-dev
+          - distro: fedora:latest
+            install: dnf install -y gcc pkgconf-pkg-config freerdp-devel
+          - distro: archlinux:latest
+            install: pacman -Sy --noconfirm gcc pkgconf freerdp
+          - distro: opensuse/tumbleweed
+            # Tumbleweed nomme le devel de FreeRDP 3 « freerdp-devel » tout court
+            # (freerdp2-devel pour l'ancienne branche): pas de freerdp3-devel ici.
+            install: zypper --non-interactive install gcc pkg-config freerdp-devel
+    runs-on: ubuntu-latest
+    container: ${{ matrix.distro }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installer les en-tetes FreeRDP
+        run: ${{ matrix.install }}
+      - name: Comparer les offsets en dur aux en-tetes installes
+        run: bash scripts/check-rdp-offsets.sh
+      # Le shim doit compiler SANS avertissement sur chaque distribution: c'est
+      # lui qui, une fois installe, rend les offsets inutiles.
+      - name: Construire le shim FreeRDP (strict)
+        run: bash scripts/build-rdp-shim.sh --strict
