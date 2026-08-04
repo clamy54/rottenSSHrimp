@@ -937,39 +937,69 @@ end;
 
 procedure FreeRdpEnsureLoaded;
 var
-  dir: string;
+  dir, bestDir, missing: string;
   names: TStringArray;
   getVer: Tfreerdp_get_version;
   getVerStr: Tfreerdp_get_version_string;
   maj, min_, rev: cint;
+  i, hits, bestHits: Integer;
 begin
   if GReady then Exit;
   EnterCriticalSection(GInitLock);
   try
   if GReady then Exit;
   names := LibNames;
+  // On retient au passage le repertoire le PLUS complet: sous Debian les trois
+  // sonames viennent de trois paquets distincts et libfreerdp3-3 n'entraine pas
+  // libfreerdp-client3-3. Deux fichiers sur trois, et le diagnostic est
+  // « introuvable » -- un message qui envoie chercher au mauvais endroit.
+  bestDir := '';
+  bestHits := 0;
   for dir in CandidateSets do
-    if AbsCandidateDir(dir) and
-       FileExists(dir + names[0]) and FileExists(dir + names[1]) and
-       FileExists(dir + names[2]) then
+  begin
+    if not AbsCandidateDir(dir) then Continue;
+    hits := 0;
+    for i := 0 to 2 do
+      if FileExists(dir + names[i]) then Inc(hits);
+    if hits > bestHits then
     begin
-      GLibRdp := LoadLibrary(dir + names[0]);
-      GLibClient := LoadLibrary(dir + names[1]);
-      GLibWinpr := LoadLibrary(dir + names[2]);
-      if (GLibRdp <> NilHandle) and (GLibClient <> NilHandle) and
-         (GLibWinpr <> NilHandle) then
-        Break;
-      if GLibRdp <> NilHandle then UnloadLibrary(GLibRdp);
-      if GLibClient <> NilHandle then UnloadLibrary(GLibClient);
-      if GLibWinpr <> NilHandle then UnloadLibrary(GLibWinpr);
-      GLibRdp := NilHandle;
-      GLibClient := NilHandle;
-      GLibWinpr := NilHandle;
+      bestHits := hits;
+      bestDir := dir;
     end;
+    if hits < 3 then Continue;
+    GLibRdp := LoadLibrary(dir + names[0]);
+    GLibClient := LoadLibrary(dir + names[1]);
+    GLibWinpr := LoadLibrary(dir + names[2]);
+    if (GLibRdp <> NilHandle) and (GLibClient <> NilHandle) and
+       (GLibWinpr <> NilHandle) then
+      Break;
+    if GLibRdp <> NilHandle then UnloadLibrary(GLibRdp);
+    if GLibClient <> NilHandle then UnloadLibrary(GLibClient);
+    if GLibWinpr <> NilHandle then UnloadLibrary(GLibWinpr);
+    GLibRdp := NilHandle;
+    GLibClient := NilHandle;
+    GLibWinpr := NilHandle;
+  end;
   if (GLibRdp = NilHandle) or (GLibClient = NilHandle) or
      (GLibWinpr = NilHandle) then
-    raise EFreeRdpError.Create(
-      'FreeRDP not found in the expected locations');
+  begin
+    if (bestHits > 0) and (bestHits < 3) then
+    begin
+      missing := '';
+      for i := 0 to 2 do
+        if not FileExists(bestDir + names[i]) then
+        begin
+          if missing <> '' then missing := missing + ', ';
+          missing := missing + names[i];
+        end;
+      raise EFreeRdpError.CreateFmt('FreeRDP 3 is incomplete in %s: %s ' +
+        'missing. The three libraries ship in separate packages; installing ' +
+        'the core one does not pull the others.', [bestDir, missing]);
+    end;
+    raise EFreeRdpError.CreateFmt(
+      'FreeRDP not found in the expected locations (looked for %s, %s and %s)',
+      [names[0], names[1], names[2]]);
+  end;
 
   BindSymbols;
 

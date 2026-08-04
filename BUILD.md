@@ -129,7 +129,7 @@ Here the libraries come from your distribution, with two deliberate exceptions.
 
 | | Debian/Ubuntu | Fedora/RHEL | Arch | openSUSE |
 |---|---|---|---|---|
-| FreeRDP 3 | `libfreerdp3-3` | `freerdp-libs` | `freerdp` | `libfreerdp3` |
+| FreeRDP 3 | `libfreerdp3-3` `libfreerdp-client3-3` `libwinpr3-3` | `freerdp-libs` | `freerdp` | `libfreerdp3` |
 | libssh2 | `libssh2-1t64` | `libssh2` | `libssh2` | `libssh2-1` |
 | SQLite 3 | `libsqlite3-0` | `sqlite-libs` | `sqlite` | `libsqlite3-0` |
 | libsodium | `libsodium23` | `libsodium` | `libsodium` | `libsodium23` |

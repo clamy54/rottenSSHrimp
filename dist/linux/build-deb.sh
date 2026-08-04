@@ -158,7 +158,15 @@ fi
 	echo "dpkg-shlibdeps indisponible : Depends de repli (a verifier)" >&2
 	deps="libc6, libgtk2.0-0t64 | libgtk2.0-0, libx11-6"
 }
-dlopen_deps="libfreerdp3-3, libssh2-1t64 | libssh2-1, libsqlite3-0, libsodium23"
+# FreeRDP compte pour TROIS paquets, pas un. libfreerdp3.so.3,
+# libfreerdp-client3.so.3 et libwinpr3.so.3 sont empaquetes separement et
+# libfreerdp3-3 ne tire QUE libwinpr3-3: sans la ligne ci-dessous, une machine
+# neuve n'a pas libfreerdp-client3-3, le chargeur exige les trois fichiers et
+# RDP tombe sur « FreeRDP not found in the expected locations ». Constate sur
+# Linux Mint 22.3. libwinpr3-3 est declare aussi: on l'ouvre nous-memes par
+# dlopen, s'en remettre au Depends d'un autre paquet est un pari, pas une regle.
+dlopen_deps="libfreerdp3-3, libfreerdp-client3-3, libwinpr3-3"
+dlopen_deps="${dlopen_deps}, libssh2-1t64 | libssh2-1, libsqlite3-0, libsodium23"
 deps="${deps}, ${dlopen_deps}"
 
 # Substitution bash, PAS sed : les Depends contiennent des alternatives Debian

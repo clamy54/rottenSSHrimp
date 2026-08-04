@@ -13,10 +13,16 @@ sur `ParamStr(0)`, jamais le `PATH` ni le répertoire courant.
 
 | Bibliothèque | Chargée sous le nom | Debian/Ubuntu | Fedora/RHEL | Arch | openSUSE |
 |---|---|---|---|---|---|
-| FreeRDP 3 | `libfreerdp3.so.3`, `libfreerdp-client3.so.3`, `libwinpr3.so.3` | `libfreerdp3-3` | `freerdp-libs` | `freerdp` | `libfreerdp3` |
+| FreeRDP 3 | `libfreerdp3.so.3`, `libfreerdp-client3.so.3`, `libwinpr3.so.3` | `libfreerdp3-3` `libfreerdp-client3-3` `libwinpr3-3` | `freerdp-libs` | `freerdp` | `libfreerdp3` |
 | libssh2 | `libssh2.so.1` | `libssh2-1t64` | `libssh2` | `libssh2` | `libssh2-1` |
 | SQLite 3 | `libsqlite3.so.0` | `libsqlite3-0` | `sqlite-libs` | `sqlite` | `libsqlite3-0` |
 | libsodium | `libsodium.so.26` ou `.so.23` | `libsodium23` | `libsodium` | `libsodium` | `libsodium23` |
+
+Sous Debian et Ubuntu, les **trois** sonames de FreeRDP sont empaquetés
+séparément, et `libfreerdp3-3` ne dépend que de `libwinpr3-3` : il faut donc
+nommer `libfreerdp-client3-3` explicitement. Le chargeur exige les trois
+fichiers dans un même répertoire, si bien qu'un seul manquant désactive RDP —
+et le message le dit désormais, plutôt que d'annoncer un introuvable.
 
 La **majeure** de FreeRDP est vérifiée au chargement : une autre majeure est
 refusée plutôt qu'utilisée, car l'ABI et la disposition des structures y
