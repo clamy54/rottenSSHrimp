@@ -166,6 +166,16 @@ notice, unlike the alternative. `build-libvnc.sh` verifies the tarball hash
 before touching it and fails hard if a patch does not apply cleanly, because a
 security patch that silently did not apply is just a comforting filename.
 
+It also refuses to build when the configuration it obtained is not the one the
+binding's offset table describes. `-DWITH_JPEG=ON` only asks CMake to *look*
+for libjpeg; missing headers mean a library built without it, whose
+`rfbClient` is 40 bytes shorter — large enough to pass the size check at load
+time and fail the layout check, so VNC vanishes with a message only a terminal
+launch reveals. The recipe reads the generated `rfbconfig.h`, and
+`scripts/check-vnc-offsets.sh` — run by CI and by every packaging script —
+compares the table in `bindings/libvnc/uLibVncApi.pas` against the library
+actually built.
+
 **`librssh_rdp_shim.so`** resolves FreeRDP's memory layout through the C
 compiler instead of through offsets typed in by hand and blessed by hope.
 `build.sh` builds it if the headers are there and shrugs if they are not: RDP

@@ -38,6 +38,10 @@ if [ ! -f "$vdir/out/lib/libvncclient.so.1" ] || [ "$want_stamp" != "$have_stamp
   "$root/scripts/build-libvnc.sh"
 fi
 
+# La table d'offsets du binding doit decrire la lib qu'on vient de batir, sinon
+# l'archive livre un VNC que l'application refusera au chargement, en silence.
+"$root/scripts/check-vnc-offsets.sh"
+
 # 2) binaire
 "$root/scripts/build.sh" "$@"
 

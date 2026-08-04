@@ -99,6 +99,45 @@ BUILD="${WORK}/build"
   -DWITH_LIBSSHTUNNEL=OFF -DWITH_FFMPEG=OFF \
   -DWITH_EXAMPLES=OFF -DWITH_TESTS=OFF \
   >/dev/null
+
+# Les WITH_* ci-dessus ne FIGENT rien: ce sont des « cherche telle bibliotheque ».
+# Introuvable, cmake desactive la fonction et construit quand meme -- une lib
+# sans JPEG recule clientData de 32 octets, assez pour passer le controle de
+# taille de CheckStructLayout et echouer sur la disposition, chez l'utilisateur.
+# Le seul temoin qui fasse foi est le rfbconfig.h GENERE. On le lit.
+CFG="${BUILD}/include/rfb/rfbconfig.h"
+[[ -f "$CFG" ]] || { echo "rfbconfig.h introuvable apres configuration: ${CFG}" >&2; exit 1; }
+cfg_bad=0
+cfg_on()  { grep -qE "^#define[[:space:]]+$1[[:space:]]+1" "$CFG"; }
+for m in LIBVNCSERVER_HAVE_LIBZ LIBVNCSERVER_HAVE_LIBJPEG LIBVNCSERVER_HAVE_LIBPTHREAD; do
+  if ! cfg_on "$m"; then
+    echo "CONFIG: ${m} attendu ACTIF et absent de rfbconfig.h" >&2
+    cfg_bad=1
+  fi
+done
+for m in LIBVNCSERVER_HAVE_SASL LIBVNCSERVER_HAVE_LIBGCRYPT LIBVNCSERVER_HAVE_LIBSSL \
+         LIBVNCSERVER_HAVE_GNUTLS; do
+  if cfg_on "$m"; then
+    echo "CONFIG: ${m} attendu INACTIF et defini dans rfbconfig.h" >&2
+    cfg_bad=1
+  fi
+done
+if [[ "$cfg_bad" -ne 0 ]]; then
+  cat >&2 <<'EOF'
+
+La configuration obtenue n'est pas celle qui a servi a calculer les offsets de
+bindings/libvnc/uLibVncApi.pas: construire ici livrerait une bibliotheque que
+l'application refusera au chargement ("memory layout does not match").
+En-tetes de developpement manquants, le plus souvent:
+  Debian/Ubuntu: apt install zlib1g-dev libjpeg-dev
+  Fedora:        dnf install zlib-devel libjpeg-turbo-devel
+  Arch:          pacman -S zlib libjpeg-turbo
+  macOS:         brew install jpeg-turbo
+  NixOS:         nix-shell -p cmake zlib libjpeg pkg-config
+EOF
+  exit 1
+fi
+
 "$CMAKE" --build "$BUILD" --target vncclient -j"$NCPU"
 
 rm -rf "$OUT"

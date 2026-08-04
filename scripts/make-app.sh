@@ -19,6 +19,11 @@ if [ ! -f "$vdir/out/lib/libvncclient.1.dylib" ] || [ "$want_stamp" != "$have_st
   "$root/scripts/build-libvnc.sh"
 fi
 
+# La table d'offsets du binding doit decrire la dylib qu'on vient de batir,
+# sinon le bundle embarque une bibliotheque que l'app refusera au chargement:
+# VNC disparait du produit, sans rien de visible hors terminal.
+"$root/scripts/check-vnc-offsets.sh"
+
 "$root/scripts/build.sh" "$@"
 
 app="$root/RottenSSHrimp.app"

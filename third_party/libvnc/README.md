@@ -63,6 +63,14 @@ another. `CheckStructLayout` refuses the library at load time if you do, which
 is the pleasant outcome; the unpleasant one, in a world without that check, is
 a framebuffer written through a pointer read from the wrong offset.
 
+"Pleasant" is relative: a refused library means VNC is gone from the product,
+and the reason only reaches stderr. `scripts/check-vnc-offsets.sh` compares the
+table against a freshly built library and is run by CI on Linux and macOS, and
+by every packaging script before it ships anything. It exists because the Linux
+table was once generated on a machine with no JPEG headers while the release
+runner had them: the published `.deb` installed, launched, and opened not a
+single VNC session.
+
 ## Build
 
 ```sh
@@ -74,6 +82,16 @@ applies the patches (hard failure if any does not apply cleanly), configures
 with a locked minimal config (zlib + JPEG **on**; TLS, SASL, crypto backends,
 PNG, websockets, filetransfer and examples all **off**), and builds only the
 `vncclient` target.
+
+The `-DWITH_*` flags do **not** lock anything on their own: each one means
+*search for this library*, and when the search fails CMake quietly drops the
+feature and builds anyway. A libvncclient without JPEG moves `clientData` down
+32 bytes and `sizeof(rfbClient)` down 40 — enough to pass `CheckStructLayout`'s
+size test and fail its layout test, which disables VNC outright. So the script
+reads the **generated** `rfbconfig.h` after configuring and refuses to build
+unless `LIBVNCSERVER_HAVE_LIBZ`, `_LIBJPEG` and `_LIBPTHREAD` are on and
+`_SASL`, `_GNUTLS`, `_LIBSSL`, `_LIBGCRYPT` are off. The witness that counts is
+the config header, never the command line.
 
 Output (git-ignored, reproducible), named per platform:
 
@@ -93,8 +111,10 @@ source that produces them (patches, hash, recipe) is.
 
 1. Update `SHA256SUMS` and the version in `build-libvnc.sh`.
 2. Re-run `./scripts/build-libvnc.sh`.
-3. Regenerate offsets (command above) and paste into
-   `bindings/libvnc/uLibVncApi.pas`.
-4. Re-run the test suite. `uVncApiTests` reverifies the layout against the
-   built library at load time.
+3. Regenerate offsets (command above) and paste into the matching platform
+   branch of `bindings/libvnc/uLibVncApi.pas`. The generator emits the Pascal
+   constant names, so the block pastes as-is.
+4. Run `./scripts/check-vnc-offsets.sh`. It validates the branch of the machine
+   it runs on, so a version bump needs a pass on Linux **and** on macOS; the
+   Windows branch is covered by the prebuilt DLL and `check-win-deps.sh`.
 5. Re-check the GPL-2-or-later compatibility (see `LICENSES/THIRD-PARTY-NOTICES.md`).

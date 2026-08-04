@@ -1,4 +1,5 @@
-# CI: compilation sur les trois plateformes, plus la garde ABI FreeRDP.
+# CI: compilation sur les trois plateformes, plus les gardes ABI (FreeRDP et
+# libvncclient).
 name: CI
 
 on:
@@ -62,6 +63,31 @@ jobs:
         run: bash .github/install-lazarus-macos.sh
       - name: Compiler (release)
         run: bash scripts/build.sh --release
+
+  # Meme probleme que pour FreeRDP, aggrave par l'issue: libvncclient est
+  # VENDORISEE, donc un ecart de table n'est pas une fatalite d'environnement,
+  # c'est un bogue de recette -- et il ne degrade rien, il supprime VNC. La lib
+  # est refusee au chargement et le message ne sort que sur stderr. C'est passe
+  # une fois: table Linux generee sans en-tetes JPEG, CI avec, .deb publie sans
+  # aucune session VNC possible. Le controle tourne sur les DEUX plateformes qui
+  # batissent la lib: chacune valide sa propre branche de la table.
+  vnc-offsets:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            install: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake pkg-config zlib1g-dev libjpeg-dev
+          - os: macos-14
+            install: brew install cmake pkg-config jpeg-turbo
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependances de construction de libvncclient
+        run: ${{ matrix.install }}
+      - name: Construire la lib epinglee et comparer les offsets en dur
+        run: bash scripts/check-vnc-offsets.sh
 
   # Les offsets de structs FreeRDP sont ecrits en dur (bindings/freerdp), mais
   # la bibliotheque vient de la DISTRIBUTION: rien ne garantit qu'une autre la

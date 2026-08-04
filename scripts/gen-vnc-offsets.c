@@ -3,86 +3,106 @@
  * corromprait la memoire des que la lib locale differe. Source correspondante
  * GPL-3.0 section 1, voir LICENSES/THIRD-PARTY-NOTICES.md.
  *
- *   cc -I$(brew --prefix libvncserver)/include scripts/gen-vnc-offsets.c \
+ * A compiler contre les en-tetes de NOTRE construction, pas contre ceux du
+ * systeme: c'est le rfbconfig.h genere par build-libvnc.sh qui fait foi.
+ *
+ *   ./scripts/build-libvnc.sh
+ *   cc -Ithird_party/libvnc/out/include scripts/gen-vnc-offsets.c \
  *      -o /tmp/gen-vnc-offsets && /tmp/gen-vnc-offsets
+ *
+ * Les noms emis sont ceux des constantes Pascal: la sortie se colle telle
+ * quelle dans la branche de plateforme correspondante de uLibVncApi.pas.
+ * scripts/check-vnc-offsets.sh fait la comparaison automatiquement.
  */
 #include <stdio.h>
 #include <stddef.h>
 #include <rfb/rfbclient.h>
 
-#define OFF(f) printf("  VNC_OFF_%-24s = %zu;\n", #f, offsetof(rfbClient, f))
+/* n = nom de la constante Pascal, f = champ C. Les deux different la ou le
+ * binding a raccourci (FINISHEDFBUPDATE / FinishedFrameBufferUpdate). */
+#define OFF(n, f) printf("  VNC_OFF_%-21s = %zu;\n", n, offsetof(rfbClient, f))
+#define SIZ(n, t) printf("  VNC_%-25s = %zu;\n", n, sizeof(t))
+#define PF(n, f)  printf("  VNC_PF_OFF_%-12s = %zu;\n", n, offsetof(rfbPixelFormat, f))
+#define AD(n, f)  printf("  VNC_AD_OFF_%-15s = %zu;\n", n, offsetof(AppData, f))
 
 int main(void)
 {
+    /* Temoin de config: ces trois macros DEPLACENT des champs. Une table
+     * generee sans JPEG recule clientData de 32 octets et sizeof de 40. */
+    int with_zlib = 0, with_jpeg = 0, with_sasl = 0;
+#ifdef LIBVNCSERVER_HAVE_LIBZ
+    with_zlib = 1;
+#endif
+#ifdef LIBVNCSERVER_HAVE_LIBJPEG
+    with_jpeg = 1;
+#endif
+#ifdef LIBVNCSERVER_HAVE_SASL
+    with_sasl = 1;
+#endif
+
     printf("  // ---- offsets rfbClient (generes par scripts/gen-vnc-offsets.c) ----\n");
     /* les macros de version sont des chaines dans rfbconfig.h, pas des entiers */
     printf("  // libvncclient %s.%s.%s\n",
            LIBVNCSERVER_VERSION_MAJOR, LIBVNCSERVER_VERSION_MINOR,
            LIBVNCSERVER_VERSION_PATCHLEVEL);
+    printf("  // config: zlib=%d jpeg=%d sasl=%d\n",
+           with_zlib, with_jpeg, with_sasl);
 
     /* etat serveur / framebuffer */
-    OFF(frameBuffer);
-    OFF(width);
-    OFF(height);
-    OFF(format);
-    OFF(si);
-    OFF(desktopName);
-    OFF(serverHost);
-    OFF(serverPort);
-    OFF(sock);
+    OFF("FRAMEBUFFER", frameBuffer);
+    OFF("WIDTH", width);
+    OFF("HEIGHT", height);
+    OFF("FORMAT", format);
+    OFF("SI", si);
+    OFF("DESKTOPNAME", desktopName);
+    OFF("SERVERHOST", serverHost);
+    OFF("SERVERPORT", serverPort);
+    OFF("SOCK", sock);
     /* listenSpecified vrai = rfbInitConnection saute la connexion et attaque le
      * handshake sur `sock`: notre crochet pour connecter nous-memes, annulable */
-    OFF(listenSpecified);
-    OFF(connectTimeout);
-    OFF(readTimeout);
-    OFF(programName);
-    OFF(appData);
-    OFF(clientData);
-    OFF(updateRect);
-    OFF(canHandleNewFBSize);
+    OFF("LISTENSPECIFIED", listenSpecified);
+    OFF("CONNECTTIMEOUT", connectTimeout);
+    OFF("READTIMEOUT", readTimeout);
+    OFF("PROGRAMNAME", programName);
+    OFF("APPDATA", appData);
+    OFF("CLIENTDATA", clientData);
+    OFF("UPDATERECT", updateRect);
+    OFF("CANHANDLENEWFBSIZE", canHandleNewFBSize);
 
     /* callbacks */
-    OFF(MallocFrameBuffer);
-    OFF(GotFrameBufferUpdate);
-    OFF(FinishedFrameBufferUpdate);
-    OFF(GetPassword);
-    OFF(GetCredential);
-    OFF(GotXCutText);
-    OFF(GotXCutTextUTF8);
-    OFF(Bell);
-    OFF(HandleKeyboardLedState);
-    OFF(HandleTextChat);
+    OFF("MALLOCFRAMEBUFFER", MallocFrameBuffer);
+    OFF("GOTFRAMEBUFFERUPDATE", GotFrameBufferUpdate);
+    OFF("FINISHEDFBUPDATE", FinishedFrameBufferUpdate);
+    OFF("GETPASSWORD", GetPassword);
+    OFF("GETCREDENTIAL", GetCredential);
+    OFF("GOTXCUTTEXT", GotXCutText);
+    OFF("GOTXCUTTEXTUTF8", GotXCutTextUTF8);
+    OFF("BELL", Bell);
+    OFF("HANDLEKEYBOARDLEDSTATE", HandleKeyboardLedState);
+    OFF("HANDLETEXTCHAT", HandleTextChat);
 
-    printf("  VNC_%-27s = %zu;\n", "SIZE_RFBCLIENT", sizeof(rfbClient));
+    SIZ("SIZE_RFBCLIENT", rfbClient);
+
     printf("\n  // ---- offsets rfbPixelFormat (dans rfbClient.format) ----\n");
-    printf("  VNC_PF_OFF_%-21s = %zu;\n", "BITSPERPIXEL",
-           offsetof(rfbPixelFormat, bitsPerPixel));
-    printf("  VNC_PF_OFF_%-21s = %zu;\n", "DEPTH", offsetof(rfbPixelFormat, depth));
-    printf("  VNC_PF_OFF_%-21s = %zu;\n", "BIGENDIAN",
-           offsetof(rfbPixelFormat, bigEndian));
-    printf("  VNC_PF_OFF_%-21s = %zu;\n", "TRUECOLOUR",
-           offsetof(rfbPixelFormat, trueColour));
-    printf("  VNC_PF_OFF_%-21s = %zu;\n", "REDMAX", offsetof(rfbPixelFormat, redMax));
-    printf("  VNC_PF_OFF_%-21s = %zu;\n", "GREENMAX", offsetof(rfbPixelFormat, greenMax));
-    printf("  VNC_PF_OFF_%-21s = %zu;\n", "BLUEMAX", offsetof(rfbPixelFormat, blueMax));
-    printf("  VNC_PF_OFF_%-21s = %zu;\n", "REDSHIFT", offsetof(rfbPixelFormat, redShift));
-    printf("  VNC_PF_OFF_%-21s = %zu;\n", "GREENSHIFT",
-           offsetof(rfbPixelFormat, greenShift));
-    printf("  VNC_PF_OFF_%-21s = %zu;\n", "BLUESHIFT",
-           offsetof(rfbPixelFormat, blueShift));
-    printf("  VNC_%-27s = %zu;\n", "SIZE_PIXELFORMAT", sizeof(rfbPixelFormat));
+    PF("BITSPERPIXEL", bitsPerPixel);
+    PF("DEPTH", depth);
+    PF("BIGENDIAN", bigEndian);
+    PF("TRUECOLOUR", trueColour);
+    PF("REDMAX", redMax);
+    PF("GREENMAX", greenMax);
+    PF("BLUEMAX", blueMax);
+    PF("REDSHIFT", redShift);
+    PF("GREENSHIFT", greenShift);
+    PF("BLUESHIFT", blueShift);
+    /* aligne sur le bloc PF ci-dessus, pas sur celui de rfbClient */
+    printf("  VNC_%-20s = %zu;\n", "SIZE_PIXELFORMAT", sizeof(rfbPixelFormat));
 
     printf("\n  // ---- offsets AppData (dans rfbClient.appData) ----\n");
-    printf("  VNC_AD_OFF_%-21s = %zu;\n", "ENCODINGSSTRING",
-           offsetof(AppData, encodingsString));
-    printf("  VNC_AD_OFF_%-21s = %zu;\n", "COMPRESSLEVEL",
-           offsetof(AppData, compressLevel));
-    printf("  VNC_AD_OFF_%-21s = %zu;\n", "QUALITYLEVEL",
-           offsetof(AppData, qualityLevel));
-    printf("  VNC_AD_OFF_%-21s = %zu;\n", "USEREMOTECURSOR",
-           offsetof(AppData, useRemoteCursor));
-    printf("  VNC_AD_OFF_%-21s = %zu;\n", "VIEWONLY", offsetof(AppData, viewOnly));
-    printf("  VNC_AD_OFF_%-21s = %zu;\n", "SHAREDESKTOP",
-           offsetof(AppData, shareDesktop));
+    AD("SHAREDESKTOP", shareDesktop);
+    AD("VIEWONLY", viewOnly);
+    AD("ENCODINGSSTRING", encodingsString);
+    AD("COMPRESSLEVEL", compressLevel);
+    AD("QUALITYLEVEL", qualityLevel);
+    AD("USEREMOTECURSOR", useRemoteCursor);
     return 0;
 }

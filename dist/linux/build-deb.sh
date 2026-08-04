@@ -34,6 +34,11 @@ if [ ! -f "$vdir/out/lib/libvncclient.so.1" ] || [ "$want_stamp" != "$have_stamp
 	"$root/scripts/build-libvnc.sh"
 fi
 
+# La table d'offsets du binding doit decrire la lib qu'on vient de batir. Sans
+# ce controle, le paquet s'installe, se lance, et VNC est desactive au premier
+# chargement pour tout le monde -- message visible uniquement en terminal.
+"$root/scripts/check-vnc-offsets.sh"
+
 # Shim RDP : un paquet qui l'oublie livre le mode degrade a tout le monde, en
 # silence. Ici il est construit contre les en-tetes de la machine de build,
 # c'est-a-dire de la cible -- l'avantage du paquet natif sur l'archive.

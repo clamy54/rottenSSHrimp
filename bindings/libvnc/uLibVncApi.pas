@@ -18,7 +18,11 @@ type
 
 const
   // Offsets rfbClient (scripts/gen-vnc-offsets.c), trois jeux: SOCKET et
-  // pthread_mutex_t n'ont pas la meme taille selon l'OS.
+  // pthread_mutex_t n'ont pas la meme taille selon l'OS. Ils supposent TOUS la
+  // config epinglee de build-libvnc.sh: zlib ET JPEG actifs, TLS/SASL absents.
+  // Sans JPEG, clientData recule de 32 octets et sizeof de 40 -- assez pour
+  // passer le controle de taille et echouer sur la disposition.
+  // scripts/check-vnc-offsets.sh confronte cette table a la lib construite.
 {$IFDEF WINDOWS}
   VNC_OFF_FRAMEBUFFER          = 0;
   VNC_OFF_WIDTH                = 8;
@@ -89,24 +93,24 @@ const
   VNC_OFF_UPDATERECT           = 104;
   VNC_OFF_SOCK                 = 307320;
   VNC_OFF_LISTENSPECIFIED      = 92;
-  VNC_OFF_CONNECTTIMEOUT       = 359872;
-  VNC_OFF_READTIMEOUT          = 359876;
+  VNC_OFF_CONNECTTIMEOUT       = 359912;
+  VNC_OFF_READTIMEOUT          = 359916;
   VNC_OFF_DESKTOPNAME          = 307328;
   VNC_OFF_FORMAT               = 307336;
   VNC_OFF_SI                   = 307352;
-  VNC_OFF_CLIENTDATA           = 359520;
-  VNC_OFF_CANHANDLENEWFBSIZE   = 359544;
-  VNC_OFF_HANDLETEXTCHAT       = 359552;
-  VNC_OFF_HANDLEKEYBOARDLEDSTATE = 359560;
-  VNC_OFF_GOTFRAMEBUFFERUPDATE = 359592;
-  VNC_OFF_GETPASSWORD          = 359600;
-  VNC_OFF_MALLOCFRAMEBUFFER    = 359608;
-  VNC_OFF_GOTXCUTTEXT          = 359616;
-  VNC_OFF_GOTXCUTTEXTUTF8      = 359944;
-  VNC_OFF_BELL                 = 359624;
-  VNC_OFF_GETCREDENTIAL        = 359736;
-  VNC_OFF_FINISHEDFBUPDATE     = 359784;
-  VNC_SIZE_RFBCLIENT           = 359960;
+  VNC_OFF_CLIENTDATA           = 359552;
+  VNC_OFF_CANHANDLENEWFBSIZE   = 359576;
+  VNC_OFF_HANDLETEXTCHAT       = 359584;
+  VNC_OFF_HANDLEKEYBOARDLEDSTATE = 359592;
+  VNC_OFF_GOTFRAMEBUFFERUPDATE = 359624;
+  VNC_OFF_GETPASSWORD          = 359632;
+  VNC_OFF_MALLOCFRAMEBUFFER    = 359640;
+  VNC_OFF_GOTXCUTTEXT          = 359648;
+  VNC_OFF_GOTXCUTTEXTUTF8      = 359984;
+  VNC_OFF_BELL                 = 359656;
+  VNC_OFF_GETCREDENTIAL        = 359768;
+  VNC_OFF_FINISHEDFBUPDATE     = 359816;
+  VNC_SIZE_RFBCLIENT           = 360000;
 {$ENDIF}
 {$ENDIF}
 
