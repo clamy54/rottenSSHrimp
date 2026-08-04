@@ -87,6 +87,12 @@ Source: "..\..\vncclient.dll"; DestDir: "{app}"; Flags: ignoreversion
 ; l'oracle de disposition memoire FreeRDP: absent, RDP retombe sur les offsets
 ; ecrits en dur (mode degrade mais fonctionnel)
 Source: "..\..\rssh_rdp_shim.dll"; DestDir: "{app}"; Flags: ignoreversion
+; Runtime C de MSVC, importe par 12 des 14 DLL ci-dessus. Ne fait PAS partie de
+; Windows: sans lui, rien ne demarre sur une machine sans Visual Studio. Livre
+; a cote de l'exe (deploiement app-local) plutot que par vc_redist.exe: une DLL
+; de 120 Ko contre un installeur de 25 Mo et une elevation de privileges.
+; L'UCRT, elle, est dans Windows depuis la 10 -- rien a livrer de ce cote.
+Source: "..\..\vcruntime140.dll"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Licences: on distribue des binaires tiers, leurs textes voyagent avec.
 Source: "..\..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"

@@ -65,6 +65,25 @@ Distributing a Windows build means distributing these:
 | jpeg62.dll | libjpeg-turbo | BSD-3-Clause + IJG | libjpeg-turbo.txt |
 | vncclient.dll | libvncclient (LibVNCServer) | GPL-2.0-or-later | GPL-3.0-or-later.txt (see below) |
 | rssh_rdp_shim.dll | this project | GPL-3.0-or-later | GPL-3.0-or-later.txt |
+| vcruntime140.dll | Microsoft Visual C++ Runtime | Proprietary (VS Distributable Code) | Microsoft-VC-Runtime.txt |
+
+### vcruntime140.dll: the one proprietary file
+
+Twelve of the fourteen DLLs above are MSVC builds and import `VCRUNTIME140.dll`,
+which is **not** part of Windows. Shipping it next to the executable is the
+supported "local deployment", and it replaces what the release notes used to
+ask of the user: install the Visual C++ 2015-2022 redistributable, 25 MB and an
+elevation prompt, for a 120 KB DLL.
+
+Being proprietary, it does not conflict with the GPL here: the System Library
+exception covers a component that accompanies a Major Component of the
+platform, the compiler used to produce the work included. `Microsoft-VC-Runtime.txt`
+records the terms and the reasoning.
+
+The `api-ms-win-crt-*.dll` that also appear in the imports are the Universal
+CRT, part of Windows since Windows 10. We do not ship those, and no DLL in the
+list needs `MSVCP140.dll` or `VCRUNTIME140_1.dll` — there is no C++ runtime in
+the set.
 
 ### libvncclient and the GPL-3 question
 

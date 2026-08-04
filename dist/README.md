@@ -54,11 +54,13 @@ any more is a hard requirement for logging into Windows in 2026. Remove it as
 housekeeping and you get `ERRCONNECT_LOGON_FAILURE`, a black screen and a
 disconnect, with no hint that the cause was you tidying up.
 
-**Runtime dependency:** the DLLs are MSVC builds, so the target machine needs
-the Visual C++ 2015-2022 redistributable (VCRUNTIME140 / UCRT). Present on
-essentially every machine that has ever run anything, and reliably absent from
-the freshly installed Windows Server where you are trying to fix something
-urgent.
+**Runtime dependency:** none to install. The DLLs are MSVC builds, so they need
+`VCRUNTIME140.dll`, which is not part of Windows — the installer ships it
+alongside them. Asking the user for the Visual C++ redistributable instead
+would mean 25 MB and an elevation prompt for a 120 KB file, and it would fail
+exactly where it hurts: the freshly installed Windows Server where you are
+trying to fix something urgent. Everything else those DLLs call is the
+Universal CRT, part of Windows since Windows 10.
 
 ### License pages
 

@@ -150,7 +150,7 @@ jobs:
           ls -l assets
           notes="$(printf '%s\n\n%s\n\n%s' \
             "macOS: the app is ad-hoc signed, not notarized. Gatekeeper blocks the first launch: open the app once, then go to System Settings > Privacy & Security and click Open Anyway." \
-            "Windows: the installer is not Authenticode signed, so SmartScreen will call the publisher unknown. Click More info, then Run anyway. It also needs the Visual C++ 2015-2022 redistributable (VCRUNTIME140 / UCRT)." \
+            "Windows: the installer is not Authenticode signed, so SmartScreen will call the publisher unknown. Click More info, then Run anyway." \
             "Changes: https://github.com/${GH_REPO}/commits/${TAG}")"
           if gh release view "$TAG" >/dev/null 2>&1; then
             # relance apres echec: la release existe deja, on remplace les fichiers

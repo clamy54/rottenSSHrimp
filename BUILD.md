@@ -76,8 +76,10 @@ stale hashes is worse than no provenance file: it proves nothing while looking
 exactly like proof, and it is the sort of thing you only discover while writing
 an incident report.
 
-You need nothing else installed, apart from the Visual C++ 2015-2022
-redistributable (VCRUNTIME140 / UCRT), which the DLLs link against.
+You need nothing else installed. The DLLs are MSVC builds and link against
+`VCRUNTIME140.dll`, which is not part of Windows, so that one is versioned here
+too and travels with the others. The rest of what they need is the Universal
+CRT, part of Windows since Windows 10.
 
 ### Rebuilding the RDP shim (rarely)
 

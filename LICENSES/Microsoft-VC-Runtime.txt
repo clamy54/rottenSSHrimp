@@ -1,0 +1,37 @@
+Microsoft Visual C++ Runtime (vcruntime140.dll)
+===============================================
+
+(c) Microsoft Corporation. All rights reserved.
+
+A Windows build of RottenSSHrimp ships one file that is neither ours nor open
+source: vcruntime140.dll, the Microsoft Visual C++ runtime library. Twelve of
+the fourteen native DLLs we ship are MSVC builds and import it, and it is not
+part of Windows itself.
+
+It is redistributed under the "Distributable Code" terms of the Microsoft
+Visual Studio license, which permit shipping the runtime alongside an
+application that was built with the toolchain. Microsoft documents this
+"local deployment" (the DLL next to the executable) as a supported alternative
+to installing the Visual C++ Redistributable system-wide, which is what we do
+here.
+
+  Microsoft Visual Studio license terms:
+  https://visualstudio.microsoft.com/license-terms/
+
+  Redistributing the Visual C++ files:
+  https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files
+
+Provenance and SHA-256 of the exact file we ship are recorded in
+packaging/windows/DEPS.md, like every other versioned DLL.
+
+Note on the GPL
+---------------
+
+RottenSSHrimp is GPL-3.0-or-later, and vcruntime140.dll is proprietary. This
+is not a conflict: the GPL's System Library exception covers a component that
+accompanies a Major Component of the platform, specifically including the
+compiler used to produce the work. The MSVC runtime is such a component.
+
+The rest of the C runtime (the api-ms-win-crt-*.dll seen in the imports) is
+the Universal CRT, a part of Windows since Windows 10. We do not redistribute
+it and it is not covered by this notice.

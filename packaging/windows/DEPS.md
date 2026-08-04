@@ -62,8 +62,8 @@ crypto `libcrypto-3-x64.dll` (OpenSSL 3.6.3) et `z.dll` (zlib).
   - `libssh2.dll` : `43682e313244ec65f735de223d698cfc8cfc4b4112e3502cce04a9b351caf3e0`
   - `libcrypto-3-x64.dll` : `acca52ccd0c3641281c1fc696d0a57a968786db9348be83e0b0f6451928edde0`
   - `z.dll` : `eb73c521d1d74a43fc2aaa4107ef080ec76edbc42971a6138e9c5579d1fa8fbf`
-- Dépend aussi de `VCRUNTIME140.dll` / UCRT (VC++ redist, présent avec Visual
-  Studio ; à inclure dans le paquet final).
+- Dépend aussi de `VCRUNTIME140.dll` : livrée ici même, voir sa section plus
+  bas (l'UCRT, elle, fait partie de Windows).
 - À terme : `bindings/libssh2` documente déjà `<exeDir>\libssh2.dll` ; les deux
   autres DLL se chargent par dépendance depuis le même dossier. Script de
   provisioning vcpkg versionné à ajouter.
@@ -130,6 +130,44 @@ exeDir (major 3). DLL à poser ensemble :
 - Note portage : `WaitForMultipleObjects` est résolu depuis `kernel32.dll` sous
   Windows (API native), pas depuis winpr3 qui, contrairement à l'émulation
   WinPR d'Unix, ne la réexporte pas.
+
+### vcruntime140.dll : runtime C de MSVC (déploiement *app-local*)
+
+Douze des quatorze DLL livrées (toutes sauf `sqlite3.dll` et
+`rssh_rdp_shim.dll`) importent `VCRUNTIME140.dll`. Elle **ne fait pas partie de
+Windows** : sans elle, l'application ne démarre pas sur une machine où Visual
+Studio n'a jamais été installé. Elle est donc livrée à côté de l'exécutable,
+comme les autres.
+
+- Source : `VC\Redist\MSVC\14.50.35710\x64\Microsoft.VC145.CRT\vcruntime140.dll`
+  d'une installation Visual Studio (fichier de la liste *Distributable Code*,
+  déploiement app-local prévu par Microsoft).
+- Version : 14.50.35719.0, 123 472 octets.
+- SHA-256 de `vcruntime140.dll` : `184146852727a9db4eea06178716bec3cdbb1015c911f6b0f915b184ad7775b2`
+- Version **14.50** alors que les DLL sont bâties avec le toolset v143 : c'est
+  le sens de compatibilité supporté (le CRT est binairement compatible depuis
+  2015, un binaire v143 tourne sur un runtime plus récent), et c'est celui qui
+  porte les correctifs de sécurité.
+- Ne dépend que de l'UCRT système et de `kernel32` : la chaîne s'arrête là,
+  rien d'autre à livrer.
+
+**Ce que le reste de l'UCRT ne demande PAS.** Les `api-ms-win-crt-*.dll` qui
+apparaissent dans les imports sont l'UCRT, **composant de Windows depuis la
+10** (dans `System32`, via apiset) : rien à redistribuer. C'est ce qui permet
+à `bindings/libvnc` d'importer `ucrtbase.dll` en dur. Aucune DLL livrée ne
+demande `MSVCP140.dll` ni `VCRUNTIME140_1.dll` : pas de runtime C++ dans le
+lot. Vérifiable par `dumpbin /dependents` sur les DLL de la racine.
+
+**Rançon du app-local :** cette copie n'est plus mise à jour par Windows
+Update. Une faille du CRT vit dans le paquet jusqu'à la release suivante ;
+à reprovisionner comme les autres DLL, pas à oublier parce qu'elle est petite.
+
+**Ne PAS « supprimer la dépendance » en passant les builds vcpkg en CRT
+statique (`/MT`).** Chaque DLL aurait son propre tas, alors que
+`bindings/libvnc` appelle `c_malloc`/`_msize` sur `ucrtbase.dll` en supposant
+un tas partagé : `_msize` sur un pointeur venu d'un autre tas est un
+comportement indéfini, et c'est précisément le contrôle de disposition mémoire
+de `vncclient` qui se casserait.
 
 ### VNC : vncclient.dll (+ jpeg62.dll + z.dll)
 
