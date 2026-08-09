@@ -13,7 +13,7 @@ uses
   uSessionState, uSessionTabBase, uSshSessionTab, uSshTransport,
   uRdpSessionTab, uVncSessionTab, uVncConnect, uClusterSshTab, uCrashRecovery,
   uSessionTabBar, uSearchBox, uTreeScrollBar, uImportExport, uGroupDashboard,
-  uTabSweep, uRecent
+  uTabSweep, uRecent, uOpenArg
   {$IFNDEF DARWIN}, uMenuBar{$ENDIF};
 
 type
@@ -65,6 +65,8 @@ type
     FPwFailCount: Integer;
     FEditRequested: Boolean;
     FRecoveryChecked: Boolean;
+    // odoc du Finder recu avant l'affichage de la fenetre: on differe
+    FPendingOpenPath: string;
     FShortcutsSuspended: Boolean;
     FSavedShortcutItems: array of TMenuItem;
     FSavedShortcutKeys: array of TShortCut;
@@ -83,6 +85,9 @@ type
     procedure ConnMenuNeeded(Sender: TObject);
     procedure FileMenuNeeded(Sender: TObject);
     procedure OpenDocumentPath(const APath: string);
+    procedure OpenExternalDocument(const ARaw: string);
+    procedure OpenStartupDocument;
+    procedure AppDropFiles(Sender: TObject; const FileNames: array of string);
     procedure OpenRecentClick(Sender: TObject);
     procedure ClearOpenRecentClick(Sender: TObject);
     procedure RebuildQuickMenu(AParent: TMenuItem; AList: TRshQuickList;
@@ -289,6 +294,11 @@ begin
   ApplyThemeToUi;
   OnCloseQuery := @FormCloseQuery;
   OnShow := @FormShow;
+  // canal des documents ouverts depuis le SYSTEME: sous macOS le Finder envoie
+  // un Apple Event « odoc » que la LCL rend ici, la ligne de commande n'etant
+  // pas utilisee pour cela. Assigne des le constructeur, l'evenement pouvant
+  // arriver avant l'affichage de la fenetre.
+  Application.OnDropFiles := @AppDropFiles;
   Application.OnException := @HandleAppException;
   Screen.AddHandlerActiveControlChanged(@ActiveControlChanged);
   UpdateDocumentState;
@@ -3717,7 +3727,57 @@ begin
   WindowState := wsMaximized;
   // no-op sous Unix: supprimer un temoin sous flock casserait l'exclusion
   PurgeStaleDocumentLocks;
+  // la recuperation d'abord: elle porte sur du travail non enregistre d'une
+  // session precedente, et l'ouverture demandee proposera de la fermer
   CheckCrashRecovery;
+  OpenStartupDocument;
+end;
+
+// Document demande par le SYSTEME (association .rsh) plutot que choisi dans le
+// dialogue: la valeur est filtree avant d'aller plus loin, voir uOpenArg.
+procedure TfrmMain.OpenExternalDocument(const ARaw: string);
+var
+  path, reason: string;
+begin
+  if ARaw = '' then Exit;
+  if not ValidateDocumentArg(ARaw, path, reason) then
+  begin
+    if reason <> '' then
+    begin
+      // ni le journal ni la boite ne repetent la valeur brute: elle est
+      // justement suspecte, et un nom maquille n'a pas a etre reaffiche
+      LogInfo('document argument refused: ' + reason);
+      MessageDlg('Cannot open document',
+        'The document was not opened because ' + reason + '.',
+        mtWarning, [mbOK], 0);
+    end;
+    Exit;
+  end;
+  OpenDocumentPath(path);
+end;
+
+procedure TfrmMain.OpenStartupDocument;
+var
+  raw: string;
+begin
+  raw := FPendingOpenPath;   // odoc arrive pendant l'initialisation
+  FPendingOpenPath := '';
+  if raw = '' then
+    raw := CommandLineDocumentArg;
+  OpenExternalDocument(raw);
+end;
+
+procedure TfrmMain.AppDropFiles(Sender: TObject;
+  const FileNames: array of string);
+begin
+  if Length(FileNames) = 0 then Exit;
+  // un seul document a la fois: voir CommandLineDocumentArg
+  if not FRecoveryChecked then
+  begin
+    FPendingOpenPath := FileNames[0];   // fenetre pas encore affichee
+    Exit;
+  end;
+  OpenExternalDocument(FileNames[0]);
 end;
 
 procedure TfrmMain.CheckCrashRecovery;
