@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Definition du type des documents .rsh pour shared-mime-info.
+
+  Sans ce fichier, le « MimeType=application/x-rottensshrimp-document » du
+  .desktop designe un type que PERSONNE n'a defini: aucun gestionnaire de
+  fichiers ne relie alors un .rsh a l'application, et l'association ne marche
+  pas. C'etait le cas jusqu'ici.
+
+  Le magic prime sur l'extension: l'enveloppe commence par « RSSHDOC » suivi du
+  numero de version de format (uRshEnvelope.ENVELOPE_MAGIC vaut aujourd'hui
+  RSSHDOC2). On s'arrete a « RSSHDOC » exactement pour que le type reste
+  reconnu quand la version du format changera: identifier le fichier et savoir
+  l'ouvrir sont deux questions distinctes, et c'est a l'application de dire
+  qu'une version lui est trop recente, pas au gestionnaire de fichiers de
+  pretendre que le fichier lui est etranger.
+-->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-rottensshrimp-document">
+    <comment>RottenSSHrimp document</comment>
+    <comment xml:lang="fr">Document RottenSSHrimp</comment>
+    <icon name="rottensshrimp"/>
+    <glob pattern="*.rsh"/>
+    <magic priority="60">
+      <match type="string" value="RSSHDOC" offset="0"/>
+    </magic>
+  </mime-type>
+</mime-info>

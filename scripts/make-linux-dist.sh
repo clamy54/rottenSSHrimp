@@ -94,19 +94,14 @@ cp "$vdir/SHA256SUMS" "$srcdir/"
 cp -R "$vdir/patches" "$srcdir/patches"
 cp "$root/scripts/build-libvnc.sh" "$srcdir/"
 
-# 7) Exec reste un NOM: le chemin depend d'ou l'archive atterrit, install.sh
-#    le reecrit.
+# 7) Le .desktop et la definition MIME sont ceux du paquet, pas des copies
+#    reecrites ici: deux redactions du meme fichier divergent toujours, et
+#    c'est ainsi que le tarball avait perdu le « %f » et le MimeType que le
+#    .deb, lui, declarait. Exec reste un NOM: le chemin depend d'ou l'archive
+#    atterrit, install.sh le reecrit.
 cp "$root/icons/icon.png" "$out/rottensshrimp.png" 2>/dev/null || true
-cat > "$out/rottensshrimp.desktop" <<'DESKTOP'
-[Desktop Entry]
-Type=Application
-Name=RottenSSHrimp
-Comment=SSH, RDP and VNC connection manager
-Exec=rottensshrimp
-Icon=rottensshrimp
-Terminal=false
-Categories=Network;RemoteAccess;
-DESKTOP
+cp "$root/dist/linux/rottensshrimp.desktop" "$out/rottensshrimp.desktop"
+cp "$root/dist/linux/rottensshrimp-mime.xml" "$out/rottensshrimp-mime.xml"
 
 cat > "$out/install.sh" <<'INSTALL'
 #!/usr/bin/env bash
@@ -117,11 +112,26 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 bindir="$HOME/.local/bin"
 appdir="$HOME/.local/share/applications"
 icondir="$HOME/.local/share/icons/hicolor/256x256/apps"
-mkdir -p "$bindir" "$appdir" "$icondir"
+mimedir="$HOME/.local/share/mime/packages"
+mkdir -p "$bindir" "$appdir" "$icondir" "$mimedir"
 ln -sf "$here/rottensshrimp" "$bindir/rottensshrimp"
 [ -f "$here/rottensshrimp.png" ] && cp "$here/rottensshrimp.png" "$icondir/rottensshrimp.png"
-sed "s|^Exec=.*|Exec=$here/rottensshrimp|" "$here/rottensshrimp.desktop" \
+# « %f » CONSERVE: c'est lui qui passe le document a l'application. Le perdre
+# ici rendrait l'association muette -- le fichier s'ouvrirait sur une fenetre
+# vide, ce que le double-clic faisait deja avant.
+sed "s|^Exec=.*|Exec=$here/rottensshrimp %f|" "$here/rottensshrimp.desktop" \
   > "$appdir/rottensshrimp.desktop"
+[ -f "$here/rottensshrimp-mime.xml" ] && \
+  cp "$here/rottensshrimp-mime.xml" "$mimedir/rottensshrimp.xml"
+# Bases MIME et desktop = des CACHES: sans reconstruction, l'association
+# n'apparait qu'au prochain rafraichissement fortuit. Absents d'un systeme
+# minimal, ces outils ne sont pas une condition d'installation.
+if command -v update-mime-database >/dev/null 2>&1; then
+  update-mime-database "$HOME/.local/share/mime" >/dev/null 2>&1 || true
+fi
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database -q "$appdir" >/dev/null 2>&1 || true
+fi
 echo "Installe. Si $bindir n'est pas dans votre PATH, ajoutez-le."
 INSTALL
 chmod +x "$out/install.sh"

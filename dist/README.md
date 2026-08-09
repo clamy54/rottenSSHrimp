@@ -37,9 +37,11 @@ Inno Setup 6 installer.
    IDE). Output:
    `dist\windows\output\RottenSSHrimp-Setup-<version>.exe`.
 
-Installs the executable, the fourteen native DLLs, the licenses and the
+Installs the executable, the fifteen native DLLs, the licenses and the
 libvncclient source into the install directory, plus Start Menu (and optional
-desktop) shortcuts and an optional `.rsh` file association.
+desktop) shortcuts and an optional `.rsh` file association. Double-clicking a
+`.rsh` opens it: the installer passes the path as an argument, and it is
+validated before anything is opened (see `src/util/uOpenArg.pas`).
 
 The DLLs are versioned in this repository rather than rebuilt per clone; their
 provenance and SHA-256 are recorded in
@@ -94,6 +96,15 @@ optional, for properly sized icons. Output:
 distributions with no package. Output:
 `dist/linux/build/rottensshrimp-<version>-linux-<arch>.tar.gz`, with an
 `install.sh` that needs no privileges.
+
+Both ship `linux/rottensshrimp.desktop` and `linux/rottensshrimp-mime.xml`, the
+same two files, so double-clicking a `.rsh` opens it. The `.desktop` alone is
+not enough: it names `application/x-rottensshrimp-document`, and without the
+MIME definition that type exists for nobody. The definition matches on the
+`RSSHDOC` header rather than the extension. Both packagings rebuild the MIME
+and desktop caches after installing, because those are caches: dropping files
+in place changes nothing until they are regenerated. The tarball installs into
+`~/.local/share`, so it associates for the current user only.
 
 The `.deb` wins because of the shim. `librssh_rdp_shim.so` describes only the
 FreeRDP version it was *compiled* against, and the binding discards a shim from

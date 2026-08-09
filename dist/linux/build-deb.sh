@@ -53,6 +53,7 @@ mkdir -p "$pkg/DEBIAN" \
 	"$pkg/usr/bin" \
 	"$pkg/usr/lib/rottensshrimp/lib" \
 	"$pkg/usr/share/applications" \
+	"$pkg/usr/share/mime/packages" \
 	"$pkg/usr/share/doc/rottensshrimp"
 
 install -m 0755 "$bin" "$pkg/usr/lib/rottensshrimp/rottensshrimp"
@@ -67,6 +68,54 @@ EOF
 chmod 0755 "$pkg/usr/bin/rottensshrimp"
 
 install -m 0644 "$here/rottensshrimp.desktop" "$pkg/usr/share/applications/rottensshrimp.desktop"
+# Le .desktop annonce « MimeType=application/x-rottensshrimp-document »; sans la
+# definition qui suit, ce type n'existe pour personne et l'association reste
+# lettre morte.
+install -m 0644 "$here/rottensshrimp-mime.xml" \
+	"$pkg/usr/share/mime/packages/rottensshrimp.xml"
+
+# Les bases MIME, desktop et icones sont des CACHES: poser les fichiers ne
+# suffit pas, il faut les reconstruire, sinon l'association n'apparait qu'au
+# prochain rafraichissement fortuit. Chaque outil est teste avant usage (un
+# conteneur minimal peut ne pas les avoir) et aucun echec n'interrompt
+# l'installation: un cache non regenere ne casse pas l'application.
+cat > "$pkg/DEBIAN/postinst" <<'EOF'
+#!/bin/sh
+set -e
+if [ "$1" = "configure" ]; then
+	if command -v update-mime-database >/dev/null 2>&1; then
+		update-mime-database /usr/share/mime >/dev/null 2>&1 || true
+	fi
+	if command -v update-desktop-database >/dev/null 2>&1; then
+		update-desktop-database -q /usr/share/applications >/dev/null 2>&1 || true
+	fi
+	if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+		gtk-update-icon-cache -q -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
+	fi
+fi
+exit 0
+EOF
+chmod 0755 "$pkg/DEBIAN/postinst"
+
+# Meme reconstruction apres retrait, sinon le type et l'association survivent
+# dans les caches et le bureau propose encore d'ouvrir avec un binaire absent.
+cat > "$pkg/DEBIAN/postrm" <<'EOF'
+#!/bin/sh
+set -e
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+	if command -v update-mime-database >/dev/null 2>&1; then
+		update-mime-database /usr/share/mime >/dev/null 2>&1 || true
+	fi
+	if command -v update-desktop-database >/dev/null 2>&1; then
+		update-desktop-database -q /usr/share/applications >/dev/null 2>&1 || true
+	fi
+	if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+		gtk-update-icon-cache -q -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
+	fi
+fi
+exit 0
+EOF
+chmod 0755 "$pkg/DEBIAN/postrm"
 
 # Licences. On distribue des binaires tiers (libvncclient en tete), leurs textes
 # voyagent avec, plus la source correspondante GPL : le tarball epingle
