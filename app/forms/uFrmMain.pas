@@ -12,7 +12,8 @@ uses
   Graphics, LCLType, LMessages, uRshDocument, uRshModel, uSessionManager,
   uSessionState, uSessionTabBase, uSshSessionTab, uSshTransport,
   uRdpSessionTab, uVncSessionTab, uVncConnect, uClusterSshTab, uCrashRecovery,
-  uSessionTabBar, uSearchBox, uTreeScrollBar, uImportExport, uGroupDashboard, uTabSweep
+  uSessionTabBar, uSearchBox, uTreeScrollBar, uImportExport, uGroupDashboard,
+  uTabSweep, uRecent
   {$IFNDEF DARWIN}, uMenuBar{$ENDIF};
 
 type
@@ -54,7 +55,8 @@ type
     FMiRename, FMiDuplicate, FMiDelete, FMiFind: TMenuItem;
     FMiExpandAll, FMiCollapseAll: TMenuItem;
     FMiConnect, FMiDisconnect, FMiCtrlAltDel: TMenuItem;
-    FMiFavorites, FMiRecent: TMenuItem;
+    FMiFavorites, FMiRecent: TMenuItem;   // connexions, menu Connection
+    FMiOpenRecent: TMenuItem;             // documents .rsh, menu File
     FMiImport, FMiExport, FMiCredMgr: TMenuItem;
     FMiScreenshot: TMenuItem;
     FMiDashboard: TMenuItem;
@@ -79,6 +81,10 @@ type
     procedure UnlockClick(Sender: TObject);
     procedure UpdateLockState;
     procedure ConnMenuNeeded(Sender: TObject);
+    procedure FileMenuNeeded(Sender: TObject);
+    procedure OpenDocumentPath(const APath: string);
+    procedure OpenRecentClick(Sender: TObject);
+    procedure ClearOpenRecentClick(Sender: TObject);
     procedure RebuildQuickMenu(AParent: TMenuItem; AList: TRshQuickList;
       AShowWhen: Boolean);
     procedure QuickEntryClick(Sender: TObject);
@@ -409,6 +415,10 @@ begin
 
   AddItem(mFile, 'New Document…', PlatformShortCut(VK_N), True, @NewDocClick);
   AddItem(mFile, 'Open Document…', PlatformShortCut(VK_O), True, @OpenDocClick);
+  // peuple a l'ouverture du menu File (FileMenuNeeded), comme les connexions
+  // recentes le font a l'ouverture du menu Connection
+  FMiOpenRecent := AddItem(mFile, 'Open Recent', 0, False, nil);
+  mFile.OnClick := @FileMenuNeeded;
   AddItem(mFile, '-', 0, True, nil);
   FMiSave := AddItem(mFile, 'Save Document', PlatformShortCut(VK_S), False,
     @SaveClick);
@@ -1689,6 +1699,69 @@ begin
       ShowModelError(E.Message);
   end;
   UpdateDocumentState;
+end;
+
+// File > Open Recent, peuple a chaque ouverture du menu: une autre instance a
+// pu ouvrir un document entre-temps, et RecentReload refusionne le fichier.
+procedure TfrmMain.FileMenuNeeded(Sender: TObject);
+var
+  i, n: Integer;
+  mi: TMenuItem;
+begin
+  if FMiOpenRecent = nil then Exit;
+  FMiOpenRecent.Clear;
+  RecentReload;
+  n := RecentCount;
+  for i := 0 to n - 1 do
+  begin
+    mi := TMenuItem.Create(FMiOpenRecent);
+    // « & » est l'accelerateur de la LCL: tel quel, un chemin qui en contient
+    // perdrait le caractere et soulignerait la lettre suivante
+    mi.Caption := StringReplace(RecentDisplay(i), '&', '&&', [rfReplaceAll]);
+    mi.Hint := RecentPath(i);   // chemin BRUT: le libelle est tronque a 200
+    mi.OnClick := @OpenRecentClick;
+    FMiOpenRecent.Add(mi);
+  end;
+  if n > 0 then
+  begin
+    mi := TMenuItem.Create(FMiOpenRecent);
+    mi.Caption := '-';
+    FMiOpenRecent.Add(mi);
+    mi := TMenuItem.Create(FMiOpenRecent);
+    mi.Caption := 'Clear Menu';
+    mi.OnClick := @ClearOpenRecentClick;
+    FMiOpenRecent.Add(mi);
+  end;
+  FMiOpenRecent.Enabled := n > 0;
+end;
+
+procedure TfrmMain.OpenRecentClick(Sender: TObject);
+var
+  path: string;
+begin
+  if not (Sender is TMenuItem) then Exit;
+  path := TMenuItem(Sender).Hint;
+  if path = '' then Exit;
+  // Deplace, renomme, ou sur un volume absent: l'entree ne servira plus jamais.
+  // On le dit et on la retire, plutot que de laisser un choix mort dans le menu.
+  if not FileExists(path) then
+  begin
+    MessageDlg('Document not found',
+      'This document is no longer at:' + LineEnding + LineEnding + path +
+      LineEnding + LineEnding + 'It has been removed from the recent list.',
+      mtWarning, [mbOK], 0);
+    RecentRemove(path);
+    Exit;
+  end;
+  OpenDocumentPath(path);
+end;
+
+procedure TfrmMain.ClearOpenRecentClick(Sender: TObject);
+begin
+  if MessageDlg('Open Recent',
+    'Clear the list of recently opened documents?', mtConfirmation,
+    [mbYes, mbNo], 0) <> mrYes then Exit;
+  RecentClear;
 end;
 
 procedure TfrmMain.ConnectClick(Sender: TObject);
@@ -3330,6 +3403,7 @@ begin
     end;
     FDoc := doc;
     FModel := TRshModel.Create(FDoc);
+    RecentAdd(path);
     BuildTree;
     UpdateDocumentState;
   finally
@@ -3341,15 +3415,9 @@ end;
 procedure TfrmMain.OpenDocClick(Sender: TObject);
 var
   dlg: TOpenDialog;
-  pw: RawByteString;
-  doc: TRshDocument;
-  err: TDocError;
   path: string;
-  retry, ro, sameFile, havePw: Boolean;
 begin
   if DocCommandsBusy then Exit;
-  ro := False;
-  havePw := False;
   dlg := TOpenDialog.Create(Self);
   try
     dlg.Title := 'Open Document';
@@ -3361,6 +3429,25 @@ begin
   finally
     dlg.Free;
   end;
+  OpenDocumentPath(path);
+end;
+
+// Ouverture par CHEMIN, sans dialogue: partagee par File > Open Document et
+// par File > Open Recent, pour que la MRU emprunte exactement le meme chemin
+// de code (verrou, lecture seule, reessai du mot de passe).
+procedure TfrmMain.OpenDocumentPath(const APath: string);
+var
+  pw: RawByteString;
+  doc: TRshDocument;
+  err: TDocError;
+  path: string;
+  retry, ro, sameFile, havePw: Boolean;
+begin
+  if DocCommandsBusy then Exit;
+  if APath = '' then Exit;
+  path := APath;
+  ro := False;
+  havePw := False;
   // rouvrir LE fichier deja ouvert: le verrou est a nous, on ferme d'abord.
   // ResolveLink car ExpandFileNameUTF8 ne suit pas les symlinks.
   sameFile := (FDoc <> nil) and (FDoc.SourcePath <> '') and
@@ -3421,6 +3508,7 @@ begin
           UpdateDocumentState;
           if FTree.CanFocus then
             FTree.SetFocus;
+          RecentAdd(path);
           if ro then
             LogInfo('document opened read-only: ' + RedactHome(path))
           else
@@ -3520,7 +3608,10 @@ begin
     path := dlg.FileName;
     if not NormalizeRshSaveName(path) then Exit;
     if FDoc.SaveAs(path, err) then
-      Result := True
+    begin
+      Result := True;
+      RecentAdd(path);   // le document vit desormais ici, pas a son ancien nom
+    end
     else
       ShowDocError(err);
     BuildTree;
