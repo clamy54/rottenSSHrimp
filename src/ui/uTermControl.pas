@@ -876,10 +876,11 @@ begin
     Exit;
   end;
 
-  {$IFDEF DARWIN}
-  // Cocoa met deja le defilement « naturel » dans le signe: sans ca, contresens
-  steps := -steps;
-  {$ENDIF}
+  // macOS: PAS de correction de signe. Cocoa a deja applique le reglage
+  // « defilement naturel » du systeme, et le suivre est justement ce qu'on veut
+  // -- c'est ce que font Terminal.app et iTerm. Re-inverser ici redonnait la
+  // convention molette d'antan, a contresens de toutes les autres applications
+  // de la machine (et du trackpad, ou personne ne s'attend a l'ancien sens).
 
   if (FEmu.MouseMode <> mtNone) and (not (ssShift in Shift)) and
     (FViewOffset = 0) then
@@ -1020,9 +1021,9 @@ var
   px: Integer;
 begin
   px := -((AWheelDelta * Mouse.WheelScrollLines * FCellH) div 120);
-  {$IFDEF DARWIN}
-  px := -px;   // meme parite macOS que DoMouseWheel
-  {$ENDIF}
+  // meme parite macOS que DoMouseWheel: on suit le reglage systeme, sans
+  // correction de signe. Les deux doivent rester d'accord, sinon la barre de
+  // defilement et la molette se contredisent dans le meme terminal.
   ScrollAnimateBy(px);
 end;
 

@@ -165,10 +165,9 @@ var
   px: Integer;
 begin
   px := -((AWheelDelta * Mouse.WheelScrollLines * DefaultItemHeight) div 120);
-  {$IFDEF DARWIN}
-  // Cocoa a deja mis le defilement « naturel » dans le signe: sans ca, contresens
-  px := -px;
-  {$ENDIF}
+  // macOS: PAS de correction de signe, on suit le reglage « defilement
+  // naturel » que Cocoa a deja applique -- meme parite que le terminal, sinon
+  // les deux moities de la fenetre defilent en sens contraire.
   AnimateScrollBy(px);
 end;
 

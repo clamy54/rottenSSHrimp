@@ -9,7 +9,7 @@ interface
 
 const
   RSSH_APP_NAME = 'RottenSSHrimp';
-  RSSH_VERSION  = '1.1';
+  RSSH_VERSION  = '1.2';
   RSSH_SLOGAN   = 'A rotten approach to remote administration.';
   RSSH_LICENSE  = 'GPL-3.0-or-later';
   RSSH_URL      = 'https://github.com/clamy54/RottenSSHrimp';
