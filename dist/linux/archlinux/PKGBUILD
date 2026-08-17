@@ -54,7 +54,13 @@ depends=(
 
 # lazarus tire fpc et fpc-src. cmake sert a libvncclient, pkgconf au shim RDP
 # (en-tetes FreeRDP), imagemagick aux icones redimensionnees.
-makedepends=('lazarus' 'cmake' 'pkgconf' 'imagemagick')
+#
+# lazarus-gtk2 vient d'AUR, comme gtk2: le paquet lazarus officiel ne livre que
+# les unites LCL qt5 et qt6, aucune gtk2. Sans lui, lazbuild voudrait compiler
+# la LCL gtk2 lui-meme et l'ecrire dans /usr/lib/lazarus, ou makepkg n'a pas les
+# droits. Le declarer ici fait echouer tot, avec un message clair, plutot qu'au
+# milieu de la compilation.
+makedepends=('lazarus' 'lazarus-gtk2' 'cmake' 'pkgconf' 'imagemagick')
 
 _gitname=rottenSSHrimp
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")

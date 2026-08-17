@@ -98,9 +98,19 @@ distributions with no package. Output:
 `install.sh` that needs no privileges.
 
 **Arch Linux**: `linux/archlinux/PKGBUILD`, same layout as the `.deb`, but
-unsupported and never built here. `gtk2` is no longer in the official
-repositories and comes from AUR, so `makepkg` alone will not resolve it; the
-comments in the file explain why the widget set cannot simply be switched.
+unsupported. Two dependencies come from AUR and `makepkg` will not resolve
+them, so install them first:
+
+```sh
+yay -S gtk2 lazarus-gtk2      # or paru -S
+cd dist/linux/archlinux
+makepkg -si
+```
+
+Neither GTK+2 nor its LCL variant is in the official repositories any more —
+Arch ships `lazarus-qt5` and `lazarus-qt6` only. Switching this application to
+Qt is not a matter of changing a flag: the comments in the `PKGBUILD` explain
+what would silently disappear with the GTK2 branches.
 
 All three ship the same two files, `linux/rottensshrimp.desktop` and
 `linux/rottensshrimp-mime.xml`, so double-clicking a `.rsh` opens it. The
