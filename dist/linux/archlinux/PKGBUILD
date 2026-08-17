@@ -26,10 +26,17 @@ license=('GPL-3.0-or-later')
 #    n'ouvre aucune session. C'est l'echec le plus couteux a diagnostiquer:
 #    rien ne manque a l'installation, tout manque a l'usage.
 depends=(
-  # ATTENTION: gtk2 n'est PLUS dans les depots officiels d'Arch, il vit
-  # aujourd'hui dans AUR. Voir README.md, section « GTK2 ». Ce n'est pas un
-  # choix: le widgetset LCL de l'application est gtk2, et des pans entiers du
-  # code en dependent explicitement ({$IFDEF LCLGtk2}).
+  # ATTENTION: gtk2 n'est PLUS dans les depots officiels d'Arch, il vient
+  # d'AUR, et makepkg seul ne le resoudra pas (paru, yay, ou installation
+  # prealable a la main). Arch ne fournit d'ailleurs plus lazarus-gtk2, mais
+  # lazarus-qt5 et lazarus-qt6.
+  #
+  # Ce n'est pas un choix d'empaquetage: le widgetset LCL de l'application est
+  # gtk2 et le code en depend explicitement -- uSearchBox importe gtk2/gdk2/
+  # glib2 et manipule un GtkStyle pour contourner les themes a moteur,
+  # uRdpControl lit les keycodes natifs sous {$IFDEF LCLGtk2}. Passer a Qt5
+  # ferait disparaitre ces branches SANS erreur de compilation, en emportant
+  # le clavier RDP: c'est un portage a mener et a tester, pas un drapeau.
   'gtk2'
   'libx11'
   # FreeRDP 3 compte pour TROIS bibliotheques ouvertes par dlopen

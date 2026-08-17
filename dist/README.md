@@ -97,10 +97,10 @@ distributions with no package. Output:
 `dist/linux/build/rottensshrimp-<version>-linux-<arch>.tar.gz`, with an
 `install.sh` that needs no privileges.
 
-**Arch Linux**: `linux/archlinux/PKGBUILD`, same layout as the `.deb`. Read
-[`linux/archlinux/README.md`](linux/archlinux/README.md) first: `gtk2` is no
-longer in the official repositories and comes from AUR, which `makepkg` alone
-will not resolve. It has not been built yet, no Arch machine was available.
+**Arch Linux**: `linux/archlinux/PKGBUILD`, same layout as the `.deb`, but
+unsupported and never built here. `gtk2` is no longer in the official
+repositories and comes from AUR, so `makepkg` alone will not resolve it; the
+comments in the file explain why the widget set cannot simply be switched.
 
 All three ship the same two files, `linux/rottensshrimp.desktop` and
 `linux/rottensshrimp-mime.xml`, so double-clicking a `.rsh` opens it. The
