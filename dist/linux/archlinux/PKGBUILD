@@ -52,12 +52,11 @@ makedepends=('lazarus' 'cmake' 'pkgconf' 'imagemagick')
 _gitname=rottenSSHrimp
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 
-# SKIP assume, et la raison n'est pas la paresse: ce PKGBUILD est LUI-MEME dans
-# l'archive dont il devrait donner l'empreinte. Y inscrire une somme la
-# changerait, indefiniment. Pour une publication sur AUR, ou le PKGBUILD vit
-# dans un depot separe, le cycle disparait: lancer alors `updpkgsums` et
-# remplacer SKIP par la somme obtenue.
-sha256sums=('SKIP')
+# Empreinte de l'archive du tag, pas un SKIP: le tag d'une version publiee ne
+# bouge plus, et ce PKGBUILD n'etant pas DANS cette archive-la, il n'y a aucun
+# cycle a casser. A REGENERER a chaque montee de version (`updpkgsums`), sinon
+# makepkg refusera une source pourtant legitime.
+sha256sums=('7a2eb0c3f7125e838098d6edfdea68617be6a67ab11232d7f13f5a37f71ec152')
 
 build() {
   cd "$_gitname-$pkgver"

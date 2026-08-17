@@ -65,10 +65,15 @@ d'en déclarer trois.
 caches MIME, desktop et icônes ; pacman le fait par ses propres hooks dès qu'un
 paquet dépose des fichiers à ces emplacements.
 
-**`sha256sums=('SKIP')`.** Ce `PKGBUILD` est lui-même dans l'archive dont il
-devrait donner l'empreinte : y inscrire une somme la changerait, indéfiniment.
-Pour une publication sur AUR, où le `PKGBUILD` vit dans un dépôt séparé, le
-cycle disparaît — lancer alors `updpkgsums` et remplacer `SKIP`.
+**L'empreinte de la source est réelle**, pas un `SKIP`. Elle porte sur
+l'archive du tag publié, qui ne bouge plus, et ce `PKGBUILD` n'y figure pas :
+il n'y a donc pas de cycle où le fichier changerait la somme qu'il déclare.
+À régénérer à chaque montée de version, sinon `makepkg` refusera une source
+pourtant légitime :
+
+```sh
+updpkgsums
+```
 
 ## Ce qui n'a pas été vérifié
 
