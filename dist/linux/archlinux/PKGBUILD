@@ -1,0 +1,155 @@
+# Maintainer: Cyril Lamy <cyril.lamy@gmail.com>
+#
+# Layout identique au .deb, et pour la meme raison: le binaire N'EST PAS dans
+# /usr/bin. Les chargeurs cherchent lib/ A COTE de l'executable
+# (ExtractFilePath(ParamStr(0)) + 'lib/'), donc un /usr/bin/rottensshrimp nu
+# irait chercher /usr/bin/lib/. Tout vit dans /usr/lib/rottensshrimp/ et
+# /usr/bin/rottensshrimp est un WRAPPER qui fait exec sur le vrai binaire: exec
+# remplace argv[0] par le chemin reel. Un lien symbolique ne suffirait PAS,
+# argv[0] resterait /usr/bin/rottensshrimp.
+
+pkgname=rottensshrimp
+pkgver=1.2
+pkgrel=1
+pkgdesc='SSH, RDP and VNC connection manager'
+arch=('x86_64')
+url='https://github.com/clamy54/RottenSSHrimp'
+license=('GPL-3.0-or-later')
+
+# Deux familles de dependances, et la seconde est le piege:
+#
+#  - LIEES au binaire (gtk2, libx11): l'editeur de liens les inscrit, namcap
+#    les retrouve seul.
+#  - ouvertes par DLOPEN (freerdp, libssh2, sqlite, libsodium): invisibles pour
+#    l'editeur de liens comme pour namcap, qui ne lisent que la table des
+#    symboles. Sans les lignes ci-dessous, le paquet s'installe, se lance, et
+#    n'ouvre aucune session. C'est l'echec le plus couteux a diagnostiquer:
+#    rien ne manque a l'installation, tout manque a l'usage.
+depends=(
+  # ATTENTION: gtk2 n'est PLUS dans les depots officiels d'Arch, il vit
+  # aujourd'hui dans AUR. Voir README.md, section « GTK2 ». Ce n'est pas un
+  # choix: le widgetset LCL de l'application est gtk2, et des pans entiers du
+  # code en dependent explicitement ({$IFDEF LCLGtk2}).
+  'gtk2'
+  'libx11'
+  # FreeRDP 3 compte pour TROIS bibliotheques ouvertes par dlopen
+  # (libfreerdp3, libfreerdp-client3, libwinpr3); sur Arch elles sont dans le
+  # meme paquet, contrairement a Debian ou il en fallait trois.
+  'freerdp'
+  'libssh2'
+  'sqlite'
+  'libsodium'
+  # libvncclient est VENDORISEE et batie ici: ses dependances sont donc les
+  # notres, pas celles d'un paquet tiers.
+  'zlib'
+  'libjpeg-turbo'
+)
+
+# lazarus tire fpc et fpc-src. cmake sert a libvncclient, pkgconf au shim RDP
+# (en-tetes FreeRDP), imagemagick aux icones redimensionnees.
+makedepends=('lazarus' 'cmake' 'pkgconf' 'imagemagick')
+
+_gitname=rottenSSHrimp
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+
+# SKIP assume, et la raison n'est pas la paresse: ce PKGBUILD est LUI-MEME dans
+# l'archive dont il devrait donner l'empreinte. Y inscrire une somme la
+# changerait, indefiniment. Pour une publication sur AUR, ou le PKGBUILD vit
+# dans un depot separe, le cycle disparait: lancer alors `updpkgsums` et
+# remplacer SKIP par la somme obtenue.
+sha256sums=('SKIP')
+
+build() {
+  cd "$_gitname-$pkgver"
+
+  # 1) libvncclient vendorisee (patchee: trois correctifs de securite
+  #    Tight/UltraZip). Le tarball epingle est DANS le depot, aucun acces
+  #    reseau n'est necessaire ici.
+  bash scripts/build-libvnc.sh
+
+  # 2) l'application
+  bash scripts/build.sh --release
+
+  # 3) La table d'offsets du binding doit decrire la lib qu'on vient de batir.
+  #    Sans ce controle, le paquet s'installe, se lance, et VNC se desactive au
+  #    premier chargement pour tout le monde -- message visible en terminal
+  #    seulement, c'est-a-dire jamais.
+  bash scripts/check-vnc-offsets.sh
+
+  # 4) Shim RDP, construit contre les en-tetes de la machine: c'est tout
+  #    l'interet d'un paquet natif sur une archive generique. Un paquet qui
+  #    l'oublie livre le mode degrade (offsets ecrits en dur) a tout le monde,
+  #    en silence.
+  bash scripts/build-rdp-shim.sh --strict
+}
+
+package() {
+  cd "$_gitname-$pkgver"
+
+  install -Dm755 rottensshrimp "$pkgdir/usr/lib/$pkgname/rottensshrimp"
+  install -Dm755 lib/librssh_rdp_shim.so "$pkgdir/usr/lib/$pkgname/lib/librssh_rdp_shim.so"
+
+  # le fichier reel ET les liens que le chargeur essaie (.so.1 puis .so)
+  install -d "$pkgdir/usr/lib/$pkgname/lib"
+  cp -P third_party/libvnc/out/lib/libvncclient.so* "$pkgdir/usr/lib/$pkgname/lib/"
+
+  # « $@ » et non rien: c'est lui qui transmet le document a ouvrir, celui que
+  # le .desktop passe via « %f ». Le perdre casserait l'association .rsh.
+  install -d "$pkgdir/usr/bin"
+  cat > "$pkgdir/usr/bin/$pkgname" <<'EOF'
+#!/bin/sh
+exec /usr/lib/rottensshrimp/rottensshrimp "$@"
+EOF
+  chmod 0755 "$pkgdir/usr/bin/$pkgname"
+
+  # Association .rsh: le .desktop declare le type, le XML le DEFINIT. L'un sans
+  # l'autre ne sert a rien. Aucun script post-installation ici, contrairement
+  # au .deb: pacman regenere les caches MIME, desktop et icones par ses propres
+  # hooks des qu'un paquet depose des fichiers a ces emplacements.
+  install -Dm644 dist/linux/rottensshrimp.desktop \
+    "$pkgdir/usr/share/applications/$pkgname.desktop"
+  install -Dm644 dist/linux/rottensshrimp-mime.xml \
+    "$pkgdir/usr/share/mime/packages/$pkgname.xml"
+
+  local _icon='icons/icon-transparent.png'
+  [ -f "$_icon" ] || _icon='icons/icon.png'
+  local _s
+  for _s in 16 24 32 48 64 128 256; do
+    install -d "$pkgdir/usr/share/icons/hicolor/${_s}x${_s}/apps"
+    magick "$_icon" -resize "${_s}x${_s}" -background none -gravity center \
+      -extent "${_s}x${_s}" \
+      "$pkgdir/usr/share/icons/hicolor/${_s}x${_s}/apps/$pkgname.png"
+    chmod 0644 "$pkgdir/usr/share/icons/hicolor/${_s}x${_s}/apps/$pkgname.png"
+  done
+
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -d "$pkgdir/usr/share/licenses/$pkgname/LICENSES"
+  cp -R LICENSES/. "$pkgdir/usr/share/licenses/$pkgname/LICENSES/"
+
+  # Source correspondante de libvncclient (GPL-2.0-or-later, et NOUS la
+  # modifions): la GPL exige qu'elle accompagne le binaire. Le tarball epingle
+  # lui-meme, ses patches et la recette -- une empreinte seule ne reconstruit
+  # rien si l'amont disparait.
+  local _src="$pkgdir/usr/share/doc/$pkgname/source/libvnc"
+  install -d "$_src"
+  install -m644 -t "$_src" third_party/libvnc/LibVNCServer-*.tar.gz
+  install -m644 -t "$_src" third_party/libvnc/SHA256SUMS
+  install -m644 -t "$_src" third_party/libvnc/README.md
+  cp -R third_party/libvnc/patches "$_src/patches"
+  install -m644 -t "$_src" scripts/build-libvnc.sh
+  install -m644 -t "$_src" scripts/gen-vnc-offsets.c
+  find "$_src" -type f -exec chmod 0644 {} +
+
+  # SBOM: ce que CE paquet embarque. Les bibliotheques de la distribution n'y
+  # sont pas, nous ne les distribuons pas.
+  local _vncver
+  _vncver="$(sed -n 's/.*LibVNCServer-\([0-9.]*\)\.tar\.gz.*/\1/p' \
+    third_party/libvnc/SHA256SUMS | head -1)"
+  install -d "$pkgdir/usr/share/doc/$pkgname"
+  bash scripts/gen-sbom.sh \
+    "$pkgdir/usr/share/doc/$pkgname/sbom.cdx.json" \
+    "RottenSSHrimp" "$pkgver" "linux-$CARCH" \
+    "rottensshrimp|$pkgver|GPL-3.0-or-later|$pkgdir/usr/lib/$pkgname/rottensshrimp|application" \
+    "librssh_rdp_shim|$pkgver|GPL-3.0-or-later|$pkgdir/usr/lib/$pkgname/lib/librssh_rdp_shim.so" \
+    "libvncclient (LibVNCServer)|${_vncver:-0.9.15}|GPL-2.0-or-later|$pkgdir/usr/lib/$pkgname/lib/libvncclient.so.1"
+}

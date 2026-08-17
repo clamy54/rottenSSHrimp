@@ -97,14 +97,23 @@ distributions with no package. Output:
 `dist/linux/build/rottensshrimp-<version>-linux-<arch>.tar.gz`, with an
 `install.sh` that needs no privileges.
 
-Both ship `linux/rottensshrimp.desktop` and `linux/rottensshrimp-mime.xml`, the
-same two files, so double-clicking a `.rsh` opens it. The `.desktop` alone is
-not enough: it names `application/x-rottensshrimp-document`, and without the
-MIME definition that type exists for nobody. The definition matches on the
-`RSSHDOC` header rather than the extension. Both packagings rebuild the MIME
-and desktop caches after installing, because those are caches: dropping files
-in place changes nothing until they are regenerated. The tarball installs into
-`~/.local/share`, so it associates for the current user only.
+**Arch Linux**: `linux/archlinux/PKGBUILD`, same layout as the `.deb`. Read
+[`linux/archlinux/README.md`](linux/archlinux/README.md) first: `gtk2` is no
+longer in the official repositories and comes from AUR, which `makepkg` alone
+will not resolve. It has not been built yet, no Arch machine was available.
+
+All three ship the same two files, `linux/rottensshrimp.desktop` and
+`linux/rottensshrimp-mime.xml`, so double-clicking a `.rsh` opens it. The
+`.desktop` alone is not enough: it names
+`application/x-rottensshrimp-document`, and without the MIME definition that
+type exists for nobody. The definition matches on the `RSSHDOC` header rather
+than the extension.
+
+Those caches must be rebuilt after install, or dropping the files in place
+changes nothing. The `.deb` does it in its own `postinst` and `postrm`; the
+tarball's `install.sh` does it for `~/.local/share`, so it associates for the
+current user only; the Arch package does nothing, because pacman rebuilds them
+through its own hooks.
 
 The `.deb` wins because of the shim. `librssh_rdp_shim.so` describes only the
 FreeRDP version it was *compiled* against, and the binding discards a shim from
