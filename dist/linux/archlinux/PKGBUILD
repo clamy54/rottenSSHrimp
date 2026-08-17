@@ -1,4 +1,4 @@
-# Maintainer: Cyril Lamy <cyril.lamy@gmail.com>
+# Maintainer: Cyril Lamy <root@be-root.com>
 #
 # Layout identique au .deb, et pour la meme raison: le binaire N'EST PAS dans
 # /usr/bin. Les chargeurs cherchent lib/ A COTE de l'executable
