@@ -68,6 +68,13 @@ sha256sums=('7a2eb0c3f7125e838098d6edfdea68617be6a67ab11232d7f13f5a37f71ec152')
 build() {
   cd "$_gitname-$pkgver"
 
+  # lazbuild lit d'ordinaire le repertoire Lazarus dans sa configuration
+  # primaire; sous makepkg elle est neuve et vide, d'ou « Invalid Lazarus
+  # directory "": directory lcl not found ». build.sh sait le chercher, mais
+  # sur Arch l'emplacement ne varie pas: autant le nommer et rendre la
+  # construction deterministe.
+  export LAZARUS_DIR=/usr/lib/lazarus
+
   # 1) libvncclient vendorisee (patchee: trois correctifs de securite
   #    Tight/UltraZip). Le tarball epingle est DANS le depot, aucun acces
   #    reseau n'est necessaire ici.
