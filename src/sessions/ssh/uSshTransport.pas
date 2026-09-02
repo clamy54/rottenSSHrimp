@@ -13,7 +13,10 @@ uses
 type
   ESshTransportError = class(Exception);
 
-  TSshAuthKind = (sakPassword, sakKey, sakAgent, sakPrompt);
+  // sakFidoKey: la cle privee est dans un token; libssh2 nous rappelle pour
+  // chaque signature, ce qui suppose un geste de l'utilisateur en plein milieu
+  // de l'authentification.
+  TSshAuthKind = (sakPassword, sakKey, sakAgent, sakPrompt, sakFidoKey);
 
   TSshHostKeyVerdictKind = (hkUnknown, hkMatch, hkChanged);
 
@@ -71,6 +74,14 @@ type
     out AKnownFingerprint: string) of object;
   TSshHostKeySave = procedure(const AInfo: TSshHostKeyInfo) of object;
 
+  // « Touchez votre cle »: NON modal, l'utilisateur doit pouvoir renoncer et la
+  // session continuer a vivre. AActive=False ferme l'avis.
+  TSshSkNoticeEvent = procedure(AActive: Boolean; const AText: string) of object;
+  // PIN du token: modal, sur le thread UI. ACancelled=True si l'utilisateur
+  // renonce -- l'authentification s'arrete alors sans message d'echec.
+  TSshSkPinEvent = procedure(const APrompt: string; out APin: TSecureBytes;
+    var ACancelled: Boolean) of object;
+
   // Socle commun au transport shell et au tunnel: pin du
   // type de cle, TOFU, auth. Duplique, le tunnel restait en retrait, en silence.
   TSshChannelBase = class(TThread)
@@ -89,6 +100,21 @@ type
     FOnHostKeyLookup: TSshHostKeyLookup;
     FOnHostKeySave: TSshHostKeySave;
 
+    // Cle de securite. FSkOp est publie sous FSockLock, comme le descripteur:
+    // Shutdown vient de l'UI et doit pouvoir annuler l'operation en cours.
+    FSkOp: TObject;
+    FSkEvent: TEvent;
+    FSkPrompt: string;
+    FSkPin: TSecureBytes;
+    FSkPinCancelled: Boolean;
+    FSkNoticeActive: Boolean;
+    FSkNoticeText: string;
+    FOnSkNotice: TSshSkNoticeEvent;
+    FOnSkPin: TSshSkPinEvent;
+    // Message d'echec d'authentification plus precis que « refuse »: la cause
+    // vient du token ou de libssh2, pas du serveur.
+    FAuthDetail: string;
+
     // Publie une connexion ABOUTIE seulement: un candidat en essai reste local.
     procedure PublishSock(AFd: cint);
     // Rend le descripteur a fermer (-1 si aucun): on ferme apres, jamais avant.
@@ -106,6 +132,9 @@ type
     function ErrHostKeyNotApproved: string; virtual;
     function ErrNoUsername: string; virtual;
     function AuthRefusedMsg(const AUser, AMethods: string): string; virtual;
+    function ErrNoSkSupport: string; virtual;
+    function ErrSkBackend: string; virtual;
+    function ErrSkRejectedBeforeSign: string; virtual;
 
     function IsAborted: Boolean;
     function LastSshError(const AContext: string): string;
@@ -113,6 +142,13 @@ type
     procedure DoHostKeyLookup;
     procedure AskHostKey;
     procedure DoHostKeySave;
+    // Tous trois s'executent sur le thread UI, postes par Queue.
+    procedure DoSkNotice;
+    procedure AskSkPin;
+    // Appelees depuis le thread de session (et depuis la callback libssh2).
+    procedure SkNotice(AActive: Boolean; const AText: string);
+    function WaitSkPin(const AReason: string; out APin: TSecureBytes): Boolean;
+    procedure SkCancel;
     function Handshake: Boolean;
     function VerifyHostKey: Boolean;
     function Authenticate: Boolean;
@@ -180,6 +216,8 @@ type
     property OnError: TSshErrorEvent read FOnError write FOnError;
     property OnFinished: TSshFinishedEvent read FOnFinished write FOnFinished;
     property OnHostKey: TSshHostKeyEvent read FOnHostKey write FOnHostKey;
+    property OnSkNotice: TSshSkNoticeEvent read FOnSkNotice write FOnSkNotice;
+    property OnSkPin: TSshSkPinEvent read FOnSkPin write FOnSkPin;
     property OnHostKeyLookup: TSshHostKeyLookup
       read FOnHostKeyLookup write FOnHostKeyLookup;
     property OnHostKeySave: TSshHostKeySave
@@ -189,7 +227,7 @@ type
 implementation
 
 uses
-  Sockets, uSockCompat, uLibssh2Api, uSshKnownHosts, uNetResolve;
+  Sockets, uSockCompat, uLibssh2Api, uSshKnownHosts, uNetResolve, uSshFido, uSshSkKeyGen;
 
 // Terminate n'interrompt ni un handshake bloque en lecture ni une auth en cours:
 // couper la socket est le seul levier.
@@ -199,6 +237,8 @@ const
   // latence max avant qu'une frappe parte: a 100 ms, Backspace maintenu saccadait
   SHELL_POLL_MS = 16;
   HOSTKEY_ANSWER_TIMEOUT_MS = 5 * 60 * 1000;
+  // Saisie d'un PIN: meme patience que pour une cle d'hote.
+  SK_ANSWER_TIMEOUT_MS = 5 * 60 * 1000;
   CONNECT_POLL_MS = 200;
   SHUTDOWN_GRACE_MS = 3000;
 
@@ -242,12 +282,15 @@ begin
   FSock := -1;
   FSockLock := TCriticalSection.Create;
   FHostKeyEvent := TEvent.Create(nil, True, False, '');
+  FSkEvent := TEvent.Create(nil, True, False, '');
 end;
 
 destructor TSshChannelBase.Destroy;
 begin
   inherited Destroy;   // TThread joint le thread AVANT qu'on libere ses vivres
   FHostKeyEvent.Free;
+  FSkEvent.Free;
+  FSkPin.Free;
   FSockLock.Free;
   FParams.Free;
 end;
@@ -328,6 +371,101 @@ begin
       [AUser, AMethods])
   else
     Result := Format('Authentication refused for %s', [AUser]);
+end;
+
+function TSshChannelBase.ErrNoSkSupport: string;
+begin
+  Result := 'This libssh2 build cannot use FIDO2 security keys ' +
+    '(libssh2_userauth_publickey_sk is missing). It needs libssh2 1.11 or ' +
+    'newer built against OpenSSL.';
+end;
+
+function TSshChannelBase.ErrSkBackend: string;
+begin
+  Result := 'This libssh2 build does not support FIDO2 security keys';
+end;
+
+function TSshChannelBase.ErrSkRejectedBeforeSign: string;
+begin
+  // Le serveur a refuse la cle AVANT de demander une signature: la cle de
+  // securite n'a meme pas clignote. Deux causes, et l'utilisateur ne peut pas
+  // les distinguer sans qu'on les nomme.
+  Result := 'The server rejected the security key before asking for a ' +
+    'signature: either it runs OpenSSH older than 8.2, which knows nothing ' +
+    'of sk- keys, or this key is not in authorized_keys.';
+end;
+
+// --- Cle de securite: plomberie thread de session <-> interface -------------
+// Meme motif que la validation de cle d'hote: Queue (jamais Synchronize, une
+// modale ouverte ailleurs viderait la file et libererait d'autres onglets),
+// puis attente reveillable bornee.
+
+procedure TSshChannelBase.DoSkNotice;
+begin
+  if Assigned(FOnSkNotice) then
+    FOnSkNotice(FSkNoticeActive, FSkNoticeText);
+end;
+
+procedure TSshChannelBase.SkNotice(AActive: Boolean; const AText: string);
+begin
+  if not Assigned(FOnSkNotice) then Exit;
+  FSkNoticeActive := AActive;
+  FSkNoticeText := AText;
+  Queue(@DoSkNotice);
+end;
+
+procedure TSshChannelBase.AskSkPin;
+begin
+  try
+    FSkPin := nil;
+    FSkPinCancelled := True;
+    if Assigned(FOnSkPin) then
+      FOnSkPin(FSkPrompt, FSkPin, FSkPinCancelled);
+  finally
+    FSkEvent.SetEvent;
+  end;
+end;
+
+function TSshChannelBase.WaitSkPin(const AReason: string;
+  out APin: TSecureBytes): Boolean;
+var
+  i: Integer;
+begin
+  Result := False;
+  APin := nil;
+  if not Assigned(FOnSkPin) then Exit;
+  FSkPrompt := AReason;
+  FSkPin.Free;
+  FSkPin := nil;
+  FSkEvent.ResetEvent;
+  Queue(@AskSkPin);
+  i := 0;
+  while (FSkEvent.WaitFor(200) = wrTimeout) and (not Terminated) do
+  begin
+    Inc(i, 200);
+    if i >= SK_ANSWER_TIMEOUT_MS then
+      Break;
+  end;
+  if Terminated or FSkPinCancelled then Exit;
+  APin := FSkPin;      // la propriete passe a l'appelant
+  FSkPin := nil;
+  Result := APin <> nil;
+end;
+
+procedure TSshChannelBase.SkCancel;
+var
+  op: TObject;
+begin
+  FSkPinCancelled := True;
+  FSkEvent.SetEvent;
+  FSockLock.Acquire;
+  try
+    op := FSkOp;
+  finally
+    FSockLock.Release;
+  end;
+  if op <> nil then
+    TFidoOperation(op).Cancel;
 end;
 
 { TSshTransport }
@@ -489,6 +627,9 @@ begin
   Terminate;
   FHostKeyDecision := hkdReject;
   FHostKeyEvent.SetEvent;
+  // Un token qui attend le doigt ne regarde pas la socket: il faut lui dire
+  // d'abandonner, sinon le thread reste bloque jusqu'au bout du delai.
+  SkCancel;
   ShutdownSock;
 end;
 
@@ -764,6 +905,129 @@ begin
   end;
 end;
 
+// --- Signature par cle de securite ------------------------------------------
+// libssh2 lit le fichier de cle privee sk (qui ne contient aucun secret, juste
+// le key handle), puis nous rappelle pour chaque signature. C'est lui qui
+// fabrique ensuite le blob SSH « string sig || byte flags || uint32 counter ».
+
+{$IFDEF WINDOWS}
+// MEME CRT que libssh2: c'est son free() qui liberera sig_r/sig_s.
+function c_malloc(ASize: PtrUInt): Pointer; cdecl;
+  external 'ucrtbase.dll' name 'malloc';
+{$ELSE}
+function c_malloc(ASize: PtrUInt): Pointer; cdecl; external 'c' name 'malloc';
+{$ENDIF}
+
+type
+  // Passe a libssh2 par le parametre « abstract », qui nous le repasse tel quel.
+  TSshSkContext = class
+    Owner: TSshChannelBase;
+    Op: TFidoOperation;
+    Alg: TSkAlg;
+    Invoked: Boolean;        // la callback a-t-elle ete appelee au moins une fois
+    GestureTick: QWord;      // date du dernier geste, pour re-armer le budget
+    ErrorText: string;
+    function TouchToNotice(AActive: Boolean; const ADevice: string): string;
+    procedure OnTouch(AActive: Boolean; const ADevice: string);
+    function OnPin(const AReason: string; out APin: TSecureBytes): Boolean;
+  end;
+
+function TSshSkContext.TouchToNotice(AActive: Boolean;
+  const ADevice: string): string;
+begin
+  if ADevice <> '' then
+    Result := 'Touch your security key (' + ADevice + ')'
+  else
+    Result := 'Touch your security key';
+end;
+
+procedure TSshSkContext.OnTouch(AActive: Boolean; const ADevice: string);
+begin
+  Owner.SkNotice(AActive, TouchToNotice(AActive, ADevice));
+  if not AActive then
+    GestureTick := GetTickCount64;
+end;
+
+function TSshSkContext.OnPin(const AReason: string;
+  out APin: TSecureBytes): Boolean;
+begin
+  // L'avis « touchez » disparait pendant la saisie: deux fenetres a la fois
+  // pour une seule action, c'est une de trop.
+  Owner.SkNotice(False, '');
+  Result := Owner.WaitSkPin(AReason, APin);
+end;
+
+function CopyToC(const ASrc: TBytes): PByte;
+begin
+  Result := nil;
+  if Length(ASrc) = 0 then Exit;
+  Result := PByte(c_malloc(Length(ASrc)));
+  if Result <> nil then
+    Move(ASrc[0], Result^, Length(ASrc));
+end;
+
+function SkSignCallback(session: PLIBSSH2_SESSION;
+  sig_info: PLIBSSH2_SK_SIG_INFO; data: PByte; data_len: csize_t;
+  algorithm: cint; flags: cuint8; application: PAnsiChar;
+  key_handle: PByte; handle_len: csize_t; abstract_: PPointer): cint; cdecl;
+var
+  ctx: TSshSkContext;
+  sig: TFidoSignature;
+  alg: TSkAlg;
+  handle: TBytes;
+  err: string;
+begin
+  Result := -1;
+  if (abstract_ = nil) or (abstract_^ = nil) or (sig_info = nil) then Exit;
+  ctx := TSshSkContext(abstract_^);
+  ctx.Invoked := True;
+  // « algorithm » vient du type lu dans la cle privee, pas d'un choix a nous.
+  case algorithm of
+    LIBSSH2_HOSTKEY_TYPE_ED25519: alg := skaEd25519;
+    LIBSSH2_HOSTKEY_TYPE_ECDSA_256: alg := skaEcdsaP256;
+  else
+    ctx.ErrorText := 'Unsupported security key algorithm';
+    Exit;
+  end;
+  ctx.Alg := alg;
+
+  SetLength(handle, handle_len);
+  if handle_len > 0 then
+    Move(key_handle^, handle[0], handle_len);
+
+  // application, data et key_handle appartiennent a libssh2: on copie, on ne
+  // libere rien.
+  if not ctx.Op.Sign(string(AnsiString(application)), handle, Byte(flags),
+    data, data_len, alg, sig, err) then
+  begin
+    ctx.ErrorText := err;
+    Exit;
+  end;
+
+  sig_info^.flags := sig.Flags;
+  sig_info^.counter := sig.Counter;
+  sig_info^.sig_r := CopyToC(sig.R);
+  sig_info^.sig_r_len := Length(sig.R);
+  sig_info^.sig_s := nil;
+  sig_info^.sig_s_len := 0;
+  if sig_info^.sig_r = nil then
+  begin
+    ctx.ErrorText := 'out of memory';
+    Exit;
+  end;
+  if Length(sig.S) > 0 then
+  begin
+    sig_info^.sig_s := CopyToC(sig.S);
+    sig_info^.sig_s_len := Length(sig.S);
+    if sig_info^.sig_s = nil then
+    begin
+      ctx.ErrorText := 'out of memory';
+      Exit;
+    end;
+  end;
+  Result := 0;
+end;
+
 function TSshChannelBase.Authenticate: Boolean;
 var
   rc: cint;
@@ -850,6 +1114,81 @@ var
     end;
   end;
 
+  function TryFidoKey: Boolean;
+  var
+    ctx: TSshSkContext;
+    abs: Pointer;
+    seenGesture: QWord;
+  begin
+    Result := False;
+    if not Libssh2HasSkAuth then
+    begin
+      FAuthDetail := ErrNoSkSupport;
+      Exit;
+    end;
+    if (FParams.PrivateKey = nil) or (FParams.PrivateKey.Len = 0) then Exit;
+
+    ctx := TSshSkContext.Create;
+    try
+      ctx.Owner := Self;
+      ctx.Op := TFidoOperation.Create;
+      ctx.Op.OnTouch := @ctx.OnTouch;
+      ctx.Op.OnPin := @ctx.OnPin;
+      // Publie pour que Shutdown, qui vient du thread UI, puisse annuler
+      // l'attente du geste.
+      FSockLock.Acquire;
+      try
+        FSkOp := ctx.Op;
+      finally
+        FSockLock.Release;
+      end;
+      try
+        abs := ctx;
+        seenGesture := 0;
+        repeat
+          rc := libssh2_userauth_publickey_sk(FSession,
+            PAnsiChar(user), Length(user),
+            nil, 0,
+            PAnsiChar(FParams.PrivateKey.Data), FParams.PrivateKey.Len,
+            nil, @SkSignCallback, @abs);
+          // Le temps passe le doigt en l'air n'est pas du temps reseau: sans ce
+          // reglage, un utilisateur qui reflechit dix secondes ferait expirer
+          // une connexion parfaitement saine.
+          if ctx.GestureTick <> seenGesture then
+          begin
+            seenGesture := ctx.GestureTick;
+            deadline := GetTickCount64 + QWord(FParams.ConnectTimeoutS) * 1000;
+          end;
+          if rc <> LIBSSH2_ERROR_EAGAIN then Break;
+        until not SetupWait(deadline);
+        Result := rc = 0;
+
+        if (not Result) and (not Terminated) then
+        begin
+          if ctx.ErrorText <> '' then
+            FAuthDetail := ctx.ErrorText
+          else if rc = LIBSSH2_ERROR_FILE then
+            FAuthDetail := LastSshError(ErrSkBackend)
+          else if not ctx.Invoked then
+            FAuthDetail := ErrSkRejectedBeforeSign
+          else
+            FAuthDetail := LastSshError('FIDO2 authentication failed');
+        end;
+      finally
+        FSockLock.Acquire;
+        try
+          FSkOp := nil;
+        finally
+          FSockLock.Release;
+        end;
+        SkNotice(False, '');
+        ctx.Op.Free;
+      end;
+    finally
+      ctx.Free;
+    end;
+  end;
+
   function TryPassword: Boolean;
   begin
     Result := False;
@@ -895,6 +1234,7 @@ begin
   case FParams.AuthKind of
     sakAgent: Result := TryAgent;
     sakKey: Result := TryKey;
+    sakFidoKey: Result := TryFidoKey;
     sakPassword: Result := TryPassword;
     sakPrompt: Result := TryPassword;
   end;
@@ -905,7 +1245,14 @@ begin
     Exit;   // fermeture demandee: pas d'echec a signaler
 
   if not Result then
-    ReportError(AuthRefusedMsg(FParams.Username, methods));
+  begin
+    // Un echec de cle de securite a une cause precise (token absent, PIN
+    // refuse, serveur trop ancien): « authentification refusee » la perdrait.
+    if FAuthDetail <> '' then
+      ReportError(FAuthDetail)
+    else
+      ReportError(AuthRefusedMsg(FParams.Username, methods));
+  end;
 end;
 
 function TSshTransport.OpenShell: Boolean;

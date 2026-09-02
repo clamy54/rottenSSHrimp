@@ -1333,7 +1333,7 @@
           </Target>
           <SearchPaths>
             <IncludeFiles Value="forms;../src"/>
-            <OtherUnitFiles Value="forms;../src/ui;../src/application;../src/fonts;../src/util;../src/crypto;../src/storage;../src/domain;../src/terminal;../src/platform;../src/sessions/ssh;../src/sessions/common;../src/sessions/rdp;../src/sessions/vnc;../bindings/libssh2;../bindings/freerdp;../bindings/libvnc;../bindings/libsodium;../bindings/sqlite"/>
+            <OtherUnitFiles Value="forms;../src/ui;../src/application;../src/fonts;../src/util;../src/crypto;../src/storage;../src/domain;../src/terminal;../src/platform;../src/sessions/ssh;../src/sessions/common;../src/sessions/rdp;../src/sessions/vnc;../bindings/libssh2;../bindings/freerdp;../bindings/libvnc;../bindings/libsodium;../bindings/libfido2;../bindings/sqlite"/>
             <UnitOutputDirectory Value="../lib/$(TargetCPU)-$(TargetOS)-release"/>
           </SearchPaths>
           <CodeGeneration>
@@ -1626,7 +1626,7 @@
     </Target>
     <SearchPaths>
       <IncludeFiles Value="forms;../src;$(ProjOutDir)"/>
-      <OtherUnitFiles Value="forms;../src/ui;../src/application;../src/fonts;../src/util;../src/crypto;../src/storage;../src/domain;../src/terminal;../src/platform;../src/sessions/ssh;../src/sessions/common;../src/sessions/rdp;../src/sessions/vnc;../bindings/libssh2;../bindings/freerdp;../bindings/libvnc;../bindings/libsodium;../bindings/sqlite"/>
+      <OtherUnitFiles Value="forms;../src/ui;../src/application;../src/fonts;../src/util;../src/crypto;../src/storage;../src/domain;../src/terminal;../src/platform;../src/sessions/ssh;../src/sessions/common;../src/sessions/rdp;../src/sessions/vnc;../bindings/libssh2;../bindings/freerdp;../bindings/libvnc;../bindings/libsodium;../bindings/libfido2;../bindings/sqlite"/>
       <UnitOutputDirectory Value="../lib/$(TargetCPU)-$(TargetOS)"/>
     </SearchPaths>
     <Linking>

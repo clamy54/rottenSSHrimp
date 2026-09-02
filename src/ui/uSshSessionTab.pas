@@ -11,7 +11,7 @@ uses
   Classes, SysUtils, Controls, ComCtrls, Forms, Dialogs, Graphics,
   uTermControl, uSshTransport, uSshKnownHosts, uSessionState,
   uSessionManager, uRshDocument, uSessionTabBase, uSshTunnel, uSshTunnelConnect,
-  uTreeScrollBar, uTheme;
+  uTreeScrollBar, uTheme, uSecureBytes;
 
 type
   TSshSessionTab = class;
@@ -54,9 +54,15 @@ type
     FDeadStream: Boolean;
     FExitCodes: array of Integer;
     FExitMsgs: array of string;
+    // Avis « touchez votre cle », pose et retire par le thread de session.
+    FSkNotice: TObject;
 
     procedure TermSend(const AData: RawByteString);
     procedure TermGridResize(ACols, ARows: Integer);
+    procedure SkNotice(AActive: Boolean; const AText: string);
+    procedure SkPin(const APrompt: string; out APin: TSecureBytes;
+      var ACancelled: Boolean);
+    procedure SkNoticeCancel(Sender: TObject);
     procedure TransportData(const AData: RawByteString);
     procedure TransportState(AState: TRemoteSessionState);
     procedure TransportError(const AMessage: string);
@@ -103,7 +109,7 @@ type
 implementation
 
 uses
-  uHostKeyDialog;
+  uHostKeyDialog, uFidoPrompt;
 
 constructor TSshSessionHandle.Create(ATab: TSshSessionTab);
 begin
@@ -167,6 +173,8 @@ begin
   FTransport.OnHostKey := @HostKeyAsk;
   FTransport.OnHostKeyLookup := @HostKeyLookup;
   FTransport.OnHostKeySave := @HostKeySave;
+  FTransport.OnSkNotice := @SkNotice;
+  FTransport.OnSkPin := @SkPin;
 
   FHandle := TSshSessionHandle.Create(Self);
   FManager.RegisterSession(FHandle);
@@ -189,6 +197,9 @@ begin
   end;
   // La fin de session a pu deposer un DeferredClose: il tirerait a vide.
   Application.RemoveAsyncCalls(Self);
+  // L'avis « touchez votre cle » survivrait a l'onglet: le transport est deja
+  // arrete, plus personne ne viendra le fermer.
+  FreeAndNil(FSkNotice);
   if FTunnel <> nil then
   begin
     FTunnel.Shutdown;
@@ -277,6 +288,36 @@ procedure TSshSessionTab.TermGridResize(ACols, ARows: Integer);
 begin
   if FTransport <> nil then
     FTransport.RequestResize(ACols, ARows);
+end;
+
+// Cle de securite: l'avis est NON modal, la session tourne toujours derriere.
+// Annuler ferme la session -- c'est la seule facon d'arreter une signature en
+// cours, et l'utilisateur qui clique Cancel ne veut pas se connecter.
+procedure TSshSessionTab.SkNotice(AActive: Boolean; const AText: string);
+begin
+  if AActive then
+  begin
+    if FSkNotice = nil then
+      FSkNotice := TFidoTouchNotice.Create(AText, @SkNoticeCancel)
+    else
+      TFidoTouchNotice(FSkNotice).SetText(AText);
+  end
+  else
+    FreeAndNil(FSkNotice);
+end;
+
+procedure TSshSessionTab.SkNoticeCancel(Sender: TObject);
+begin
+  FUserAbort := True;
+  if FTransport <> nil then
+    FTransport.Shutdown;
+end;
+
+procedure TSshSessionTab.SkPin(const APrompt: string; out APin: TSecureBytes;
+  var ACancelled: Boolean);
+begin
+  APin := nil;
+  ACancelled := not AskFidoPin(APrompt, APin);
 end;
 
 procedure TSshSessionTab.TransportData(const AData: RawByteString);

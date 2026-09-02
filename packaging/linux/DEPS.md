@@ -17,6 +17,7 @@ sur `ParamStr(0)`, jamais le `PATH` ni le répertoire courant.
 | libssh2 | `libssh2.so.1` | `libssh2-1t64` | `libssh2` | `libssh2` | `libssh2-1` |
 | SQLite 3 | `libsqlite3.so.0` | `libsqlite3-0` | `sqlite-libs` | `sqlite` | `libsqlite3-0` |
 | libsodium | `libsodium.so.26` ou `.so.23` | `libsodium23` | `libsodium` | `libsodium` | `libsodium23` |
+| libfido2 (optionnelle : clés FIDO2) | `libfido2.so.1` | `libfido2-1` | `libfido2` | `libfido2` | `libfido2-1` |
 
 Sous Debian et Ubuntu, les **trois** sonames de FreeRDP sont empaquetés
 séparément, et `libfreerdp3-3` ne dépend que de `libwinpr3-3` : il faut donc

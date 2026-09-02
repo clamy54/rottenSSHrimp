@@ -135,6 +135,7 @@ Here the libraries come from your distribution, with two deliberate exceptions.
 | libssh2 | `libssh2-1t64` | `libssh2` | `libssh2` | `libssh2-1` |
 | SQLite 3 | `libsqlite3-0` | `sqlite-libs` | `sqlite` | `libsqlite3-0` |
 | libsodium | `libsodium23` | `libsodium` | `libsodium` | `libsodium23` |
+| libfido2 (optional: FIDO2 security keys) | `libfido2-1` | `libfido2` | `libfido2` | `libfido2-1` |
 
 To build, add the FreeRDP **headers** (`freerdp3-dev` + `libwinpr3-dev` on
 Debian, `freerdp-devel` on Fedora, `freerdp` on Arch, `freerdp3-devel` on
@@ -206,7 +207,7 @@ arm64. Tested on Apple Silicon only; Intel is not built or released.
 ### Dependencies
 
 ```sh
-brew install freerdp libssh2 libsodium cmake pkg-config jpeg-turbo
+brew install freerdp libssh2 libsodium libfido2 cmake pkg-config jpeg-turbo
 ```
 
 SQLite comes from the system and is never bundled. Lazarus 4.8 for aarch64 is

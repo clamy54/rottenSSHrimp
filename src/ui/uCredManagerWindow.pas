@@ -18,7 +18,7 @@ implementation
 
 uses
   Clipbrd, uSecureBytes, uCryptoPolicy, uSshKeyGen, uSshCopyIdConnect,
-  uNodeDialogs;
+  uNodeDialogs, uFidoPrompt, uSshFido, uFido2Api;
 
 const
   MAX_KEY_BYTES = 512 * 1024;
@@ -63,8 +63,11 @@ type
     FPassEye, FKeyBrowse, FPubCopy: TSpeedButton;
     FLblUser, FLblDomain, FLblPass, FLblKey, FLblPhrase,
       FLblPub, FLblPubHint: TLabel;
+    FUvCheck: TCheckBox;
     FHasStoredKey: Boolean;
     FPublicKey: string;
+    // Fige a l'enrolement: le drapeau vit dans le key handle, pas chez nous.
+    FSkFlags: Byte;
     procedure AuthChanged(Sender: TObject);
     procedure EyeClick(Sender: TObject);
     procedure BrowseClick(Sender: TObject);
@@ -100,6 +103,31 @@ begin
   if AEdit = nil then Exit;
   AEdit.Text := StringOfChar('*', Length(AEdit.Text));
   AEdit.Text := '';
+end;
+
+// Le type d'authentification n'est plus deduit d'un indice ecrit en dur a cinq
+// endroits: une seule table, et l'ordre du combo peut changer sans casser le
+// reste.
+const
+  COMBO_AUTH: array[0..3] of TAuthType =
+    (atPassword, atSshKey, atManagedKey, atFidoKey);
+
+function AuthOfCombo(AIndex: Integer): TAuthType;
+begin
+  if (AIndex >= Low(COMBO_AUTH)) and (AIndex <= High(COMBO_AUTH)) then
+    Result := COMBO_AUTH[AIndex]
+  else
+    Result := atPassword;
+end;
+
+function ComboOfAuth(A: TAuthType): Integer;
+var
+  i: Integer;
+begin
+  for i := Low(COMBO_AUTH) to High(COMBO_AUTH) do
+    if COMBO_AUTH[i] = A then
+      Exit(i);
+  Result := 0;
 end;
 
 function LoadKeyFile(const APath: string; out AKey: TSecureBytes;
@@ -188,6 +216,7 @@ begin
   FAuthCombo.Items.Add('Password');
   FAuthCombo.Items.Add('Existing private key');
   FAuthCombo.Items.Add('Managed SSH key (Ed25519)');
+  FAuthCombo.Items.Add('FIDO2 security key (hardware)');
   FAuthCombo.OnChange := @AuthChanged;
 
   FLblUser := MakeLabel(Self, 'Username (optional)', 20, 116);
@@ -240,7 +269,17 @@ begin
   FPubCopy.OnClick := @CopyPubClick;
   FLblPubHint := MakeLabel(Self, '', 20, authY + 52);
 
-  btnY := authY + 70 + 26 + 16;
+  // Decochee par defaut, comme ssh-keygen: le toucher seul protege deja contre
+  // l'usage a distance, le PIN protege contre le vol du token.
+  FUvCheck := TCheckBox.Create(Self);
+  FUvCheck.Parent := Self;
+  FUvCheck.Left := 20;
+  FUvCheck.Width := 360;
+  FUvCheck.Caption := 'Require the security key PIN on every use';
+  FUvCheck.Visible := False;
+  FUvCheck.Top := authY + 88;
+
+  btnY := authY + 88 + 26 + 16;
   with TButton.Create(Self) do
   begin
     Parent := Self;
@@ -270,8 +309,7 @@ begin
       FKeyEdit.Text := cur.KeyPathHint;
       FHasStoredKey := cur.HasPrivateKey;
       FPublicKey := cur.PublicKey;
-      if cur.AuthType = atSshKey then FAuthCombo.ItemIndex := 1
-      else if cur.AuthType = atManagedKey then FAuthCombo.ItemIndex := 2;
+      FAuthCombo.ItemIndex := ComboOfAuth(cur.AuthType);
       if cur.HasPassword and
          FModel.GetSecret(AUuid, FIELD_CRED_PASSWORD, back) then
         try
@@ -289,22 +327,28 @@ end;
 
 procedure TCredEditForm.UpdateRows;
 var
-  isKey, isManaged: Boolean;
+  isKey, isManaged, isFido, hidePass: Boolean;
 begin
-  isKey := FAuthCombo.ItemIndex = 1;
-  isManaged := FAuthCombo.ItemIndex = 2;
-  FLblPass.Visible := not (isKey or isManaged);
-  FPassEdit.Visible := not (isKey or isManaged);
-  FPassEye.Visible := not (isKey or isManaged);
+  isKey := AuthOfCombo(FAuthCombo.ItemIndex) = atSshKey;
+  isManaged := AuthOfCombo(FAuthCombo.ItemIndex) = atManagedKey;
+  isFido := AuthOfCombo(FAuthCombo.ItemIndex) = atFidoKey;
+  hidePass := isKey or isManaged or isFido;
+  FLblPass.Visible := not hidePass;
+  FPassEdit.Visible := not hidePass;
+  FPassEye.Visible := not hidePass;
   FLblKey.Visible := isKey;
   FKeyEdit.Visible := isKey;
   FKeyBrowse.Visible := isKey;
   FLblPhrase.Visible := isKey;
   FPhraseEdit.Visible := isKey;
-  FLblPub.Visible := isManaged;
-  FPubEdit.Visible := isManaged;
-  FPubCopy.Visible := isManaged;
-  FLblPubHint.Visible := isManaged;
+  FLblPub.Visible := isManaged or isFido;
+  FPubEdit.Visible := isManaged or isFido;
+  FPubCopy.Visible := isManaged or isFido;
+  FLblPubHint.Visible := isManaged or isFido;
+  // La case ne se change plus une fois la cle enrolee: le drapeau est scelle
+  // dans le key handle du token, il faudrait en creer un autre (Rotate).
+  FUvCheck.Visible := isFido;
+  FUvCheck.Enabled := isFido and (FPublicKey = '');
   if isManaged then
   begin
     FPubEdit.Text := FPublicKey;
@@ -313,11 +357,24 @@ begin
       FLblPubHint.Caption := 'A new Ed25519 key pair will be generated on save.'
     else
       FLblPubHint.Caption := 'The private key stays sealed in the document.';
+  end
+  else if isFido then
+  begin
+    FPubEdit.Text := FPublicKey;
+    FPubCopy.Enabled := FPublicKey <> '';
+    if not FidoAvailable then
+      FLblPubHint.Caption := 'Unavailable: ' + Fido2LoadError
+    else if FPublicKey = '' then
+      FLblPubHint.Caption := 'Saving enrols a key on your security key: ' +
+        'you will be asked to touch it.'
+    else
+      FLblPubHint.Caption := 'The private key never leaves the security key; ' +
+        'the document only holds its handle. Every connection needs a touch.';
   end;
-  if isManaged then FLblUser.Caption := 'Username'
+  if isManaged or isFido then FLblUser.Caption := 'Username'
   else FLblUser.Caption := 'Username (optional)';
-  FLblDomain.Visible := not (isKey or isManaged);
-  FDomainEdit.Visible := not (isKey or isManaged);
+  FLblDomain.Visible := not hidePass;
+  FDomainEdit.Visible := not hidePass;
 end;
 
 procedure TCredEditForm.AuthChanged(Sender: TObject);
@@ -361,8 +418,8 @@ end;
 
 procedure TCredEditForm.OkClick(Sender: TObject);
 var
-  dispName, user, domain, keyPath, err, uuid, pubLine: string;
-  isKey, isManaged: Boolean;
+  dispName, user, domain, keyPath, err, uuid, pubLine, algName: string;
+  isKey, isManaged, isFido: Boolean;
   pw, key, phrase, pem: TSecureBytes;
   authType: TAuthType;
 begin
@@ -374,22 +431,45 @@ begin
   end;
   user := Trim(FUserEdit.Text);
   domain := Trim(FDomainEdit.Text);
-  isKey := FAuthCombo.ItemIndex = 1;
-  isManaged := FAuthCombo.ItemIndex = 2;
-  if isManaged and (user = '') then
+  authType := AuthOfCombo(FAuthCombo.ItemIndex);
+  isKey := authType = atSshKey;
+  isManaged := authType = atManagedKey;
+  isFido := authType = atFidoKey;
+  if (isManaged or isFido) and (user = '') then
   begin
     MessageDlg('Credential Manager',
       'A username is required for a managed SSH key.', mtError, [mbOK], 0);
     Exit;
   end;
+  if isFido and (not FidoAvailable) then
+  begin
+    MessageDlg('Credential Manager', FidoUnavailableMessage,
+      mtError, [mbOK], 0);
+    Exit;
+  end;
+
+  // L'enrolement AVANT toute ecriture: il demande un geste et peut etre
+  // annule, et un identifiant cree puis abandonne resterait a trainer.
+  pem := nil;
+  if isFido and (FPublicKey = '') then
+  begin
+    if not EnrollFidoKeyWithDialog(Self, user, FUvCheck.Checked,
+      pem, pubLine, algName, err) then
+    begin
+      if err <> '' then
+        MessageDlg('Credential Manager', err, mtError, [mbOK], 0);
+      Exit;
+    end;
+  end;
   pw := nil; key := nil; phrase := nil;
   try
     keyPath := '';
-    if isManaged then
-      authType := atManagedKey
+    if isManaged or isFido then
+    begin
+      // rien a lire ici: la cle est generee, ou elle vit dans le token
+    end
     else if isKey then
     begin
-      authType := atSshKey;
       keyPath := Trim(FKeyEdit.Text);
       if keyPath <> '' then
       begin
@@ -408,10 +488,7 @@ begin
       phrase := TakeSecret(FPhraseEdit);
     end
     else
-    begin
-      authType := atPassword;
       pw := TakeSecret(FPassEdit);
-    end;
     try
       if FUuid = '' then
       begin
@@ -433,8 +510,15 @@ begin
         try
           FModel.SetManagedKeyPair(uuid, pem, pubLine);
         finally
-          pem.Free;
+          FreeAndNil(pem);
         end;
+        FPublicKey := pubLine;
+      end
+      else if isFido and (pem <> nil) then
+      begin
+        // La cle est deja sur le token: si le document refuse de la garder, il
+        // reste une cle inutilisable dessus, mais rien d'incoherent ici.
+        FModel.SetManagedKeyPair(uuid, pem, pubLine);
         FPublicKey := pubLine;
       end;
     except
@@ -446,7 +530,7 @@ begin
     end;
     ModalResult := mrOk;
   finally
-    pw.Free; key.Free; phrase.Free;
+    pw.Free; key.Free; phrase.Free; pem.Free;
   end;
 end;
 
@@ -597,6 +681,13 @@ begin
     if c.HasPrivateKey then authTxt := 'managed SSH key'
     else authTxt := 'managed SSH key (not generated)';
   end
+  else if c.AuthType = atFidoKey then
+  begin
+    if not c.HasPrivateKey then authTxt := 'FIDO2 security key (not enrolled)'
+    else if Pos('sk-ecdsa', c.PublicKey) = 1 then
+      authTxt := 'FIDO2 security key (ECDSA)'
+    else authTxt := 'FIDO2 security key (Ed25519)';
+  end
   else if c.AuthType = atSshKey then authTxt := 'SSH key'
   else if c.HasPassword then authTxt := 'password'
   else authTxt := 'prompt';
@@ -669,13 +760,15 @@ var
   uuid, summary, err, msg: string;
   c: TRshCredential;
   hostCount: Integer;
+  isFido: Boolean;
 begin
+  isFido := False;
   if FBusy then Exit;
   uuid := SelectedUuid;
   if uuid = '' then Exit;
   c := FModel.GetCredential(uuid);
   try
-    if (c.AuthType <> atManagedKey) or (c.PublicKey = '') or
+    if (not IsManagedKeyType(c.AuthType)) or (c.PublicKey = '') or
        (not c.HasPrivateKey) then
     begin
       MessageDlg('Rotate Managed Key',
@@ -683,6 +776,7 @@ begin
         mtError, [mbOK], 0);
       Exit;
     end;
+    isFido := c.AuthType = atFidoKey;
   finally
     c.Free;
   end;
@@ -697,6 +791,11 @@ begin
       'The new key is installed on every host first (authenticated with ' +
       'the current key), and only then the old key is removed. If any host ' +
       'cannot be updated, nothing changes.';
+  if isFido then
+    msg := msg + LineEnding + LineEnding +
+      'A new key is enrolled on your security key, then every host is ' +
+      'contacted twice: expect one touch for the enrolment and one per host ' +
+      'and per pass.';
   if MessageDlg('Rotate Managed Key', msg, mtConfirmation,
     [mbYes, mbNo], 0) <> mrYes then Exit;
 

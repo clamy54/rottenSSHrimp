@@ -2654,7 +2654,7 @@ var
   tun: TSshTunnel;
   broker: TSshTunnelBroker;
   jumpUuid, dn, err, grpName: string;
-  i, cnt, totalSsh, nbPrompt, localPort: Integer;
+  i, cnt, totalSsh, nbPrompt, nbFido, localPort: Integer;
   tab: TClusterSshTab;
   transferred: Boolean;
   newHosts: array of string;
@@ -2671,6 +2671,7 @@ begin
     cnt := 0;
     totalSsh := 0;
     nbPrompt := 0;
+    nbFido := 0;
     for i := 0 to list.Count - 1 do
       if list[i].Protocol = rpSsh then
       begin
@@ -2681,6 +2682,8 @@ begin
           Inc(nbPrompt);
           Continue;
         end;
+        if SshConnectUsesFido(FModel, list[i].ConnUuid) then
+          Inc(nbFido);
         Inc(cnt);
       end;
     if totalSsh = 0 then
@@ -2697,6 +2700,15 @@ begin
         mtInformation, [mbOK], 0);
       Exit;
     end;
+    // Une cle de securite signe une session a la fois: N hotes = N touchers,
+    // l'un apres l'autre, et le sshd des derniers peut fermer avant son tour
+    // (LoginGraceTime, 120 s par defaut). L'utilisateur decide en connaissance.
+    if (nbFido > 0) and (MessageDlg('Broadcast SSH', Format(
+      '%d of these hosts authenticate with a FIDO2 security key: expect one ' +
+      'touch per host, one after the other. Hosts left waiting too long may ' +
+      'time out on the server side.' + LineEnding + LineEnding + 'Continue?',
+      [nbFido]), mtConfirmation, [mbYes, mbNo], 0) <> mrYes) then
+      Exit;
     if cnt > CLUSTER_MAX_SESSIONS then
     begin
       MessageDlg('Broadcast SSH', Format(

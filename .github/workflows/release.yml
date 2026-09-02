@@ -50,7 +50,7 @@ jobs:
       - name: Dependances natives
         # make-app.sh rapatrie ces dylibs dans Contents/Frameworks/ et echoue si
         # l'une d'elles garde une reference /opt/homebrew apres relocalisation.
-        run: brew install freerdp libssh2 libsodium cmake pkg-config jpeg-turbo
+        run: brew install freerdp libssh2 libsodium libfido2 cmake pkg-config jpeg-turbo
       - name: Construire RottenSSHrimp.app (release, signature ad hoc)
         run: bash scripts/make-app.sh --release
       - name: Empaqueter le .dmg

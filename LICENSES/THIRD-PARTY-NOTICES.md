@@ -65,6 +65,8 @@ Distributing a Windows build means distributing these:
 | jpeg62.dll | libjpeg-turbo | BSD-3-Clause + IJG | libjpeg-turbo.txt |
 | vncclient.dll | libvncclient (LibVNCServer) | GPL-2.0-or-later | GPL-3.0-or-later.txt (see below) |
 | rssh_rdp_shim.dll | this project | GPL-3.0-or-later | GPL-3.0-or-later.txt |
+| fido2.dll | libfido2 | BSD-2-Clause | libfido2-BSD-2-Clause.txt |
+| cbor.dll | libcbor | MIT | libcbor-MIT.txt |
 | vcruntime140.dll | Microsoft Visual C++ Runtime | Proprietary (VS Distributable Code) | Microsoft-VC-Runtime.txt |
 
 ### vcruntime140.dll: the one proprietary file

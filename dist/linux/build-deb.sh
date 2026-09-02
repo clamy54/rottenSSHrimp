@@ -217,6 +217,10 @@ fi
 dlopen_deps="libfreerdp3-3, libfreerdp-client3-3, libwinpr3-3"
 dlopen_deps="${dlopen_deps}, libssh2-1t64 | libssh2-1, libsqlite3-0, libsodium23"
 deps="${deps}, ${dlopen_deps}"
+# Recommends, pas Depends: libfido2 n'est ouverte que pour un identifiant FIDO2
+# et l'application vit tres bien sans. apt l'installe par defaut, un serveur
+# minimal peut la refuser sans rien casser.
+recommends="libfido2-1"
 
 # Substitution bash, PAS sed : les Depends contiennent des alternatives Debian
 # (« libssh2-1t64 | libssh2-1 »), et le premier | de la valeur fermait
@@ -226,6 +230,7 @@ control="$(cat "$here/control.in")"
 control="${control//@VERSION@/$ver}"
 control="${control//@ARCH@/$arch}"
 control="${control//@DEPENDS@/$deps}"
+control="${control//@RECOMMENDS@/$recommends}"
 printf '%s\n' "$control" > "$pkg/DEBIAN/control"
 
 dpkg-deb --build --root-owner-group "$pkg"

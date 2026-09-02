@@ -131,6 +131,37 @@ exeDir (major 3). DLL à poser ensemble :
   Windows (API native), pas depuis winpr3 qui, contrairement à l'émulation
   WinPR d'Unix, ne la réexporte pas.
 
+### FIDO2 : fido2.dll (+ cbor.dll)
+
+Cles de securite materielles (`sk-ssh-ed25519@openssh.com`,
+`sk-ecdsa-sha2-nistp256@openssh.com`). Chargee **a la demande** et jamais au
+demarrage : sans elle l'application fonctionne, seuls les identifiants FIDO2
+sont indisponibles, avec un message qui dit quoi installer.
+
+- Construites via **vcpkg** (2026-09-02) : `libfido2:x64-windows@1.17.0`,
+  baseline `c1d80d9cb071c3f4a98c67c1196b137cc5b72918`, la MEME que FreeRDP.
+- SHA-256 des DLL versionnées :
+  - `fido2.dll` : `f591e102bfc551b2c25fbc3cdf64eace25f55ba6beb256a38e413ee414814fcf`
+  - `cbor.dll` : `481c6a2c96ef21c167455d9a9e6c6ecc8bc7c74298bcf7c43deb8837452d8301`
+- `cbor.dll` = libcbor 0.11 (MIT), la seule dépendance qui s'ajoute : fido2.dll
+  se lie pour le reste à `libcrypto-3-x64.dll` et `z.dll` **déjà livrées**, dont
+  les empreintes issues de ce build sont identiques bit pour bit à celles
+  consignées plus haut. C'est tout l'intérêt de la baseline commune.
+
+**Pourquoi pas les binaires officiels de Yubico.** L'archive
+`libfido2-1.17.0-win.zip` publiée par Yubico est parfaitement redistribuable
+(BSD-2), mais elle apporte QUATRE DLL : elle embarque son propre OpenSSL
+(`crypto-56.dll`, dont les métadonnées ne portent même pas de numéro de
+version) et son propre zlib (`zlib1.dll`). On se retrouverait avec deux OpenSSL
+et deux zlib dans le même processus, donc deux surfaces à suivre a chaque CVE,
+dont une opaque. Le build vcpkg en demande deux, et réutilise les nôtres.
+
+- Dépend aussi de `VCRUNTIME140.dll`, déjà livrée (voir sa section).
+- Sous Windows, l'accès HID direct exige les droits administrateur depuis la
+  1903 : l'application n'utilise donc que le périphérique virtuel
+  `windows://hello`, servi par l'API WebAuthn du système, qui présente
+  elle-même la demande de geste et de PIN.
+
 ### vcruntime140.dll : runtime C de MSVC (déploiement *app-local*)
 
 Douze des quatorze DLL livrées (toutes sauf `sqlite3.dll` et

@@ -126,6 +126,26 @@ const
     ' created_at_ms INTEGER NOT NULL,' +
     ' updated_at_ms INTEGER NOT NULL )';
 
+  // v11: + ''fido_key''. Meme forme que le v10, seule la liste du CHECK change;
+  // un CHECK ne s'altere pas, d'ou une reconstruction de plus.
+  DDL_CREDENTIALS_V11 =
+    'CREATE TABLE credentials (' +
+    ' uuid TEXT PRIMARY KEY,' +
+    ' display_name TEXT NOT NULL,' +
+    ' auth_type TEXT NOT NULL CHECK (' +
+    ' auth_type IN (''password'', ''ssh_key'', ''ssh_agent'', ''prompt'',' +
+    ' ''managed_key'', ''fido_key'') ),' +
+    ' username TEXT NOT NULL DEFAULT '''',' +
+    ' domain_name TEXT NOT NULL DEFAULT '''',' +
+    ' encrypted_password_id TEXT,' +
+    ' encrypted_key_id TEXT,' +
+    ' encrypted_key_pass_id TEXT,' +
+    ' key_path_hint TEXT NOT NULL DEFAULT '''',' +
+    ' managed INTEGER NOT NULL DEFAULT 0,' +
+    ' public_key TEXT NOT NULL DEFAULT '''',' +
+    ' created_at_ms INTEGER NOT NULL,' +
+    ' updated_at_ms INTEGER NOT NULL )';
+
   DDL_ENCRYPTED_VALUES =
     'CREATE TABLE encrypted_values (' +
     ' uuid TEXT PRIMARY KEY,' +
@@ -505,6 +525,21 @@ begin
   end;
 end;
 
+function SchemaObjectsV10: specialize TArray<TSchemaObj>;
+var
+  base: specialize TArray<TSchemaObj>;
+  i: Integer;
+begin
+  base := SchemaObjectsV9;
+  SetLength(Result, Length(base));
+  for i := 0 to High(base) do
+  begin
+    Result[i] := base[i];
+    if Result[i].Name = 'credentials' then
+      Result[i].Ddl := DDL_CREDENTIALS_V10;
+  end;
+end;
+
 function ExpectedSchemaFor(AVersion: Integer): specialize TArray<TSchemaObj>;
 begin
   case AVersion of
@@ -517,7 +552,8 @@ begin
     7: Result := SchemaObjectsV7;
     8: Result := SchemaObjectsV8;
     9: Result := SchemaObjectsV9;
-    10: Result := ExpectedSchema;
+    10: Result := SchemaObjectsV10;
+    11: Result := ExpectedSchema;
   else
     raise Exception.CreateFmt('unknown schema version: %d', [AVersion]);
   end;
@@ -528,13 +564,13 @@ var
   base: specialize TArray<TSchemaObj>;
   i: Integer;
 begin
-  base := SchemaObjectsV9;
+  base := SchemaObjectsV10;
   SetLength(Result, Length(base));
   for i := 0 to High(base) do
   begin
     Result[i] := base[i];
     if Result[i].Name = 'credentials' then
-      Result[i].Ddl := DDL_CREDENTIALS_V10;
+      Result[i].Ddl := DDL_CREDENTIALS_V11;
   end;
 end;
 
@@ -556,6 +592,10 @@ const
     'uuid, display_name, auth_type, username, domain_name,' +
     ' encrypted_password_id, encrypted_key_id, encrypted_key_pass_id,' +
     ' key_path_hint, managed, created_at_ms, updated_at_ms';
+
+  // public_key doit voyager avec: l'oublier viderait la cle publique de toutes
+  // les cles gerees a la migration.
+  CREDENTIALS_COLUMNS_V10 = CREDENTIALS_COLUMNS_V9 + ', public_key';
 
 // Un CHECK ne s'altere pas: reconstruction. Pas de RENAME -- SQLite reecrirait
 // le DDL stocke, que ValidateSchema compare au texte.
@@ -725,6 +765,32 @@ begin
     'DROP TABLE credentials_mig10;';
 end;
 
+function MigrationDdl11: string;
+begin
+  Result :=
+    'CREATE TABLE credentials_mig11 (' +
+    ' uuid TEXT PRIMARY KEY,' +
+    ' display_name TEXT NOT NULL,' +
+    ' auth_type TEXT NOT NULL,' +
+    ' username TEXT NOT NULL DEFAULT '''',' +
+    ' domain_name TEXT NOT NULL DEFAULT '''',' +
+    ' encrypted_password_id TEXT,' +
+    ' encrypted_key_id TEXT,' +
+    ' encrypted_key_pass_id TEXT,' +
+    ' key_path_hint TEXT NOT NULL DEFAULT '''',' +
+    ' managed INTEGER NOT NULL DEFAULT 0,' +
+    ' public_key TEXT NOT NULL DEFAULT '''',' +
+    ' created_at_ms INTEGER NOT NULL,' +
+    ' updated_at_ms INTEGER NOT NULL );' +
+    'INSERT INTO credentials_mig11 (' + CREDENTIALS_COLUMNS_V10 + ')' +
+    ' SELECT ' + CREDENTIALS_COLUMNS_V10 + ' FROM credentials;' +
+    'DROP TABLE credentials;' +
+    DDL_CREDENTIALS_V11 + ';' +
+    'INSERT INTO credentials (' + CREDENTIALS_COLUMNS_V10 + ')' +
+    ' SELECT ' + CREDENTIALS_COLUMNS_V10 + ' FROM credentials_mig11;' +
+    'DROP TABLE credentials_mig11;';
+end;
+
 function MigrationDdl(AVersion: Integer): string;
 var
   o: TSchemaObj;
@@ -745,6 +811,7 @@ begin
     8: Result := MigrationDdl8;
     9: Result := MigrationDdl9;
     10: Result := MigrationDdl10;
+    11: Result := MigrationDdl11;
   else
     raise Exception.CreateFmt('unknown migration: %d', [AVersion]);
   end;

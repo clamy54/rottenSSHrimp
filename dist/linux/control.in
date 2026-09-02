@@ -5,6 +5,7 @@ Priority: optional
 Architecture: @ARCH@
 Maintainer: Cyril Lamy <cyril.lamy@gmail.com>
 Depends: @DEPENDS@
+Recommends: @RECOMMENDS@
 Description: RottenSSHrimp - SSH, RDP and VNC connection manager
  A connection manager written in Free Pascal / Lazarus: a folder tree of hosts,
  tabbed SSH terminals, RDP and VNC sessions, SSH jump hosts, a

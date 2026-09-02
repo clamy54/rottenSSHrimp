@@ -118,7 +118,7 @@ begin
     begin
       cred := AModel.GetCredential(credUuid);
       // l'UI ne propose pas ces types pour VNC, le document si
-      if cred.AuthType in [atSshKey, atSshAgent, atManagedKey] then
+      if cred.AuthType in [atSshKey, atSshAgent, atManagedKey, atFidoKey] then
       begin
         AErr := 'This credential is an SSH key: VNC cannot use it. ' +
           'Pick a credential with a password.';

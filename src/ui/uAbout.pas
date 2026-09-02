@@ -160,6 +160,8 @@ begin
       'https://libvnc.github.io/');
     AddCredit(f, y, 'Encryption uses libsodium (ISC):',
       'https://libsodium.org/');
+    AddCredit(f, y, 'FIDO2 security keys use libfido2 (BSD-2-Clause):',
+      'https://developers.yubico.com/libfido2/');
     AddCredit(f, y, RSSH_APP_NAME + ' also uses SQLite (public domain):',
       'https://sqlite.org/');
 

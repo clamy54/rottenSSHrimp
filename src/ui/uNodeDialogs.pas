@@ -618,7 +618,7 @@ begin
     begin
       // une cle SSH est refusee au connect par RDP/VNC: ne pas la proposer
       if (AProto <> rpSsh) and
-         (list[i].AuthType in [atManagedKey, atSshKey]) then
+         (list[i].AuthType in [atManagedKey, atSshKey, atFidoKey]) then
         Continue;
       ADlg.FManagedCombo.Items.Add(list[i].DisplayName);
       ADlg.FManagedUuids.Add(list[i].Uuid);

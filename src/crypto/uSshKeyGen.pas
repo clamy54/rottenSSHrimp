@@ -15,6 +15,16 @@ const
   ED25519_PK_LEN = 32;
   ED25519_SK_LEN = 64;   // seed (32) || cle publique (32), convention libsodium
 
+type
+  // Tampon a croissance controlee: la reallocation efface l'ancien bloc, et
+  // Locked le tient hors du swap. Expose pour uSshSkKeyGen, qui encode les
+  // memes structures OpenSSH pour les cles de securite.
+  TBuf = record
+    Data: TBytes;
+    Len: Integer;
+    Locked: Boolean;   // mlock: le tampon porte du secret
+  end;
+
 procedure GenerateEd25519KeyPair(const AComment: string;
   out APrivatePem: TSecureBytes; out APublicLine: string);
 
@@ -22,6 +32,22 @@ function EncodeEd25519PublicLine(const APk: array of Byte;
   const AComment: string): string;
 function EncodeEd25519PrivatePem(const APk, ASk: array of Byte;
   const AComment: string; ACheckInt: LongWord): TSecureBytes;
+
+// Briques d'encodage OpenSSH, partagees avec uSshSkKeyGen.
+procedure BufInit(out B: TBuf; ACapacity: Integer; ALock: Boolean = False);
+procedure BufWipe(var B: TBuf);
+procedure AppendRaw(var B: TBuf; const AData; ACount: Integer);
+procedure AppendU32(var B: TBuf; V: LongWord);
+procedure AppendSshBytes(var B: TBuf; const AData; ACount: Integer);
+procedure AppendSshStr(var B: TBuf; const S: AnsiString);
+procedure B64Append(var Dst: TBuf; const Src: TBytes; SrcLen: Integer);
+function SanitizeComment(const S: string): string;
+function B64Line(const Src: TBuf): string;
+
+// Assemble le conteneur openssh-key-v1 (cipher none) autour d'un blob public et
+// d'une section privee SANS bourrage: le bourrage 1,2,3... est ajoute ici, la
+// structure etant la meme pour toutes les cles non chiffrees.
+function WrapOpenSshPrivatePem(const APub: TBuf; var APriv: TBuf): TSecureBytes;
 
 implementation
 
@@ -35,13 +61,6 @@ const
   PEM_HEADER = '-----BEGIN OPENSSH PRIVATE KEY-----';
   PEM_FOOTER = '-----END OPENSSH PRIVATE KEY-----';
   PEM_LINE_LEN = 70;
-
-type
-  TBuf = record
-    Data: TBytes;
-    Len: Integer;
-    Locked: Boolean;   // mlock: le tampon porte du secret
-  end;
 
 procedure SecureZero(P: Pointer; ALen: Integer);
 begin
@@ -180,81 +199,48 @@ begin
   end;
 end;
 
-procedure BuildPublicBlob(var B: TBuf; const APk: array of Byte);
-begin
-  AppendSshStr(B, KEY_TYPE);
-  AppendSshBytes(B, APk[0], Length(APk));
-end;
-
-function EncodeEd25519PublicLine(const APk: array of Byte;
-  const AComment: string): string;
+function B64Line(const Src: TBuf): string;
 var
-  blob, b64: TBuf;
-  s, cmt: string;
+  b64: TBuf;
 begin
-  if Length(APk) <> ED25519_PK_LEN then
-    raise EArgumentException.Create('Ed25519 public key must be 32 bytes');
-  cmt := SanitizeComment(AComment);
-  BufInit(blob, 64);
-  BufInit(b64, 96);
+  Result := '';
+  if Src.Len <= 0 then Exit;
+  BufInit(b64, Src.Len * 2 + 8);
   try
-    BuildPublicBlob(blob, APk);
-    B64Append(b64, blob.Data, blob.Len);
-    SetString(s, PAnsiChar(@b64.Data[0]), b64.Len);
-    Result := KEY_TYPE + ' ' + s;
-    if cmt <> '' then
-      Result := Result + ' ' + cmt;
+    B64Append(b64, Src.Data, Src.Len);
+    SetString(Result, PAnsiChar(@b64.Data[0]), b64.Len);
   finally
-    BufWipe(blob);
     BufWipe(b64);
   end;
 end;
 
-function EncodeEd25519PrivatePem(const APk, ASk: array of Byte;
-  const AComment: string; ACheckInt: LongWord): TSecureBytes;
+// Conteneur commun a toutes les cles openssh-key-v1 non chiffrees. APriv est
+// modifie: le bourrage y est ajoute.
+function WrapOpenSshPrivatePem(const APub: TBuf; var APriv: TBuf): TSecureBytes;
 var
-  pub, priv, blob, b64, pem: TBuf;
-  i, pad, col, L: Integer;
+  blob, b64, pem: TBuf;
+  i, pad, col: Integer;
   lf: Byte;
-  cmt: string;
 begin
-  if Length(APk) <> ED25519_PK_LEN then
-    raise EArgumentException.Create('Ed25519 public key must be 32 bytes');
-  if Length(ASk) <> ED25519_SK_LEN then
-    raise EArgumentException.Create('Ed25519 private key must be 64 bytes');
-  cmt := SanitizeComment(AComment);
-  L := Length(cmt);
-  // Surdimensionne pour ne jamais croitre: mlock stable, pas de cle en clair
-  // dans le swap. pub ne porte que du public.
-  BufInit(pub, 64);
-  BufInit(priv, 512 + 4 * L, True);
-  BufInit(blob, 1024 + 4 * L, True);
-  BufInit(b64, 2048 + 8 * L, True);
-  BufInit(pem, 3072 + 8 * L, True);
+  // checkint repete et bourrage 1,2,3...: OpenSSH verifie meme sans chiffre
+  pad := 1;
+  while (APriv.Len mod 8) <> 0 do
+  begin
+    AppendRaw(APriv, pad, 1);
+    Inc(pad);
+  end;
+
+  BufInit(blob, 512 + APub.Len + APriv.Len * 2, True);
+  BufInit(b64, 1024 + (APub.Len + APriv.Len) * 3, True);
+  BufInit(pem, 2048 + (APub.Len + APriv.Len) * 3, True);
   try
-    BuildPublicBlob(pub, APk);
-
-    // checkint repete et bourrage 1,2,3...: OpenSSH verifie meme sans chiffre
-    AppendU32(priv, ACheckInt);
-    AppendU32(priv, ACheckInt);
-    AppendSshStr(priv, KEY_TYPE);
-    AppendSshBytes(priv, APk[0], Length(APk));
-    AppendSshBytes(priv, ASk[0], Length(ASk));
-    AppendSshStr(priv, cmt);
-    pad := 1;
-    while (priv.Len mod 8) <> 0 do
-    begin
-      AppendRaw(priv, pad, 1);
-      Inc(pad);
-    end;
-
     AppendRaw(blob, AnsiString('openssh-key-v1'#0)[1], 15);
     AppendSshStr(blob, 'none');
     AppendSshStr(blob, 'none');
     AppendSshStr(blob, '');
     AppendU32(blob, 1);
-    AppendSshBytes(blob, pub.Data[0], pub.Len);
-    AppendSshBytes(blob, priv.Data[0], priv.Len);
+    AppendSshBytes(blob, APub.Data[0], APub.Len);
+    AppendSshBytes(blob, APriv.Data[0], APriv.Len);
 
     B64Append(b64, blob.Data, blob.Len);
 
@@ -276,11 +262,69 @@ begin
 
     Result := TSecureBytes.CreateFrom(pem.Data[0], pem.Len);
   finally
-    BufWipe(pub);
-    BufWipe(priv);
     BufWipe(blob);
     BufWipe(b64);
     BufWipe(pem);
+  end;
+end;
+
+procedure BuildPublicBlob(var B: TBuf; const APk: array of Byte);
+begin
+  AppendSshStr(B, KEY_TYPE);
+  AppendSshBytes(B, APk[0], Length(APk));
+end;
+
+function EncodeEd25519PublicLine(const APk: array of Byte;
+  const AComment: string): string;
+var
+  blob: TBuf;
+  cmt: string;
+begin
+  if Length(APk) <> ED25519_PK_LEN then
+    raise EArgumentException.Create('Ed25519 public key must be 32 bytes');
+  cmt := SanitizeComment(AComment);
+  BufInit(blob, 64);
+  try
+    BuildPublicBlob(blob, APk);
+    Result := KEY_TYPE + ' ' + B64Line(blob);
+    if cmt <> '' then
+      Result := Result + ' ' + cmt;
+  finally
+    BufWipe(blob);
+  end;
+end;
+
+function EncodeEd25519PrivatePem(const APk, ASk: array of Byte;
+  const AComment: string; ACheckInt: LongWord): TSecureBytes;
+var
+  pub, priv: TBuf;
+  L: Integer;
+  cmt: string;
+begin
+  if Length(APk) <> ED25519_PK_LEN then
+    raise EArgumentException.Create('Ed25519 public key must be 32 bytes');
+  if Length(ASk) <> ED25519_SK_LEN then
+    raise EArgumentException.Create('Ed25519 private key must be 64 bytes');
+  cmt := SanitizeComment(AComment);
+  L := Length(cmt);
+  // Surdimensionne pour ne jamais croitre: mlock stable, pas de cle en clair
+  // dans le swap. pub ne porte que du public.
+  BufInit(pub, 64);
+  BufInit(priv, 512 + 4 * L, True);
+  try
+    BuildPublicBlob(pub, APk);
+
+    AppendU32(priv, ACheckInt);
+    AppendU32(priv, ACheckInt);
+    AppendSshStr(priv, KEY_TYPE);
+    AppendSshBytes(priv, APk[0], Length(APk));
+    AppendSshBytes(priv, ASk[0], Length(ASk));
+    AppendSshStr(priv, cmt);
+
+    Result := WrapOpenSshPrivatePem(pub, priv);
+  finally
+    BufWipe(pub);
+    BufWipe(priv);
   end;
 end;
 

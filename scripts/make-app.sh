@@ -58,6 +58,10 @@ seeds=(
   "/opt/homebrew/opt/freerdp/lib/libwinpr3.3.dylib"
   "/opt/homebrew/opt/libssh2/lib/libssh2.1.dylib"
   "/opt/homebrew/opt/libsodium/lib/libsodium.26.dylib"
+  # cles de securite FIDO2: optionnelle a l'EXECUTION (l'app demarre sans),
+  # obligatoire dans le BUNDLE -- un paquet qui l'oublie livre a tout le monde
+  # un Credential Manager sans FIDO2, en silence. libcbor suit par transitivite.
+  "/opt/homebrew/opt/libfido2/lib/libfido2.1.dylib"
   # la notre, vendorisee et patchee -- le paquet Homebrew 0.9.15
   # traine CVE-2026-50538 et -44988 (Tight, ecriture hors tas, PRE-AUTH).
   "${root}/third_party/libvnc/out/lib/libvncclient.1.dylib"
@@ -277,6 +281,8 @@ sbom_desc_of() {  # <basename de dylib> -> "nom|version|licence"
     libjpeg*|libturbojpeg*) echo "libjpeg-turbo||BSD-3-Clause AND IJG" ;;
     libz.*)             echo "zlib||Zlib" ;;
     libcjson*)          echo "cJSON||MIT" ;;
+    libfido2*)          echo "libfido2||BSD-2-Clause" ;;
+    libcbor*)           echo "libcbor||MIT" ;;
     *)                  echo "$1||" ;;
   esac
 }

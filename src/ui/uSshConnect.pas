@@ -25,93 +25,27 @@ function BuildSshConnectParams(ADoc: TRshDocument; AModel: TRshModel;
 function SshConnectWouldPrompt(AModel: TRshModel;
   const AConnUuid: string): Boolean;
 
+// True si la connexion s'authentifie par cle de securite FIDO2: un geste par
+// session, a annoncer avant d'en lancer plusieurs (Broadcast).
+function SshConnectUsesFido(AModel: TRshModel;
+  const AConnUuid: string): Boolean;
+
 implementation
 
 uses
   uSecureBytes, uRshValidation, uSshKnownHosts, uTheme, uAuthPrompt,
-  uSshTunnel, uSshTunnelConnect;
+  uSshTunnel, uSshTunnelConnect, uLibssh2Api, uSshFido;
 
-function AskSecret(const APrompt: string; out ASecret: TSecureBytes): Boolean;
-var
-  f: TForm;
-  lbl: TLabel;
-  ed: TEdit;
-  btnOk, btnCancel: TButton;
-  raw: RawByteString;
-begin
-  Result := False;
-  ASecret := nil;
-  f := TForm.CreateNew(nil);
-  try
-    f.Caption := 'Authentication';
-    f.BorderStyle := bsDialog;
-    f.Position := poScreenCenter;
-    f.ClientWidth := 420;
-
-    lbl := TLabel.Create(f);
-    lbl.Parent := f;
-    lbl.Left := 16;
-    lbl.Top := 16;
-    lbl.Width := 388;
-    lbl.WordWrap := True;
-    lbl.Caption := APrompt;
-
-    ed := TEdit.Create(f);
-    ed.Parent := f;
-    ed.Left := 16;
-    ed.Top := 52;
-    ed.Width := 388;
-    ed.PasswordChar := '*';
-
-    btnOk := TButton.Create(f);
-    btnOk.Parent := f;
-    btnOk.Caption := 'OK';
-    btnOk.ModalResult := mrOK;
-    btnOk.Default := True;
-    btnOk.Left := 224;
-    btnOk.Top := 92;
-    btnOk.Width := 88;
-
-    btnCancel := TButton.Create(f);
-    btnCancel.Parent := f;
-    btnCancel.Caption := 'Cancel';
-    btnCancel.ModalResult := mrCancel;
-    btnCancel.Cancel := True;
-    btnCancel.Left := 316;
-    btnCancel.Top := 92;
-    btnCancel.Width := 88;
-
-    f.ClientHeight := 140;
-    ApplyUiFont(f);
-
-    if f.ShowModal <> mrOK then
-      Exit;
-    raw := RawByteString(ed.Text);
-    try
-      if raw = '' then
-        Exit;
-      ASecret := TSecureBytes.CreateFrom(raw[1], Length(raw));
-      Result := True;
-    finally
-      // Meilleur effort: le widget garde sa copie (voir uAuthPrompt)
-      if raw <> '' then
-        FillChar(raw[1], Length(raw), 0);
-      ed.Text := '';
-    end;
-  finally
-    f.Free;
-  end;
-end;
-
-function SshConnectWouldPrompt(AModel: TRshModel;
-  const AConnUuid: string): Boolean;
+// Identifiant RESOLU d'une connexion (heritage compris), nil si aucun ou si
+// quelque chose cloche -- les deux appelants traitent nil comme « dans le
+// doute ».
+function ResolvedConnCredential(AModel: TRshModel;
+  const AConnUuid: string): TRshCredential;
 var
   node: TRshNode;
-  cred: TRshCredential;
   credUuid, srcFolder: string;
 begin
-  // Dans le doute, « ca demanderait »: d'ou les except larges.
-  Result := True;
+  Result := nil;
   if AModel = nil then Exit;
   try
     node := AModel.GetNode(AConnUuid);
@@ -119,33 +53,56 @@ begin
     on Exception do Exit;
   end;
   try
-    if node.Kind <> nkConnection then
-    begin
-      node.Free;
-      Exit;
+    try
+      if node.Kind <> nkConnection then Exit;
+      if node.InheritCredential then
+        credUuid := AModel.ResolveFolderCredential(node.ParentUuid,
+          node.Protocol, srcFolder)
+      else
+        credUuid := node.CredentialUuid;
+    except
+      on Exception do Exit;
     end;
-    if node.InheritCredential then
-      credUuid := AModel.ResolveFolderCredential(node.ParentUuid,
-        node.Protocol, srcFolder)
-    else
-      credUuid := node.CredentialUuid;
-  except
-    on Exception do
-    begin
-      node.Free;
-      Exit;
-    end;
+  finally
+    node.Free;
   end;
-  node.Free;
   if credUuid = '' then Exit;
   try
-    cred := AModel.GetCredential(credUuid);
+    Result := AModel.GetCredential(credUuid);
   except
-    on Exception do Exit;
+    on Exception do Result := nil;
   end;
+end;
+
+function SshConnectWouldPrompt(AModel: TRshModel;
+  const AConnUuid: string): Boolean;
+var
+  cred: TRshCredential;
+begin
+  // Dans le doute, « ca demanderait ».
+  Result := True;
+  cred := ResolvedConnCredential(AModel, AConnUuid);
+  if cred = nil then Exit;
   try
+    // atFidoKey: pas de modale AVANT la grille, le geste vient pendant la
+    // session (avis non modal) -- ne compte donc pas comme une invite.
     Result := (cred.AuthType = atPrompt) or
       ((cred.AuthType = atPassword) and (not cred.HasPassword));
+  finally
+    cred.Free;
+  end;
+end;
+
+function SshConnectUsesFido(AModel: TRshModel;
+  const AConnUuid: string): Boolean;
+var
+  cred: TRshCredential;
+begin
+  Result := False;
+  cred := ResolvedConnCredential(AModel, AConnUuid);
+  if cred = nil then Exit;
+  try
+    Result := cred.AuthType = atFidoKey;
   finally
     cred.Free;
   end;
@@ -301,6 +258,47 @@ begin
              params.PrivateKey) then
           begin
             AErr := 'Cannot read the private key for this credential.';
+            Exit;
+          end;
+        end;
+      atFidoKey:
+        begin
+          // Le « PEM » d'une cle de securite ne porte pas de secret: c'est le
+          // key handle qui designe la cle restee dans le token.
+          params.AuthKind := sakFidoKey;
+          if not cred.HasPrivateKey then
+          begin
+            AErr := 'No security key has been enrolled for this credential ' +
+              'yet. Open the Credential Manager and save it once to enrol one.';
+            Exit;
+          end;
+          // Les deux bibliotheques sont chargees ICI, sur le thread UI: un
+          // echec doit sortir en message clair, pas en session qui meurt.
+          try
+            Libssh2EnsureLoaded;
+          except
+            on E: Exception do
+            begin
+              AErr := 'libssh2 is not available: ' + E.Message;
+              Exit;
+            end;
+          end;
+          if not Libssh2HasSkAuth then
+          begin
+            AErr := 'This libssh2 build cannot use FIDO2 security keys ' +
+              '(libssh2_userauth_publickey_sk is missing). It needs libssh2 ' +
+              '1.11 or newer built against OpenSSL.';
+            Exit;
+          end;
+          if not FidoAvailable then
+          begin
+            AErr := FidoUnavailableMessage;
+            Exit;
+          end;
+          if not AModel.GetSecret(credUuid, FIELD_CRED_PRIVATE_KEY,
+             params.PrivateKey) then
+          begin
+            AErr := 'Cannot read the security key handle for this credential.';
             Exit;
           end;
         end;

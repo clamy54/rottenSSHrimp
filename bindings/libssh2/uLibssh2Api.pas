@@ -19,10 +19,18 @@ const
   LIBSSH2_ERROR_TIMEOUT = -9;
   LIBSSH2_ERROR_SOCKET_DISCONNECT = -13;
   LIBSSH2_ERROR_PROTO = -14;
+  // rendu quand la cle privee ne se laisse pas lire: pour une cle sk, c'est le
+  // signe d'un backend crypto sans support des cles de securite (libgcrypt)
+  LIBSSH2_ERROR_FILE = -16;
   LIBSSH2_ERROR_AUTHENTICATION_FAILED = -18;
   LIBSSH2_ERROR_CHANNEL_CLOSED = -26;
   LIBSSH2_ERROR_SOCKET_TIMEOUT = -30;
   LIBSSH2_ERROR_EAGAIN = -37;
+
+  // Cles de securite FIDO2 (OpenSSH sk-*). Le drapeau de presence est toujours
+  // pose par ssh-keygen comme par nous; la verification (PIN) est optionnelle.
+  LIBSSH2_SK_PRESENCE_REQUIRED = $01;
+  LIBSSH2_SK_VERIFICATION_REQUIRED = $04;
 
   LIBSSH2_SESSION_BLOCK_INBOUND = $0001;
   LIBSSH2_SESSION_BLOCK_OUTBOUND = $0002;
@@ -72,6 +80,27 @@ type
     comment: PAnsiChar;
   end;
 
+  // Signature rendue par une cle de securite. C'est NOUS qui remplissons ce
+  // record depuis le token; libssh2 en fait le blob SSH (« string sig || byte
+  // flags || uint32 counter ») et LIBERE sig_r/sig_s avec le free() de SON
+  // runtime C: les allouer avec le malloc C, jamais avec GetMem.
+  PLIBSSH2_SK_SIG_INFO = ^LIBSSH2_SK_SIG_INFO;
+  LIBSSH2_SK_SIG_INFO = record
+    flags: cuint8;
+    counter: cuint32;
+    sig_r: PByte;
+    sig_r_len: csize_t;
+    sig_s: PByte;      // ECDSA seulement; nil pour ed25519
+    sig_s_len: csize_t;
+  end;
+
+  // LIBSSH2_USERAUTH_SK_SIGN_FUNC. Appelee sur le thread qui fait l'auth, une
+  // fois par tentative; « data » est le message brut a signer, jamais hache.
+  TLibssh2SkSignFunc = function(session: PLIBSSH2_SESSION;
+    sig_info: PLIBSSH2_SK_SIG_INFO; data: PByte; data_len: csize_t;
+    algorithm: cint; flags: cuint8; application: PAnsiChar;
+    key_handle: PByte; handle_len: csize_t; abstract_: PPointer): cint; cdecl;
+
   Tlibssh2_init = function(flags: cint): cint; cdecl;
   Tlibssh2_exit = procedure; cdecl;
   Tlibssh2_version = function(req_version_num: cint): PAnsiChar; cdecl;
@@ -114,6 +143,16 @@ type
     publickeydata: PAnsiChar; publickeydata_len: csize_t;
     privatekeydata: PAnsiChar; privatekeydata_len: csize_t;
     passphrase: PAnsiChar): cint; cdecl;
+
+  // Cle de securite: libssh2 lit la cle privee OpenSSH sk (elle ne contient pas
+  // de secret, seulement le key handle), en tire application/flags/handle, et
+  // nous rappelle pour la signature. pubkeydata peut etre nil.
+  Tlibssh2_userauth_publickey_sk = function(session: PLIBSSH2_SESSION;
+    username: PAnsiChar; username_len: csize_t;
+    pubkeydata: PByte; pubkeydata_len: csize_t;
+    privatekeydata: PAnsiChar; privatekeydata_len: csize_t;
+    passphrase: PAnsiChar; sign_callback: TLibssh2SkSignFunc;
+    abstract_: PPointer): cint; cdecl;
 
   Tlibssh2_agent_init = function(session: PLIBSSH2_SESSION): PLIBSSH2_AGENT; cdecl;
   Tlibssh2_agent_connect = function(agent: PLIBSSH2_AGENT): cint; cdecl;
@@ -179,6 +218,9 @@ var
   libssh2_userauth_authenticated: Tlibssh2_userauth_authenticated = nil;
   libssh2_userauth_password_ex: Tlibssh2_userauth_password_ex = nil;
   libssh2_userauth_publickey_frommemory: Tlibssh2_userauth_publickey_frommemory = nil;
+  // OPTIONNEL: absent des builds sans support des cles de securite. Toujours
+  // tester Libssh2HasSkAuth avant d'appeler.
+  libssh2_userauth_publickey_sk: Tlibssh2_userauth_publickey_sk = nil;
   libssh2_agent_init: Tlibssh2_agent_init = nil;
   libssh2_agent_connect: Tlibssh2_agent_connect = nil;
   libssh2_agent_list_identities: Tlibssh2_agent_list_identities = nil;
@@ -205,6 +247,10 @@ var
 // Idempotent. Leve ELibssh2Error si la lib manque, est trop ancienne ou incomplete.
 procedure Libssh2EnsureLoaded;
 function Libssh2IsLoaded: Boolean;
+// Les cles de securite ne sont implementees que par le backend OpenSSL de
+// libssh2; un build libgcrypt exporte le symbole mais rend LIBSSH2_ERROR_FILE.
+// False = ne pas proposer l'authentification FIDO2.
+function Libssh2HasSkAuth: Boolean;
 function Libssh2VersionString: string;
 function Libssh2HostKeyTypeName(AType: Integer): string;
 
@@ -271,6 +317,13 @@ begin
     raise ELibssh2Error.CreateFmt('libssh2: missing symbol: %s', [AName]);
 end;
 
+// Symbole facultatif: son absence ne doit pas condamner toute la lib, elle
+// retire seulement la fonctionnalite qui en depend.
+function OptSym(const AName: string): Pointer;
+begin
+  Result := GetProcAddress(GLib, AName);
+end;
+
 procedure BindSymbols;
 begin
   Pointer(libssh2_init) := MustSym('libssh2_init');
@@ -299,6 +352,8 @@ begin
     MustSym('libssh2_userauth_password_ex');
   Pointer(libssh2_userauth_publickey_frommemory) :=
     MustSym('libssh2_userauth_publickey_frommemory');
+  Pointer(libssh2_userauth_publickey_sk) :=
+    OptSym('libssh2_userauth_publickey_sk');
   Pointer(libssh2_agent_init) := MustSym('libssh2_agent_init');
   Pointer(libssh2_agent_connect) := MustSym('libssh2_agent_connect');
   Pointer(libssh2_agent_list_identities) :=
@@ -373,6 +428,11 @@ end;
 function Libssh2IsLoaded: Boolean;
 begin
   Result := GReady;
+end;
+
+function Libssh2HasSkAuth: Boolean;
+begin
+  Result := GReady and Assigned(libssh2_userauth_publickey_sk);
 end;
 
 function Libssh2VersionString: string;

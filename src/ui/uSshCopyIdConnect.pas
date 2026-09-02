@@ -24,7 +24,7 @@ implementation
 uses
   Forms, Controls, StdCtrls, Dialogs,
   uSecureBytes, uSshTransport, uSshTunnel, uSshTunnelConnect, uSshConnect,
-  uSshKeyGen, uAuthPrompt;
+  uSshKeyGen, uAuthPrompt, uFidoPrompt;
 
 type
   TCopyIdRun = class
@@ -154,7 +154,7 @@ begin
       credUuid := ResolvedCredUuid(AModel, node);
       if credUuid = '' then Exit;
       cred := AModel.GetCredential(credUuid);
-      Result := (cred.AuthType = atManagedKey) and (cred.PublicKey <> '') and
+      Result := IsManagedKeyType(cred.AuthType) and (cred.PublicKey <> '') and
         cred.HasPrivateKey;
     except
       on Exception do
@@ -353,7 +353,7 @@ begin
         Exit;
       end;
     end;
-    if (cred.AuthType <> atManagedKey) or (cred.PublicKey = '') then
+    if (not IsManagedKeyType(cred.AuthType)) or (cred.PublicKey = '') then
     begin
       AErr := 'This host does not use a managed SSH key credential ' +
         '(or no key pair has been generated yet).';
@@ -406,7 +406,7 @@ var
   names: array of string;
   node: TRshNode;
   newPem: TSecureBytes;
-  oldLine, newLine, output, hostErr: string;
+  oldLine, newLine, output, hostErr, algName, enrollErr: string;
   i, exitCode: Integer;
   cancelled: Boolean;
   warnings: string;
@@ -426,7 +426,7 @@ begin
         Exit;
       end;
     end;
-    if (cred.AuthType <> atManagedKey) or (cred.PublicKey = '') or
+    if (not IsManagedKeyType(cred.AuthType)) or (cred.PublicKey = '') or
        (not cred.HasPrivateKey) then
     begin
       AErr := 'This credential has no generated key pair to rotate.';
@@ -446,7 +446,24 @@ begin
       end;
     end;
 
-    GenerateEd25519KeyPair(cred.Username + '@rottensshrimp', newPem, newLine);
+    // Une cle de securite ne se « regenere » pas: on en enrole une autre sur le
+    // meme token. L'utilisateur doit y poser le doigt avant que la premiere
+    // passe ne commence.
+    if cred.AuthType = atFidoKey then
+    begin
+      if not EnrollFidoKeyWithDialog(nil, cred.Username, False,
+        newPem, newLine, algName, enrollErr) then
+      begin
+        if enrollErr = '' then
+          AErr := 'Rotation cancelled — the current key is unchanged.'
+        else
+          AErr := 'Rotation aborted: ' + enrollErr + LineEnding +
+            'The current key is unchanged and still works on every host.';
+        Exit;
+      end;
+    end
+    else
+      GenerateEd25519KeyPair(cred.Username + '@rottensshrimp', newPem, newLine);
 
     // ---- Passe 1: nouvelle ligne partout, sous l'ANCIENNE cle ----
     for i := 0 to High(hosts) do

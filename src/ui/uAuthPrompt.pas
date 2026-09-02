@@ -17,10 +17,87 @@ function AskLogin(const ATitle, APrompt: string; AAskDomain: Boolean;
   AAskUsername: Boolean = True;
   const AOkCaption: string = 'Connect'): Boolean;
 
+// Un seul champ masque: mot de passe deja connu de l'appelant, passphrase, ou
+// PIN d'une cle de securite.
+function AskSecret(const APrompt: string; out ASecret: TSecureBytes): Boolean;
+
 implementation
 
 uses
   uTheme;
+
+function AskSecret(const APrompt: string; out ASecret: TSecureBytes): Boolean;
+var
+  f: TForm;
+  lbl: TLabel;
+  ed: TEdit;
+  btnOk, btnCancel: TButton;
+  raw: RawByteString;
+begin
+  Result := False;
+  ASecret := nil;
+  f := TForm.CreateNew(nil);
+  try
+    f.Caption := 'Authentication';
+    f.BorderStyle := bsDialog;
+    f.Position := poScreenCenter;
+    f.ClientWidth := 420;
+
+    lbl := TLabel.Create(f);
+    lbl.Parent := f;
+    lbl.Left := 16;
+    lbl.Top := 16;
+    lbl.Width := 388;
+    lbl.WordWrap := True;
+    lbl.Caption := APrompt;
+
+    ed := TEdit.Create(f);
+    ed.Parent := f;
+    ed.Left := 16;
+    ed.Top := 52;
+    ed.Width := 388;
+    ed.PasswordChar := '*';
+
+    btnOk := TButton.Create(f);
+    btnOk.Parent := f;
+    btnOk.Caption := 'OK';
+    btnOk.ModalResult := mrOK;
+    btnOk.Default := True;
+    btnOk.Left := 224;
+    btnOk.Top := 92;
+    btnOk.Width := 88;
+
+    btnCancel := TButton.Create(f);
+    btnCancel.Parent := f;
+    btnCancel.Caption := 'Cancel';
+    btnCancel.ModalResult := mrCancel;
+    btnCancel.Cancel := True;
+    btnCancel.Left := 316;
+    btnCancel.Top := 92;
+    btnCancel.Width := 88;
+
+    f.ClientHeight := 140;
+    ApplyUiFont(f);
+
+    if f.ShowModal <> mrOK then
+      Exit;
+    raw := RawByteString(ed.Text);
+    try
+      if raw = '' then
+        Exit;
+      ASecret := TSecureBytes.CreateFrom(raw[1], Length(raw));
+      Result := True;
+    finally
+      // Meilleur effort: le widget garde sa copie (voir uAuthPrompt)
+      if raw <> '' then
+        FillChar(raw[1], Length(raw), 0);
+      ed.Text := '';
+    end;
+  finally
+    f.Free;
+  end;
+end;
+
 
 function AskLogin(const ATitle, APrompt: string; AAskDomain: Boolean;
   var AUsername, ADomain: string; out APassword: TSecureBytes;

@@ -154,6 +154,8 @@ Ce que contient lib/
 
 A installer par votre distribution (voir packaging/linux/DEPS.md):
   FreeRDP 3, libssh2, SQLite 3, libsodium.
+  Optionnel: libfido2 (cles de securite FIDO2 dans le Credential Manager;
+  sans elle, seul ce type d'identifiant est indisponible).
 
 Licences: LICENSES/. La source correspondante de libvncclient (le tarball
 archive, son empreinte, les patches et le script de construction) est dans

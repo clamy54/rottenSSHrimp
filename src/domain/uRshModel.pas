@@ -16,7 +16,11 @@ type
 
   TNodeKind = (nkGroup, nkConnection);
   TRshProtocol = (rpSsh, rpRdp, rpVnc, rpContainer, rpPod);
-  TAuthType = (atPassword, atSshKey, atSshAgent, atPrompt, atManagedKey);
+  // atManagedKey: paire Ed25519 generee et scellee dans le document.
+  // atFidoKey: cle de securite FIDO2 -- le document ne garde qu'un key handle,
+  // le secret ne quitte jamais le token et chaque usage demande un geste.
+  TAuthType = (atPassword, atSshKey, atSshAgent, atPrompt, atManagedKey,
+    atFidoKey);
   TCredDeleteStrategy = (dsFail, dsClearRefs, dsReplace);
 
   TContainerEngine = (ceDocker, cePodman);
@@ -248,7 +252,8 @@ const
 
   MAX_RECENT_ENTRIES = 20;
   AUTH_TYPE_NAMES: array[TAuthType] of string =
-    ('password', 'ssh_key', 'ssh_agent', 'prompt', 'managed_key');
+    ('password', 'ssh_key', 'ssh_agent', 'prompt', 'managed_key',
+     'fido_key');
 
   DEFAULT_GROUP_ICON = 'folder';
   ICON_SSH = 'device-desktop';
@@ -258,6 +263,10 @@ const
   ICON_POD = 'hexagons';
 
 function ProtocolFromName(const S: string): TRshProtocol;
+// Cles que l'application ENGENDRE et pousse elle-meme (Copy SSH ID, rotation),
+// par opposition a une cle fournie par l'utilisateur. Le porteur du secret
+// differe -- document ou token -- mais tout le reste se traite pareil.
+function IsManagedKeyType(A: TAuthType): Boolean;
 function AuthTypeFromName(const S: string): TAuthType;
 function SessionResultFromName(const S: string): TSessionResult;
 function ContainerEngineFromName(const S: string): TContainerEngine;
@@ -301,6 +310,11 @@ begin
     Result := csLog
   else
     Result := csSh;
+end;
+
+function IsManagedKeyType(A: TAuthType): Boolean;
+begin
+  Result := A in [atManagedKey, atFidoKey];
 end;
 
 function AuthTypeFromName(const S: string): TAuthType;
@@ -2262,9 +2276,9 @@ begin
     finally
       st.Free;
     end;
-    // Quitter atManagedKey efface public_key: sinon Copy SSH ID proposerait
+    // Quitter une cle geree efface public_key: sinon Copy SSH ID proposerait
     // encore d'installer une paire fantome.
-    if AAuthType <> atManagedKey then
+    if not IsManagedKeyType(AAuthType) then
       Db.ExecScript(Format('UPDATE credentials SET public_key=%s WHERE uuid=%s;',
         [QuotedStr(''), QuotedStr(AUuid)]));
     if AClearPassword then
@@ -2411,7 +2425,7 @@ begin
       st.BindText(1, AUuid);
       if not st.Step then
         raise EModelError.Create('Managed key target credential not found.');
-      if st.ColText(0) <> AUTH_TYPE_NAMES[atManagedKey] then
+      if not IsManagedKeyType(AuthTypeFromName(st.ColText(0))) then
         raise EModelError.Create('Target credential is not a managed key.');
     finally
       st.Free;

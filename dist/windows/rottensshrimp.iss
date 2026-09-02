@@ -87,6 +87,12 @@ Source: "..\..\vncclient.dll"; DestDir: "{app}"; Flags: ignoreversion
 ; l'oracle de disposition memoire FreeRDP: absent, RDP retombe sur les offsets
 ; ecrits en dur (mode degrade mais fonctionnel)
 Source: "..\..\rssh_rdp_shim.dll"; DestDir: "{app}"; Flags: ignoreversion
+; Cles de securite FIDO2. OPTIONNELLES a l'execution: sans elles l'application
+; demarre et tout marche sauf les identifiants FIDO2. fido2.dll se lie a
+; libcrypto-3-x64.dll et z.dll deja livrees; cbor.dll est sa seule dependance
+; propre.
+Source: "..\..\fido2.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\cbor.dll"; DestDir: "{app}"; Flags: ignoreversion
 ; Runtime C de MSVC, importe par 12 des 14 DLL ci-dessus. Ne fait PAS partie de
 ; Windows: sans lui, rien ne demarre sur une machine sans Visual Studio. Livre
 ; a cote de l'exe (deploiement app-local) plutot que par vc_redist.exe: une DLL

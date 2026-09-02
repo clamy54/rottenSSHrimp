@@ -54,6 +54,8 @@ type
     function ErrHostKeyNotApproved: string; override;
     function ErrNoUsername: string; override;
     function AuthRefusedMsg(const AUser, AMethods: string): string; override;
+    function ErrSkRejectedBeforeSign: string; override;
+    function ErrSkBackend: string; override;
     procedure Execute; override;
   public
     constructor Create(AParams: TSshConnectParams;
@@ -69,6 +71,8 @@ type
     // echec livre UNE fois sur le thread UI; le destinataire relit LastError
     property OnAsyncError: TThreadMethod read FOnAsyncError write FOnAsyncError;
     property OnHostKey: TSshHostKeyEvent read FOnHostKey write FOnHostKey;
+    property OnSkNotice: TSshSkNoticeEvent read FOnSkNotice write FOnSkNotice;
+    property OnSkPin: TSshSkPinEvent read FOnSkPin write FOnSkPin;
     property OnHostKeyLookup: TSshHostKeyLookup
       read FOnHostKeyLookup write FOnHostKeyLookup;
     property OnHostKeySave: TSshHostKeySave
@@ -200,11 +204,25 @@ begin
   Result := Format('Jump host authentication refused for %s', [AUser]);
 end;
 
+function TSshTunnel.ErrSkRejectedBeforeSign: string;
+begin
+  Result := 'The jump host rejected the security key before asking for a ' +
+    'signature: either it runs OpenSSH older than 8.2, or this key is not in ' +
+    'its authorized_keys.';
+end;
+
+function TSshTunnel.ErrSkBackend: string;
+begin
+  Result := 'This libssh2 build does not support FIDO2 security keys ' +
+    '(jump host)';
+end;
+
 procedure TSshTunnel.Shutdown;
 begin
   Terminate;
   FHostKeyDecision := hkdReject;
   FHostKeyEvent.SetEvent;
+  SkCancel;
 end;
 
 function TSshTunnel.ResolveAndConnect: Boolean;

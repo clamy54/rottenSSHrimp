@@ -71,6 +71,13 @@ application generates, rotates, and pushes with a built-in `ssh-copy-id`.
 Private keys go to libssh2 in memory and never touch the disk in plaintext,
 which is the absolute floor of decency and yet remains a differentiator.
 
+Or no private key at all: a FIDO2 security key (a YubiKey, say) can hold it.
+The document keeps only a handle, the secret never leaves the token, and every
+connection asks for a touch. Same key, same document, any of the three
+operating systems; a stolen file plus a stolen master password still open
+nothing without the key in the port. Needs OpenSSH 8.2 or later on the server
+and libfido2 on the client, which the packages bring along.
+
 **Containers and pods.** Docker and Podman containers, Kubernetes pods, opened
 as terminal tabs like anything else. Because eventually the incident is inside
 the cluster, and `kubectl exec` from memory at 2 a.m. has never once gone well.

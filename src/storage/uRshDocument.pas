@@ -375,7 +375,9 @@ begin
         for i := 0 to High(CANONICAL_QUERIES_V7) do
           Result[i] := CANONICAL_QUERIES_V7[i];
       end;
-    8, 9, 10:
+    // v11 ne change que le CHECK de `credentials`: memes tables, memes colonnes,
+    // donc le meme jeu de requetes canoniques scelle exactement le meme contenu.
+    8, 9, 10, 11:
       begin
         SetLength(Result, Length(CANONICAL_QUERIES_V8));
         for i := 0 to High(CANONICAL_QUERIES_V8) do

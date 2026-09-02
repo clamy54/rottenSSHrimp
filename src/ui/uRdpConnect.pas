@@ -127,7 +127,7 @@ begin
     else
     begin
       cred := AModel.GetCredential(credUuid);
-      if cred.AuthType in [atSshKey, atSshAgent, atManagedKey] then
+      if cred.AuthType in [atSshKey, atSshAgent, atManagedKey, atFidoKey] then
       begin
         AErr := 'This credential is an SSH key: RDP cannot use it. ' +
           'Pick a credential with a username and a password.';

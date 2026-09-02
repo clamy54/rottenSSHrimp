@@ -62,6 +62,10 @@ depends=(
 # milieu de la compilation.
 makedepends=('lazarus' 'lazarus-gtk2' 'cmake' 'pkgconf' 'imagemagick')
 
+# Ouverte par dlopen seulement quand un identifiant FIDO2 est en jeu; absente,
+# l'application le dit et tout le reste marche.
+optdepends=('libfido2: SSH authentication with FIDO2 security keys')
+
 _gitname=rottenSSHrimp
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 
