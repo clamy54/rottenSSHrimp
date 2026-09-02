@@ -49,11 +49,12 @@ type
   private
     FDev: Pointer;
     FDevLock: TCriticalSection;
-    FCancelled: Boolean;
+    FCancelled: LongInt;      // 0/1, Interlocked: ecrit par l'UI, lu ici
     FOnTouch: TFidoTouchEvent;
     FOnPin: TFidoPinEvent;
     FDeviceName: string;
     procedure SetDev(ADev: Pointer);
+    function Cancelled: Boolean; inline;
     procedure Touch(AActive: Boolean);
     // Rend False si l'utilisateur renonce; APinBuf est NUL-terminee.
     function AskPin(ACode: Integer; out APinBuf: TSecureBytes): Boolean;
@@ -221,11 +222,18 @@ begin
   end;
 end;
 
+function TFidoOperation.Cancelled: Boolean;
+begin
+  // Lecture Interlocked: la barriere qui va avec l'ecriture de Cancel, sans
+  // compter sur celle, incidente, des verrous traverses entre-temps.
+  Result := InterlockedCompareExchange(FCancelled, 0, 0) <> 0;
+end;
+
 procedure TFidoOperation.Cancel;
 var
   d: Pointer;
 begin
-  FCancelled := True;
+  InterlockedExchange(FCancelled, 1);
   // Sous verrou: le thread de l'operation peut fermer le peripherique au meme
   // instant, et fido_dev_cancel sur un pointeur libere serait fatal.
   FDevLock.Acquire;
@@ -379,7 +387,7 @@ begin
     end;
     for i := 0 to Integer(n) - 1 do
     begin
-      if FCancelled then Exit;
+      if Cancelled then Exit;
       di := fido_dev_info_ptr(list, i);
       if di = nil then Continue;
       path := fido_dev_info_path(di);
@@ -433,7 +441,7 @@ begin
     fido_dev_info_free(@list, FIDO_MAX_DEVICES);
   end;
 
-  if FCancelled then
+  if Cancelled then
     AErr := 'cancelled'
   else if seen = 0 then
     {$IFDEF WINDOWS}
@@ -531,7 +539,7 @@ begin
   // l'attente du verrou (un autre onglet tient le token) doit compter.
   GFidoLock.Acquire;
   try
-    if FCancelled then
+    if Cancelled then
     begin
       AErr := 'cancelled';
       Exit;
@@ -553,7 +561,7 @@ begin
       try
         while True do
         begin
-          if FCancelled then
+          if Cancelled then
           begin
             AErr := 'cancelled';
             Exit;
@@ -714,7 +722,7 @@ begin
 
   GFidoLock.Acquire;
   try
-    if FCancelled then
+    if Cancelled then
     begin
       AErr := 'cancelled';
       Exit;
@@ -729,7 +737,7 @@ begin
       try
         while True do
         begin
-          if FCancelled then
+          if Cancelled then
           begin
             AErr := 'cancelled';
             Exit;

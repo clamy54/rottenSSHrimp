@@ -216,9 +216,21 @@ end;
 
 destructor TEnrollThread.Destroy;
 begin
+  // Le worker peut encore tourner si l'appelant est sorti sur une exception
+  // avant son WaitFor: le reveiller s'il attend un PIN, lui retirer le token
+  // s'il attend un geste, le rejoindre, et seulement ensuite liberer ce qu'il
+  // lit. L'ordre inverse lui faisait attendre un evenement deja detruit.
+  Terminate;
+  FPinCancelled := True;
+  if FPinDone <> nil then
+    FPinDone.SetEvent;
+  if FOp <> nil then
+    FOp.Cancel;
+  inherited Destroy;    // rejoint le thread
+  if FOp <> nil then
+    FOp.OnPin := nil;
   FPinDone.Free;
   FPin.Free;
-  inherited Destroy;
 end;
 
 function TEnrollThread.PinHook(const AReason: string;

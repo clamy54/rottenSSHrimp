@@ -63,22 +63,24 @@ function DecodeEcdsaDerSignature(const ADer: TBytes; ACoordLen: Integer;
 
 implementation
 
-// Decodage base64 tolerant (lignes, CR/LF), suffisant pour nos propres PEM.
-function B64Decode(const S: string): TBytes;
+// Decodage base64 sur octets (lignes, CR/LF toleres): pas de string, le
+// resultat porte un key handle et doit pouvoir etre efface.
+function B64DecodeBytes(const P: PByte; ACount: NativeUInt): TBytes;
 const
-  ALPH = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  ALPH: AnsiString = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 var
-  i, v, acc, bits, n: Integer;
-  c: Char;
+  i: NativeUInt;
+  v, acc, bits, n: Integer;
+  c: Byte;
 begin
   Result := nil;
-  SetLength(Result, (Length(S) * 3) div 4 + 3);
+  SetLength(Result, (ACount * 3) div 4 + 3);
   n := 0; acc := 0; bits := 0;
-  for i := 1 to Length(S) do
+  for i := 0 to ACount - 1 do
   begin
-    c := S[i];
-    if c = '=' then Break;
-    v := Pos(c, ALPH) - 1;
+    c := P[i];
+    if c = Ord('=') then Break;
+    v := Pos(AnsiChar(c), ALPH) - 1;
     if v < 0 then Continue;
     acc := ((acc shl 6) or v) and $FFFFFF;
     Inc(bits, 6);
@@ -92,76 +94,131 @@ begin
   SetLength(Result, n);
 end;
 
+procedure WipeBytes(var B: TBytes);
+begin
+  if B <> nil then
+    FillChar(B[0], Length(B), 0);
+  B := nil;
+end;
+
 function DecodeSkPrivateFlags(const APem: PByte; ALen: NativeUInt;
   out AFlags: Byte): Boolean;
+const
+  MAGIC: AnsiString = 'openssh-key-v1'#0;
 var
-  txt, b64, line, ktype: string;
-  blob: TBytes;
-  p, pubLen, privLen, i: Integer;
-  lines: TStringArray;
+  b64, blob: TBytes;
+  i, n: NativeUInt;
+  lineStart: Boolean;
+  p, limit, L: Integer;
+  ktype: AnsiString;   // le nom du type n'est pas un secret
 
-  function U32(APos: Integer): LongWord;
-  begin
-    Result := (LongWord(blob[APos]) shl 24) or (LongWord(blob[APos + 1]) shl 16)
-      or (LongWord(blob[APos + 2]) shl 8) or LongWord(blob[APos + 3]);
-  end;
-
-  // saute un « string » SSH; False si tronque
-  function SkipStr(var APos: Integer): Boolean;
+  // Longueur d'un « string » SSH en APos, borne par ALimit. Controles
+  // soustractifs: la longueur vient du fichier, elle n'est jamais additionnee
+  // avant d'avoir ete comparee, un 0x80000000 ne peut donc pas rendre p negatif.
+  function StrLen(APos, ALimit: Integer; out AL: Integer): Boolean;
   var
-    L: LongWord;
+    u: LongWord;
   begin
     Result := False;
-    if APos + 4 > Length(blob) then Exit;
-    L := U32(APos);
-    if (L > LongWord(Length(blob))) or (APos + 4 + Integer(L) > Length(blob)) then Exit;
-    APos := APos + 4 + Integer(L);
+    AL := 0;
+    if (APos < 0) or (ALimit - APos < 4) then Exit;
+    u := (LongWord(blob[APos]) shl 24) or (LongWord(blob[APos + 1]) shl 16)
+      or (LongWord(blob[APos + 2]) shl 8) or LongWord(blob[APos + 3]);
+    if u > LongWord(ALimit - APos - 4) then Exit;
+    AL := Integer(u);
     Result := True;
+  end;
+
+  function SkipStr(var APos: Integer; ALimit: Integer): Boolean;
+  var
+    sl: Integer;
+  begin
+    Result := StrLen(APos, ALimit, sl);
+    if Result then
+      APos := APos + 4 + sl;
+  end;
+
+  function StrIs(APos, ALimit: Integer; const AValue: AnsiString): Boolean;
+  var
+    sl: Integer;
+  begin
+    Result := StrLen(APos, ALimit, sl) and (sl = Length(AValue)) and
+      ((sl = 0) or CompareMem(@blob[APos + 4], PAnsiChar(AValue), sl));
   end;
 
 begin
   Result := False;
   AFlags := 0;
-  if (APem = nil) or (ALen = 0) then Exit;
-  SetString(txt, PAnsiChar(APem), ALen);
-  if Copy(txt, 1, 5) <> '-----' then Exit;
-  b64 := '';
-  lines := txt.Split([#10]);
-  for line in lines do
-    if (Pos('-----', line) <> 1) and (Trim(line) <> '') then
-      b64 := b64 + Trim(line);
-  blob := B64Decode(b64);
-  // openssh-key-v1\0 (15) | string cipher | string kdf | string kdfopts |
-  // u32 nkeys | string pub | string priv
-  if Length(blob) < 15 then Exit;
-  p := 15;
-  for i := 1 to 3 do
-    if not SkipStr(p) then Exit;
-  if p + 4 > Length(blob) then Exit;
-  if U32(p) <> 1 then Exit;
-  Inc(p, 4);
-  if p + 4 > Length(blob) then Exit;
-  pubLen := Integer(U32(p));
-  Inc(p, 4 + pubLen);
-  if p + 4 > Length(blob) then Exit;
-  privLen := Integer(U32(p));
-  Inc(p, 4);
-  if (privLen < 0) or (p + privLen > Length(blob)) then Exit;
-  // section privee: checkint x2 | string type | [string pk | string curve,
-  // string Q] | string application | u8 flags | ...
-  Inc(p, 8);
-  if p + 4 > Length(blob) then Exit;
-  if p + 4 + Integer(U32(p)) > Length(blob) then Exit;
-  SetString(ktype, PAnsiChar(@blob[p + 4]), Integer(U32(p)));
-  if (ktype <> SK_TYPE_ED25519) and (ktype <> SK_TYPE_ECDSA_P256) then Exit;
-  if not SkipStr(p) then Exit;                 // type
-  if ktype = SK_TYPE_ECDSA_P256 then
-    if not SkipStr(p) then Exit;               // courbe
-  if not SkipStr(p) then Exit;                 // pk / Q
-  if not SkipStr(p) then Exit;                 // application
-  if p >= Length(blob) then Exit;
-  AFlags := blob[p];
-  Result := True;
+  if (APem = nil) or (ALen < 5) then Exit;
+  if not CompareMem(APem, PAnsiChar('-----'), 5) then Exit;
+  // Le corps base64, sans les lignes d'armure: on ne passe par aucune string,
+  // tout ce qui a touche le contenu prive est efface a la sortie.
+  b64 := nil;
+  SetLength(b64, ALen);
+  n := 0;
+  lineStart := True;
+  i := 0;
+  while i < ALen do
+  begin
+    if lineStart and (APem[i] = Ord('-')) then
+    begin
+      while (i < ALen) and (APem[i] <> 10) do Inc(i);
+      lineStart := True;
+    end
+    else
+    begin
+      lineStart := APem[i] = 10;
+      if APem[i] > 32 then
+      begin
+        b64[n] := APem[i];
+        Inc(n);
+      end;
+    end;
+    Inc(i);
+  end;
+  blob := nil;
+  try
+    if n > 0 then
+      blob := B64DecodeBytes(@b64[0], n);
+    WipeBytes(b64);
+    // openssh-key-v1\0 (15) | string cipher | string kdf | string kdfopts |
+    // u32 nkeys | string pub | string priv
+    limit := Length(blob);
+    if limit < 15 then Exit;
+    if not CompareMem(@blob[0], PAnsiChar(MAGIC), 15) then Exit;
+    p := 15;
+    if not StrIs(p, limit, 'none') then Exit;   // cipher: nous n'en posons pas
+    if not SkipStr(p, limit) then Exit;
+    if not StrIs(p, limit, 'none') then Exit;   // kdf
+    if not SkipStr(p, limit) then Exit;
+    if not SkipStr(p, limit) then Exit;         // kdfopts
+    if limit - p < 4 then Exit;
+    if (blob[p] <> 0) or (blob[p + 1] <> 0) or (blob[p + 2] <> 0)
+      or (blob[p + 3] <> 1) then Exit;          // nkeys = 1
+    Inc(p, 4);
+    if not SkipStr(p, limit) then Exit;         // pub
+    if not StrLen(p, limit, L) then Exit;       // priv
+    Inc(p, 4);
+    limit := p + L;   // la lecture ne sort plus de la section privee
+    // section privee: checkint x2 | string type | [string pk | string curve,
+    // string Q] | string application | u8 flags | ...
+    if limit - p < 8 then Exit;
+    Inc(p, 8);
+    if not StrLen(p, limit, L) then Exit;
+    SetString(ktype, PAnsiChar(@blob[p + 4]), L);
+    if (ktype <> SK_TYPE_ED25519) and (ktype <> SK_TYPE_ECDSA_P256) then Exit;
+    Inc(p, 4 + L);                              // type
+    if ktype = SK_TYPE_ECDSA_P256 then
+      if not SkipStr(p, limit) then Exit;       // courbe
+    if not SkipStr(p, limit) then Exit;         // pk / Q
+    if not SkipStr(p, limit) then Exit;         // application
+    if p >= limit then Exit;
+    AFlags := blob[p];
+    Result := True;
+  finally
+    WipeBytes(b64);
+    WipeBytes(blob);
+  end;
 end;
 
 function SkTypeName(AAlg: TSkAlg): string;

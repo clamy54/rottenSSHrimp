@@ -465,14 +465,27 @@ begin
       // vit dans le key handle, on le relit plutot que de le deviner -- une
       // rotation qui retirait le PIN en silence affaiblissait ce que
       // l'utilisateur avait choisi.
-      wantUv := False;
-      if AModel.GetSecret(ACredUuid, FIELD_CRED_PRIVATE_KEY, oldPem) then
-        try
-          if DecodeSkPrivateFlags(oldPem.Data, oldPem.Len, skFlags) then
-            wantUv := (skFlags and SSH_SK_USER_VERIFICATION_REQD) <> 0;
-        finally
-          oldPem.Free;
+      // Et si on ne peut pas la relire, on s'arrete: deviner « sans PIN »
+      // serait choisir le reglage le plus faible a la place de l'utilisateur.
+      if not AModel.GetSecret(ACredUuid, FIELD_CRED_PRIVATE_KEY, oldPem) then
+      begin
+        AErr := 'Rotation aborted: the current security-key credential ' +
+          'cannot be read, so its PIN requirement cannot be carried over.' +
+          LineEnding + 'The current key is unchanged.';
+        Exit;
+      end;
+      try
+        if not DecodeSkPrivateFlags(oldPem.Data, oldPem.Len, skFlags) then
+        begin
+          AErr := 'Rotation aborted: the stored key is not a readable FIDO2 ' +
+            'key, so its PIN requirement cannot be carried over.' +
+            LineEnding + 'The current key is unchanged.';
+          Exit;
         end;
+      finally
+        oldPem.Free;
+      end;
+      wantUv := (skFlags and SSH_SK_USER_VERIFICATION_REQD) <> 0;
       if not EnrollFidoKeyWithDialog(nil, cred.Username, wantUv,
         newPem, newLine, algName, enrollErr) then
       begin
