@@ -112,8 +112,13 @@ jobs:
             # Tumbleweed nomme le devel de FreeRDP 3 « freerdp-devel » tout court
             # (freerdp2-devel pour l'ancienne branche): pas de freerdp3-devel ici.
             install: zypper --non-interactive install gcc pkg-config freerdp-devel
+            # Rolling release: entre deux instantanes, zypper ne resout parfois
+            # plus rien (vu: gcc 16 en cours d'entree, freerdp-devel orphelin).
+            # On garde l'information, pas le rouge.
+            informational: true
     runs-on: ubuntu-latest
     container: ${{ matrix.distro }}
+    continue-on-error: ${{ matrix.informational == true }}
     steps:
       - uses: actions/checkout@v4
       - name: Installer les en-tetes FreeRDP
