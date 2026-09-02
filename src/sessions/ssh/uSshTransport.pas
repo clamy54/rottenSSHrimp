@@ -453,19 +453,20 @@ begin
 end;
 
 procedure TSshChannelBase.SkCancel;
-var
-  op: TObject;
 begin
   FSkPinCancelled := True;
   FSkEvent.SetEvent;
+  // Cancel SOUS le verrou: TryFidoKey depublie FSkOp sous ce meme verrou
+  // avant de liberer l'objet. Relacher entre la lecture et l'appel laisserait
+  // le thread de session le detruire sous nos pieds. Cancel ne bloque pas
+  // (un drapeau et fido_dev_cancel), tenir le verrou ne coute rien.
   FSockLock.Acquire;
   try
-    op := FSkOp;
+    if FSkOp <> nil then
+      TFidoOperation(FSkOp).Cancel;
   finally
     FSockLock.Release;
   end;
-  if op <> nil then
-    TFidoOperation(op).Cancel;
 end;
 
 { TSshTransport }

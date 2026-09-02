@@ -43,6 +43,11 @@ type
   TSkAlg = (skaEd25519, skaEcdsaP256);
 
 function SkTypeName(AAlg: TSkAlg): string;
+// Relit les drapeaux (0x01 presence, 0x04 PIN) dans une cle privee sk telle que
+// nous l'encodons; False si ce n'est pas une cle sk lisible. Sert a la rotation:
+// une cle qui exigeait le PIN doit etre remplacee par une cle qui l'exige.
+function DecodeSkPrivateFlags(const APem: PByte; ALen: NativeUInt;
+  out AFlags: Byte): Boolean;
 // APk: 32 octets (ed25519) ou 65 octets 0x04||X||Y (ecdsa p256).
 function EncodeSkPublicLine(AAlg: TSkAlg; const APk: TBytes;
   const AApplication, AComment: string): string;
@@ -57,6 +62,107 @@ function DecodeEcdsaDerSignature(const ADer: TBytes; ACoordLen: Integer;
   out R, S: TBytes): Boolean;
 
 implementation
+
+// Decodage base64 tolerant (lignes, CR/LF), suffisant pour nos propres PEM.
+function B64Decode(const S: string): TBytes;
+const
+  ALPH = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+var
+  i, v, acc, bits, n: Integer;
+  c: Char;
+begin
+  Result := nil;
+  SetLength(Result, (Length(S) * 3) div 4 + 3);
+  n := 0; acc := 0; bits := 0;
+  for i := 1 to Length(S) do
+  begin
+    c := S[i];
+    if c = '=' then Break;
+    v := Pos(c, ALPH) - 1;
+    if v < 0 then Continue;
+    acc := ((acc shl 6) or v) and $FFFFFF;
+    Inc(bits, 6);
+    if bits >= 8 then
+    begin
+      Dec(bits, 8);
+      Result[n] := (acc shr bits) and $FF;
+      Inc(n);
+    end;
+  end;
+  SetLength(Result, n);
+end;
+
+function DecodeSkPrivateFlags(const APem: PByte; ALen: NativeUInt;
+  out AFlags: Byte): Boolean;
+var
+  txt, b64, line, ktype: string;
+  blob: TBytes;
+  p, pubLen, privLen, i: Integer;
+  lines: TStringArray;
+
+  function U32(APos: Integer): LongWord;
+  begin
+    Result := (LongWord(blob[APos]) shl 24) or (LongWord(blob[APos + 1]) shl 16)
+      or (LongWord(blob[APos + 2]) shl 8) or LongWord(blob[APos + 3]);
+  end;
+
+  // saute un « string » SSH; False si tronque
+  function SkipStr(var APos: Integer): Boolean;
+  var
+    L: LongWord;
+  begin
+    Result := False;
+    if APos + 4 > Length(blob) then Exit;
+    L := U32(APos);
+    if (L > LongWord(Length(blob))) or (APos + 4 + Integer(L) > Length(blob)) then Exit;
+    APos := APos + 4 + Integer(L);
+    Result := True;
+  end;
+
+begin
+  Result := False;
+  AFlags := 0;
+  if (APem = nil) or (ALen = 0) then Exit;
+  SetString(txt, PAnsiChar(APem), ALen);
+  if Copy(txt, 1, 5) <> '-----' then Exit;
+  b64 := '';
+  lines := txt.Split([#10]);
+  for line in lines do
+    if (Pos('-----', line) <> 1) and (Trim(line) <> '') then
+      b64 := b64 + Trim(line);
+  blob := B64Decode(b64);
+  // openssh-key-v1\0 (15) | string cipher | string kdf | string kdfopts |
+  // u32 nkeys | string pub | string priv
+  if Length(blob) < 15 then Exit;
+  p := 15;
+  for i := 1 to 3 do
+    if not SkipStr(p) then Exit;
+  if p + 4 > Length(blob) then Exit;
+  if U32(p) <> 1 then Exit;
+  Inc(p, 4);
+  if p + 4 > Length(blob) then Exit;
+  pubLen := Integer(U32(p));
+  Inc(p, 4 + pubLen);
+  if p + 4 > Length(blob) then Exit;
+  privLen := Integer(U32(p));
+  Inc(p, 4);
+  if (privLen < 0) or (p + privLen > Length(blob)) then Exit;
+  // section privee: checkint x2 | string type | [string pk | string curve,
+  // string Q] | string application | u8 flags | ...
+  Inc(p, 8);
+  if p + 4 > Length(blob) then Exit;
+  if p + 4 + Integer(U32(p)) > Length(blob) then Exit;
+  SetString(ktype, PAnsiChar(@blob[p + 4]), Integer(U32(p)));
+  if (ktype <> SK_TYPE_ED25519) and (ktype <> SK_TYPE_ECDSA_P256) then Exit;
+  if not SkipStr(p) then Exit;                 // type
+  if ktype = SK_TYPE_ECDSA_P256 then
+    if not SkipStr(p) then Exit;               // courbe
+  if not SkipStr(p) then Exit;                 // pk / Q
+  if not SkipStr(p) then Exit;                 // application
+  if p >= Length(blob) then Exit;
+  AFlags := blob[p];
+  Result := True;
+end;
 
 function SkTypeName(AAlg: TSkAlg): string;
 begin

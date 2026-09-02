@@ -24,7 +24,7 @@ implementation
 uses
   Forms, Controls, StdCtrls, Dialogs,
   uSecureBytes, uSshTransport, uSshTunnel, uSshTunnelConnect, uSshConnect,
-  uSshKeyGen, uAuthPrompt, uFidoPrompt;
+  uSshKeyGen, uAuthPrompt, uFidoPrompt, uSshSkKeyGen;
 
 type
   TCopyIdRun = class
@@ -205,6 +205,7 @@ function RunSshExecOnHost(ADoc: TRshDocument; AModel: TRshModel;
   out AExitCode: Integer; out AOutput, AErr: string;
   out ACancelled: Boolean): Boolean;
 var
+  prompts: TFidoSessionPrompts;
   params: TSshConnectParams;
   run: TCopyIdRun;
   broker, tunBroker: TSshTunnelBroker;
@@ -261,6 +262,9 @@ begin
     tr.OnData := @run.HandleData;
     tr.OnError := @run.HandleError;
     tr.OnFinished := @run.HandleFinished;
+    prompts := TFidoSessionPrompts.Create(nil);
+    tr.OnSkNotice := @prompts.SkNotice;
+    tr.OnSkPin := @prompts.SkPin;
     tr.Start;
 
     // sans pompe a messages, les dialogues de cle d'hote (Synchronize) pendent
@@ -272,7 +276,7 @@ begin
       begin
         Application.ProcessMessages;
         if run.Finished or run.Failed then Break;
-        if dlg.Cancelled then
+        if dlg.Cancelled or prompts.Cancelled then
         begin
           ACancelled := True;
           tr.Shutdown;
@@ -291,6 +295,9 @@ begin
     finally
       Screen.Cursor := crDefault;
       dlg.Free;
+      tr.OnSkNotice := nil;
+      tr.OnSkPin := nil;
+      prompts.Free;
     end;
 
     if ACancelled then
@@ -407,6 +414,9 @@ var
   node: TRshNode;
   newPem: TSecureBytes;
   oldLine, newLine, output, hostErr, algName, enrollErr: string;
+  oldPem: TSecureBytes;
+  skFlags: Byte;
+  wantUv: Boolean;
   i, exitCode: Integer;
   cancelled: Boolean;
   warnings: string;
@@ -451,7 +461,19 @@ begin
     // passe ne commence.
     if cred.AuthType = atFidoKey then
     begin
-      if not EnrollFidoKeyWithDialog(nil, cred.Username, False,
+      // La nouvelle cle reprend l'exigence de PIN de l'ancienne: le drapeau
+      // vit dans le key handle, on le relit plutot que de le deviner -- une
+      // rotation qui retirait le PIN en silence affaiblissait ce que
+      // l'utilisateur avait choisi.
+      wantUv := False;
+      if AModel.GetSecret(ACredUuid, FIELD_CRED_PRIVATE_KEY, oldPem) then
+        try
+          if DecodeSkPrivateFlags(oldPem.Data, oldPem.Len, skFlags) then
+            wantUv := (skFlags and SSH_SK_USER_VERIFICATION_REQD) <> 0;
+        finally
+          oldPem.Free;
+        end;
+      if not EnrollFidoKeyWithDialog(nil, cred.Username, wantUv,
         newPem, newLine, algName, enrollErr) then
       begin
         if enrollErr = '' then

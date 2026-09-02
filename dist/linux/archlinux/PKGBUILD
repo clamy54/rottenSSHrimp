@@ -9,7 +9,7 @@
 # argv[0] resterait /usr/bin/rottensshrimp.
 
 pkgname=rottensshrimp
-pkgver=1.2
+pkgver=1.3
 pkgrel=1
 pkgdesc='SSH, RDP and VNC connection manager'
 arch=('x86_64')
@@ -69,11 +69,12 @@ optdepends=('libfido2: SSH authentication with FIDO2 security keys')
 _gitname=rottenSSHrimp
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 
-# Empreinte de l'archive du tag, pas un SKIP: le tag d'une version publiee ne
-# bouge plus, et ce PKGBUILD n'etant pas DANS cette archive-la, il n'y a aucun
-# cycle a casser. A REGENERER a chaque montee de version (`updpkgsums`), sinon
-# makepkg refusera une source pourtant legitime.
-sha256sums=('7a2eb0c3f7125e838098d6edfdea68617be6a67ab11232d7f13f5a37f71ec152')
+# SKIP, et la raison n'est pas la paresse: depuis la 1.3 ce PKGBUILD est DANS
+# l'archive dont il devrait donner l'empreinte -- y inscrire une somme change
+# l'archive, donc la somme, indefiniment. (La 1.2 y echappait: le fichier n'y
+# figurait pas encore.) Sur AUR, ou le PKGBUILD vit dans son propre depot, le
+# cycle disparait: lancer `updpkgsums` et remplacer SKIP par la somme obtenue.
+sha256sums=('SKIP')
 
 build() {
   cd "$_gitname-$pkgver"

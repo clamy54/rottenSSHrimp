@@ -36,7 +36,7 @@ function EstablishJumpTunnel(ADoc: TRshDocument; AModel: TRshModel;
 implementation
 
 uses
-  StdCtrls, uHostKeyDialog, uSshConnect;
+  StdCtrls, uHostKeyDialog, uSshConnect, uFidoPrompt;
 
 type
   TTunnelWaitDialog = class
@@ -163,6 +163,7 @@ function EstablishJumpTunnel(ADoc: TRshDocument; AModel: TRshModel;
   out ATunnel: TSshTunnel; out ABroker: TSshTunnelBroker;
   out ALocalPort: Integer; out AErr: string): Boolean;
 var
+  prompts: TFidoSessionPrompts;
   gwParams: TSshConnectParams;
   gwName: string;
   tun: TSshTunnel;
@@ -195,6 +196,11 @@ begin
   tun.OnHostKeyLookup := @broker.HostKeyLookup;
   tun.OnHostKey := @broker.HostKeyAsk;
   tun.OnHostKeySave := @broker.HostKeySave;
+  // cle de securite sur le bastion: l'avis et le PIN, sinon une cle a PIN
+  // echoue ici sans un mot
+  prompts := TFidoSessionPrompts.Create(nil);
+  tun.OnSkNotice := @prompts.SkNotice;
+  tun.OnSkPin := @prompts.SkPin;
   tun.Start;
 
   // sans pompe a messages, les dialogues (Synchronize) ne s'affichent pas
@@ -209,7 +215,7 @@ begin
       if tun.LocalPort > 0 then Break;
       if tun.LastError <> '' then Break;
       // Shutdown interrompt DNS/TCP sans attendre le timeout de la passerelle
-      if dlg.Cancelled then
+      if dlg.Cancelled or prompts.Cancelled then
       begin
         cancelled := True;
         tun.Shutdown;
@@ -227,6 +233,11 @@ begin
   finally
     Screen.Cursor := crDefault;
     dlg.Free;   // apres le Shutdown, jamais avant
+    // le tunnel survit a cette fonction: detacher AVANT de liberer, un
+    // DoSkNotice encore en file viserait un objet mort
+    tun.OnSkNotice := nil;
+    tun.OnSkPin := nil;
+    prompts.Free;
   end;
 
   if tun.LocalPort > 0 then

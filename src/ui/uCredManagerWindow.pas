@@ -66,6 +66,12 @@ type
     FUvCheck: TCheckBox;
     FHasStoredKey: Boolean;
     FPublicKey: string;
+    // Ce qu'on a lu en ouvrant: changer de type de cle repart de zero (un PEM
+    // Ed25519 ne devient pas un key handle FIDO2, ni l'inverse), revenir au
+    // type d'origine retrouve la cle.
+    FOrigAuth: TAuthType;
+    FOrigPublicKey: string;
+    FOrigHasKey: Boolean;
     // Fige a l'enrolement: le drapeau vit dans le key handle, pas chez nous.
     FSkFlags: Byte;
     procedure AuthChanged(Sender: TObject);
@@ -309,6 +315,9 @@ begin
       FKeyEdit.Text := cur.KeyPathHint;
       FHasStoredKey := cur.HasPrivateKey;
       FPublicKey := cur.PublicKey;
+      FOrigAuth := cur.AuthType;
+      FOrigPublicKey := cur.PublicKey;
+      FOrigHasKey := cur.HasPrivateKey;
       FAuthCombo.ItemIndex := ComboOfAuth(cur.AuthType);
       if cur.HasPassword and
          FModel.GetSecret(AUuid, FIELD_CRED_PASSWORD, back) then
@@ -379,6 +388,19 @@ end;
 
 procedure TCredEditForm.AuthChanged(Sender: TObject);
 begin
+  if AuthOfCombo(FAuthCombo.ItemIndex) = FOrigAuth then
+  begin
+    FPublicKey := FOrigPublicKey;
+    FHasStoredKey := FOrigHasKey;
+  end
+  else
+  begin
+    // Sans cela, une cle publique heritee de l'autre type empechait la
+    // generation ou l'enrolement, et l'identifiant sortait avec le nouveau
+    // type et l'ancienne cle, inutilisable.
+    FPublicKey := '';
+    FHasStoredKey := False;
+  end;
   UpdateRows;
 end;
 

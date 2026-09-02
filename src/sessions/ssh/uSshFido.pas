@@ -527,9 +527,15 @@ begin
     Exit;
   end;
 
+  // FCancelled n'est JAMAIS remis a zero ici: un Cancel recu pendant
+  // l'attente du verrou (un autre onglet tient le token) doit compter.
   GFidoLock.Acquire;
   try
-    FCancelled := False;
+    if FCancelled then
+    begin
+      AErr := 'cancelled';
+      Exit;
+    end;
     if not OpenDevice(AApplication, nil, AErr) then Exit;
     try
       PreferredAlg(alg);
@@ -708,7 +714,11 @@ begin
 
   GFidoLock.Acquire;
   try
-    FCancelled := False;
+    if FCancelled then
+    begin
+      AErr := 'cancelled';
+      Exit;
+    end;
     if not OpenDevice(AApplication, AKeyHandle, AErr) then Exit;
     try
       isHello := Assigned(fido_dev_is_winhello) and fido_dev_is_winhello(FDev);

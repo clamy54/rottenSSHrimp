@@ -32,6 +32,26 @@ type
     procedure SetText(const AText: string);
   end;
 
+  // Plomberie commune a TOUS les sites qui lancent un transport (onglet,
+  // cluster, rebond, copy-id): l'avis « touchez » et l'invite PIN. Sans elle,
+  // une cle a PIN echoue partout ailleurs que dans l'onglet simple, sans un mot.
+  // Annuler ferme l'avis et: appelle AOnCancel s'il y en a un, et leve
+  // Cancelled pour les boucles d'attente qui n'ont pas d'objet a arreter.
+  TFidoSessionPrompts = class
+  private
+    FNotice: TFidoTouchNotice;
+    FOnCancel: TNotifyEvent;
+    FCancelled: Boolean;
+    procedure NoticeCancel(Sender: TObject);
+  public
+    constructor Create(AOnCancel: TNotifyEvent);
+    destructor Destroy; override;
+    procedure SkNotice(AActive: Boolean; const AText: string);
+    procedure SkPin(const APrompt: string; out APin: TSecureBytes;
+      var ACancelled: Boolean);
+    property Cancelled: Boolean read FCancelled;
+  end;
+
 // PIN d'une cle de securite. False = l'utilisateur renonce.
 function AskFidoPin(const APrompt: string; out APin: TSecureBytes): Boolean;
 
@@ -45,7 +65,7 @@ function EnrollFidoKeyWithDialog(AOwner: TCustomForm;
 implementation
 
 uses
-  uTheme, uAuthPrompt, uSshKeyGen, uSodiumApi, Dialogs;
+  SyncObjs, uTheme, uAuthPrompt, uSshKeyGen, uSodiumApi, Dialogs;
 
 { TFidoTouchNotice }
 
@@ -107,6 +127,50 @@ begin
   Result := AskSecret(APrompt, APin);
 end;
 
+{ TFidoSessionPrompts }
+
+constructor TFidoSessionPrompts.Create(AOnCancel: TNotifyEvent);
+begin
+  inherited Create;
+  FOnCancel := AOnCancel;
+end;
+
+destructor TFidoSessionPrompts.Destroy;
+begin
+  FreeAndNil(FNotice);
+  inherited Destroy;
+end;
+
+procedure TFidoSessionPrompts.NoticeCancel(Sender: TObject);
+begin
+  FCancelled := True;
+  FreeAndNil(FNotice);
+  if Assigned(FOnCancel) then
+    FOnCancel(Sender);
+end;
+
+procedure TFidoSessionPrompts.SkNotice(AActive: Boolean; const AText: string);
+begin
+  if AActive then
+  begin
+    if FNotice = nil then
+      FNotice := TFidoTouchNotice.Create(AText, @NoticeCancel)
+    else
+      FNotice.SetText(AText);
+  end
+  else
+    FreeAndNil(FNotice);
+end;
+
+procedure TFidoSessionPrompts.SkPin(const APrompt: string;
+  out APin: TSecureBytes; var ACancelled: Boolean);
+begin
+  APin := nil;
+  ACancelled := not AskFidoPin(APrompt, APin);
+  if ACancelled then
+    FCancelled := True;
+end;
+
 { Enrolement }
 
 type
@@ -120,18 +184,21 @@ type
     FResult: TFidoEnrollment;
     FOk: Boolean;
     FErr: string;
-    // Le PIN est demande par le thread UI: la fenetre est a lui.
-    FPinWanted: Boolean;
+    // Le PIN est demande par le thread UI: la fenetre est a lui. L'echange
+    // passe par un evenement (barriere memoire comprise), pas par des champs
+    // sondes en boucle: sur ARM64 une publication partielle se verrait.
+    FPinWanted: LongInt;      // 0/1, Interlocked
     FPinPrompt: string;
     FPin: TSecureBytes;
-    FPinDone: Boolean;
     FPinCancelled: Boolean;
+    FPinDone: TEvent;
     function PinHook(const AReason: string; out APin: TSecureBytes): Boolean;
   protected
     procedure Execute; override;
   public
     constructor Create(AOp: TFidoOperation; const AApplication, AUserName: string;
       ARequireUv: Boolean);
+    destructor Destroy; override;
   end;
 
 constructor TEnrollThread.Create(AOp: TFidoOperation;
@@ -143,7 +210,15 @@ begin
   FApplication := AApplication;
   FUserName := AUserName;
   FRequireUv := ARequireUv;
+  FPinDone := TEvent.Create(nil, True, False, '');
   FOp.OnPin := @PinHook;
+end;
+
+destructor TEnrollThread.Destroy;
+begin
+  FPinDone.Free;
+  FPin.Free;
+  inherited Destroy;
 end;
 
 function TEnrollThread.PinHook(const AReason: string;
@@ -151,15 +226,16 @@ function TEnrollThread.PinHook(const AReason: string;
 begin
   // On publie la demande et on attend que le thread UI la serve; pas de
   // Synchronize, la boucle d'attente de l'appelant fait deja tourner les
-  // messages et un Synchronize s'y emboiterait mal.
+  // messages et un Synchronize s'y emboiterait mal. Les champs sont ecrits
+  // AVANT le drapeau Interlocked, et relus APRES l'evenement: les deux posent
+  // la barriere qui manquait.
   APin := nil;
   FPinPrompt := AReason;
   FPin := nil;
-  FPinDone := False;
   FPinCancelled := False;
-  FPinWanted := True;
-  while (not FPinDone) and (not Terminated) do
-    Sleep(30);
+  FPinDone.ResetEvent;
+  InterlockedExchange(FPinWanted, 1);
+  while (FPinDone.WaitFor(50) = wrTimeout) and (not Terminated) do ;
   Result := (not FPinCancelled) and (FPin <> nil);
   if Result then
   begin
@@ -231,9 +307,8 @@ begin
     while not th.Finished do
     begin
       Application.ProcessMessages;
-      if th.FPinWanted then
+      if InterlockedExchange(th.FPinWanted, 0) = 1 then
       begin
-        th.FPinWanted := False;
         notice.SetText('Enter the PIN of your security key.');
         pin := nil;
         if AskFidoPin(th.FPinPrompt, pin) then
@@ -243,7 +318,7 @@ begin
         end
         else
           th.FPinCancelled := True;
-        th.FPinDone := True;
+        th.FPinDone.SetEvent;   // apres les ecritures: c'est lui qui les publie
         notice.SetText('Touch your security key.');
       end;
       Sleep(15);

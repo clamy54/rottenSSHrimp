@@ -34,7 +34,10 @@ type
     FState: TRemoteSessionState;
     FErrorMsg: string;
     FLabel: TLabel;
+    // avis « touchez » et PIN de la cle de securite, par cellule
+    FSkPrompts: TObject;
 
+    procedure SkCancel(Sender: TObject);
     procedure TermSend(const AData: RawByteString);
     procedure TermGridResize(ACols, ARows: Integer);
     procedure TransportData(const AData: RawByteString);
@@ -127,7 +130,7 @@ type
 implementation
 
 uses
-  uHostKeyDialog, uTheme;
+  uHostKeyDialog, uTheme, uFidoPrompt;
 
 const
   CLUSTER_ACCENTS: array[0..15] of TColor = (
@@ -221,6 +224,15 @@ begin
   FTransport.OnHostKey := @HostKeyAsk;
   FTransport.OnHostKeyLookup := @HostKeyLookup;
   FTransport.OnHostKeySave := @HostKeySave;
+  FSkPrompts := TFidoSessionPrompts.Create(@SkCancel);
+  FTransport.OnSkNotice := @TFidoSessionPrompts(FSkPrompts).SkNotice;
+  FTransport.OnSkPin := @TFidoSessionPrompts(FSkPrompts).SkPin;
+end;
+
+procedure TClusterCell.SkCancel(Sender: TObject);
+begin
+  if FTransport <> nil then
+    FTransport.Shutdown;
 end;
 
 destructor TClusterCell.Destroy;
@@ -238,6 +250,7 @@ begin
     FTunnel.Free;
     FTunnel := nil;
   end;
+  FreeAndNil(FSkPrompts);   // apres le transport, joint et libere
   FreeAndNil(FBroker);
   // piege mordu deux fois: la fin de session a pu deposer des appels differes
   Application.RemoveAsyncCalls(Self);
