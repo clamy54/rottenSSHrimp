@@ -992,6 +992,8 @@ begin
   end;
   ctx.Alg := alg;
 
+  handle := nil;
+  try
   SetLength(handle, handle_len);
   if handle_len > 0 then
     Move(key_handle^, handle[0], handle_len);
@@ -1027,6 +1029,11 @@ begin
     end;
   end;
   Result := 0;
+  finally
+    // Notre copie du key handle; libssh2 garde la sienne le temps de
+    // l'authentification, hors de notre portee.
+    WipeBytes(handle);
+  end;
 end;
 
 function TSshChannelBase.Authenticate: Boolean;

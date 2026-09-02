@@ -95,6 +95,7 @@ const
   // Le token attend le doigt: large, c'est l'utilisateur qui decide. Le budget
   // reseau de la session est re-arme apres le geste, il ne compte pas ici.
   FIDO_TIMEOUT_MS = 60000;
+  FIDO_PROBE_TIMEOUT_MS = 5000;   // assertion muette: aucun geste attendu
   MAX_PIN_TRIES = 3;
   CHALLENGE_LEN = 32;
   USER_ID_LEN = 32;
@@ -407,8 +408,13 @@ begin
         fido_dev_free(@dev);
         Continue;
       end;
+      // Publie AVANT le sondage: Cancel ne peut interrompre que ce qu'il
+      // voit, et un token defaillant peut retenir fido_dev_get_assert jusqu'au
+      // delai. Le sondage n'attend aucun geste: un delai court lui suffit, le
+      // delai complet n'est arme que pour le token retenu.
+      SetDev(dev);
       if Assigned(fido_dev_set_timeout) then
-        fido_dev_set_timeout(dev, FIDO_TIMEOUT_MS);
+        fido_dev_set_timeout(dev, FIDO_PROBE_TIMEOUT_MS);
 
       if Length(AKeyHandle) = 0 then
       begin
@@ -416,7 +422,8 @@ begin
         if fido_dev_is_fido2(dev) then
         begin
           FDeviceName := DescribeDevice(di);
-          SetDev(dev);
+          if Assigned(fido_dev_set_timeout) then
+            fido_dev_set_timeout(dev, FIDO_TIMEOUT_MS);
           Exit(True);
         end;
       end
@@ -430,10 +437,12 @@ begin
               DeviceHoldsCredential(dev, AApplication, AKeyHandle) then
       begin
         FDeviceName := DescribeDevice(di);
-        SetDev(dev);
+        if Assigned(fido_dev_set_timeout) then
+          fido_dev_set_timeout(dev, FIDO_TIMEOUT_MS);
         Exit(True);
       end;
 
+      SetDev(nil);   // sous verrou: Cancel ne doit plus le voir
       fido_dev_close(dev);
       fido_dev_free(@dev);
     end;

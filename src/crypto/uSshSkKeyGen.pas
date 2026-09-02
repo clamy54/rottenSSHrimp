@@ -48,6 +48,8 @@ function SkTypeName(AAlg: TSkAlg): string;
 // une cle qui exigeait le PIN doit etre remplacee par une cle qui l'exige.
 function DecodeSkPrivateFlags(const APem: PByte; ALen: NativeUInt;
   out AFlags: Byte): Boolean;
+// Efface puis libere un TBytes qui a porte un key handle.
+procedure WipeBytes(var B: TBytes);
 // APk: 32 octets (ed25519) ou 65 octets 0x04||X||Y (ecdsa p256).
 function EncodeSkPublicLine(AAlg: TSkAlg; const APk: TBytes;
   const AApplication, AComment: string): string;
@@ -63,19 +65,20 @@ function DecodeEcdsaDerSignature(const ADer: TBytes; ACoordLen: Integer;
 
 implementation
 
-// Decodage base64 sur octets (lignes, CR/LF toleres): pas de string, le
-// resultat porte un key handle et doit pouvoir etre efface.
-function B64DecodeBytes(const P: PByte; ACount: NativeUInt): TBytes;
+// Decodage base64 sur octets (lignes, CR/LF toleres) dans un tampon fourni,
+// jamais reduit: un SetLength de reduction realloue et laisse l'ancien bloc
+// tel quel dans le tas. ADst fait au moins (ACount * 3) div 4 + 3 octets;
+// AN recoit la taille utile.
+procedure B64DecodeInto(const P: PByte; ACount: NativeUInt; var ADst: TBytes;
+  out AN: Integer);
 const
   ALPH: AnsiString = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 var
   i: NativeUInt;
-  v, acc, bits, n: Integer;
+  v, acc, bits: Integer;
   c: Byte;
 begin
-  Result := nil;
-  SetLength(Result, (ACount * 3) div 4 + 3);
-  n := 0; acc := 0; bits := 0;
+  AN := 0; acc := 0; bits := 0;
   for i := 0 to ACount - 1 do
   begin
     c := P[i];
@@ -87,11 +90,10 @@ begin
     if bits >= 8 then
     begin
       Dec(bits, 8);
-      Result[n] := (acc shr bits) and $FF;
-      Inc(n);
+      ADst[AN] := (acc shr bits) and $FF;
+      Inc(AN);
     end;
   end;
-  SetLength(Result, n);
 end;
 
 procedure WipeBytes(var B: TBytes);
@@ -178,12 +180,14 @@ begin
   end;
   blob := nil;
   try
+    SetLength(blob, (n * 3) div 4 + 3);
+    limit := 0;
     if n > 0 then
-      blob := B64DecodeBytes(@b64[0], n);
+      B64DecodeInto(@b64[0], n, blob, limit);
     WipeBytes(b64);
     // openssh-key-v1\0 (15) | string cipher | string kdf | string kdfopts |
-    // u32 nkeys | string pub | string priv
-    limit := Length(blob);
+    // u32 nkeys | string pub | string priv. « limit » est la taille utile,
+    // pas Length(blob).
     if limit < 15 then Exit;
     if not CompareMem(@blob[0], PAnsiChar(MAGIC), 15) then Exit;
     p := 15;

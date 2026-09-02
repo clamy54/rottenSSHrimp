@@ -30,6 +30,8 @@ type
     constructor Create(const AText: string; AOnCancel: TNotifyEvent);
     destructor Destroy; override;
     procedure SetText(const AText: string);
+    // Retire la fenetre sans la detruire: appelable depuis son propre bouton.
+    procedure Hide;
   end;
 
   // Plomberie commune a TOUS les sites qui lancent un transport (onglet,
@@ -116,6 +118,11 @@ begin
   FLabel.Caption := AText;
 end;
 
+procedure TFidoTouchNotice.Hide;
+begin
+  FForm.Visible := False;
+end;
+
 procedure TFidoTouchNotice.CancelClick(Sender: TObject);
 begin
   if Assigned(FOnCancel) then
@@ -144,7 +151,11 @@ end;
 procedure TFidoSessionPrompts.NoticeCancel(Sender: TObject);
 begin
   FCancelled := True;
-  FreeAndNil(FNotice);
+  // On est dans le OnClick du bouton de cette fenetre: la detruire ici, c'est
+  // liberer l'objet dont le gestionnaire est encore sur la pile. On la cache;
+  // l'avis « inactif » du transport, ou le destructeur, la libere plus tard.
+  if FNotice <> nil then
+    FNotice.Hide;
   if Assigned(FOnCancel) then
     FOnCancel(Sender);
 end;
@@ -373,6 +384,9 @@ begin
     else
       AErr := th.FErr;
   finally
+    // Le key handle a ete recopie dans le PEM (memoire sure); la copie de
+    // travail du thread ne doit pas lui survivre dans le tas.
+    WipeBytes(th.FResult.KeyHandle);
     th.Free;
     notice.Free;
     op.Free;
