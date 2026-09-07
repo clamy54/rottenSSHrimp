@@ -8,7 +8,7 @@ unit uSafeSave;
 interface
 
 uses
-  Classes, SysUtils{$IFDEF UNIX}, BaseUnix{$ENDIF};
+  Classes, SysUtils{$IFDEF UNIX}, BaseUnix, Unix{$ENDIF}; // Unix: fpfsync
 
 type
   TOwnedHandleStream = class(THandleStream)
