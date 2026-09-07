@@ -5,6 +5,9 @@ unit uLocalPty;
 // Pseudo-terminal local. Darwin/Linux: fork/exec du shell sur un pty maitre.
 // Windows: PowerShell sur une pseudo-console ConPTY (10 1809+), memes sequences
 // VT. Le lecteur pousse par TThread.Queue; aucun appel LCL ici.
+// Les ecritures passent par un thread et une file BORNEE: un shell qui ne lit
+// plus son entree (tampon plein) bloquait le thread UI sur un gros collage,
+// et avec lui tous les autres onglets. Au-dela de la borne, on jette.
 
 interface
 
@@ -28,6 +31,15 @@ type
     constructor Create(AOwner: TLocalPty);
   end;
 
+  TPtyWriterThread = class(TThread)
+  private
+    FOwner: TLocalPty;
+  protected
+    procedure Execute; override;
+  public
+    constructor Create(AOwner: TLocalPty);
+  end;
+
   TLocalPty = class
   private
     FRunning: Boolean;
@@ -36,6 +48,9 @@ type
     FOnData: TPtyDataEvent;
     FOnExit: TPtyExitEvent;
     FReader: TPtyReaderThread;
+    FWriter: TPtyWriterThread;
+    FWriteEvent: PRTLEvent;
+    FWriteQueue: RawByteString;
     FLock: TRTLCriticalSection;
     FPending: RawByteString;
     FExited: Boolean;
@@ -51,6 +66,10 @@ type
     {$ENDIF}
     procedure DrainData;
     procedure NotifyExit;
+    // Thread ecrivain seulement. False = tube ferme ou arret demande.
+    function WriteBlocking(const AData: RawByteString): Boolean;
+    procedure StartWriter;
+    procedure StopWriter;
   public
     constructor Create;
     destructor Destroy; override;
@@ -65,11 +84,70 @@ type
 
 implementation
 
+const
+  // File d'ecriture au plus: un collage de 300 Mo dans un shell sourd ne doit
+  // ni grossir la memoire ni bloquer; l'excedent est perdu, jamais l'interface.
+  PTY_WRITE_QUEUE_MAX = 4 * 1024 * 1024;
+
 constructor TPtyReaderThread.Create(AOwner: TLocalPty);
 begin
   inherited Create(False);
   FOwner := AOwner;
   FreeOnTerminate := False;
+end;
+
+// Suspendu: le thread lit FOwner.FWriter, qui doit etre assigne avant qu'il
+// ne tourne, sinon il se croit orphelin et s'arrete des la premiere ecriture.
+constructor TPtyWriterThread.Create(AOwner: TLocalPty);
+begin
+  inherited Create(True);
+  FOwner := AOwner;
+  FreeOnTerminate := False;
+end;
+
+procedure TPtyWriterThread.Execute;
+var
+  chunk: RawByteString;
+begin
+  while not Terminated do
+  begin
+    // Delai borne: un SetEvent perdu entre deux tours ne gele pas la file.
+    RTLEventWaitFor(FOwner.FWriteEvent, 200);
+    if Terminated then Break;
+    repeat
+      EnterCriticalSection(FOwner.FLock);
+      try
+        chunk := FOwner.FWriteQueue;
+        FOwner.FWriteQueue := '';
+      finally
+        LeaveCriticalSection(FOwner.FLock);
+      end;
+      if chunk = '' then Break;
+      if not FOwner.WriteBlocking(chunk) then Exit;
+    until Terminated;
+  end;
+end;
+
+procedure TLocalPty.StartWriter;
+begin
+  FWriteQueue := '';
+  FWriter := TPtyWriterThread.Create(Self);
+  FWriter.Start;
+end;
+
+// La file tombe avec le thread: ce qui n'a pas pu partir ne partira pas.
+procedure TLocalPty.WriteData(const AData: RawByteString);
+begin
+  if (not FRunning) or (FWriter = nil) or (AData = '') then
+    Exit;
+  EnterCriticalSection(FLock);
+  try
+    if Length(FWriteQueue) + Length(AData) <= PTY_WRITE_QUEUE_MAX then
+      FWriteQueue := FWriteQueue + AData;
+  finally
+    LeaveCriticalSection(FLock);
+  end;
+  RTLEventSetEvent(FWriteEvent);
 end;
 
 {$IFDEF UNIX}
@@ -185,6 +263,8 @@ const
 function InitializeProcThreadAttributeList(AList: Pointer;
   ACount, AFlags: DWORD; var ASize: PtrUInt): WINBOOL; stdcall;
   external 'kernel32.dll';
+function CancelSynchronousIo(hThread: THandle): BOOL; stdcall;
+  external 'kernel32.dll' name 'CancelSynchronousIo';
 function UpdateProcThreadAttribute(AList: Pointer; AFlags: DWORD;
   AAttribute: PtrUInt; AValue: Pointer; ASize: PtrUInt;
   APrevious, AReturnSize: Pointer): WINBOOL; stdcall;
@@ -284,11 +364,13 @@ begin
   FProcess := 0;
   {$ENDIF}
   InitCriticalSection(FLock);
+  FWriteEvent := RTLEventCreate;
 end;
 
 destructor TLocalPty.Destroy;
 begin
   Stop;
+  RTLEventDestroy(FWriteEvent);
   DoneCriticalSection(FLock);
   inherited Destroy;
 end;
@@ -453,24 +535,61 @@ begin
   FExited := False;
   FPending := '';
   FReader := TPtyReaderThread.Create(Self);
+  StartWriter;
   Result := True;
 end;
 
-procedure TLocalPty.WriteData(const AData: RawByteString);
+// select puis petits blocs, jamais un write qui pourrait attendre: le maitre
+// se dit ecrivable a partir de 256 octets libres (Linux), donc un bloc de cette
+// taille passe sans bloquer et Terminated est relu toutes les 100 ms. select
+// et pas poll: sous macOS poll ne sait pas surveiller un peripherique.
+function TLocalPty.WriteBlocking(const AData: RawByteString): Boolean;
+const
+  CHUNK = 256;
 var
-  off: SizeInt;
-  n: SizeInt;
+  off, n: SizeInt;
+  mfd, sel: cint;
+  fds: TFDSet;
+  tv: TTimeVal;
 begin
-  if (not FRunning) or (FMasterFd < 0) or (AData = '') then
-    Exit;
+  Result := False;
   off := 1;
   while off <= Length(AData) do
   begin
-    n := FpWrite(FMasterFd, AData[off], Length(AData) - off + 1);
-    if n <= 0 then
-      Break;
+    mfd := FMasterFd;
+    if (mfd < 0) or (FWriter = nil) or FWriter.Terminated then Exit;
+    fpFD_ZERO(fds);
+    fpFD_SET(mfd, fds);
+    tv.tv_sec := 0;
+    tv.tv_usec := 100 * 1000;
+    sel := fpSelect(mfd + 1, nil, @fds, nil, @tv);
+    if sel < 0 then
+    begin
+      if fpGetErrno = ESysEINTR then Continue;
+      Exit;
+    end;
+    if sel = 0 then Continue;
+    n := Length(AData) - off + 1;
+    if n > CHUNK then n := CHUNK;
+    n := FpWrite(mfd, AData[off], n);
+    if n < 0 then
+    begin
+      if fpGetErrno in [ESysEINTR, ESysEAGAIN] then Continue;
+      Exit;
+    end;
+    if n = 0 then Exit;
     Inc(off, n);
   end;
+  Result := True;
+end;
+
+procedure TLocalPty.StopWriter;
+begin
+  if FWriter = nil then Exit;
+  FWriter.Terminate;
+  RTLEventSetEvent(FWriteEvent);
+  FWriter.WaitFor;
+  FreeAndNil(FWriter);
 end;
 
 procedure TLocalPty.Resize(ACols, ARows: Integer);
@@ -496,13 +615,15 @@ begin
   FRunning := False;
   if (FChildPid > 0) and (not FExited) then
     FpKill(FChildPid, SIGHUP);
-  // Joindre le lecteur AVANT de fermer le maitre: son select a besoin du fd.
+  // Joindre lecteur ET ecrivain AVANT de fermer le maitre: leurs select ont
+  // besoin du fd.
   if Assigned(FReader) then
   begin
     FReader.Terminate;
     FReader.WaitFor;
     FreeAndNil(FReader);
   end;
+  StopWriter;
   FpClose(FMasterFd);
   FMasterFd := -1;
   FChildPid := -1;
@@ -650,27 +771,42 @@ begin
   FExited := False;
   FPending := '';
   FReader := TPtyReaderThread.Create(Self);
+  StartWriter;
   Result := True;
 end;
 
-procedure TLocalPty.WriteData(const AData: RawByteString);
+function TLocalPty.WriteBlocking(const AData: RawByteString): Boolean;
 var
   off: SizeInt;
   n: DWORD;
 begin
-  if (not FRunning) or (FInWrite = 0) or (AData = '') then
-    Exit;
+  Result := False;
   off := 1;
   while off <= Length(AData) do
   begin
+    if (FInWrite = 0) or (FWriter = nil) or FWriter.Terminated then Exit;
     n := 0;
     if not WriteFile(FInWrite, AData[off], DWORD(Length(AData) - off + 1),
          n, nil) then
-      Break;
+      Exit;
     if n = 0 then
-      Break;
+      Exit;
     Inc(off, n);
   end;
+  Result := True;
+end;
+
+// WriteFile sur un tube plein ne rend pas la main: CancelSynchronousIo le
+// reveille, en boucle, car l'annulation lancee AVANT l'entree dans WriteFile
+// ne compte pas.
+procedure TLocalPty.StopWriter;
+begin
+  if FWriter = nil then Exit;
+  FWriter.Terminate;
+  RTLEventSetEvent(FWriteEvent);
+  while WaitForSingleObject(FWriter.Handle, 50) = WAIT_TIMEOUT do
+    CancelSynchronousIo(FWriter.Handle);
+  FreeAndNil(FWriter);
 end;
 
 procedure TLocalPty.Resize(ACols, ARows: Integer);
@@ -696,6 +832,9 @@ begin
     FReader.WaitFor;
     FreeAndNil(FReader);
   end;
+  // L'ecrivain avant CloseHandle(FInWrite): fermer un tube sous un WriteFile
+  // en cours n'est pas defini.
+  StopWriter;
   // Avant ClosePseudoConsole: elle bloque sur un tube que plus personne ne vide.
   if FOutRead <> 0 then
   begin
@@ -727,7 +866,12 @@ begin
   Result := False;
 end;
 
-procedure TLocalPty.WriteData(const AData: RawByteString);
+function TLocalPty.WriteBlocking(const AData: RawByteString): Boolean;
+begin
+  Result := False;
+end;
+
+procedure TLocalPty.StopWriter;
 begin
 end;
 

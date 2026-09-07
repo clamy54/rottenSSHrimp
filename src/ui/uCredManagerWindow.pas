@@ -662,7 +662,8 @@ var
   has: Boolean;
 begin
   // Cocoa: OnSelectionChange manque a l'appel, d'ou l'activation sur presence.
-  has := (FList <> nil) and (FList.Count > 0);
+  has := (FList <> nil) and (FList.Count > 0) and (not FBusy);
+  FBtnNew.Enabled := not FBusy;
   FBtnEdit.Enabled := has;
   FBtnDup.Enabled := has;
   FBtnRotate.Enabled := has;
@@ -821,17 +822,26 @@ begin
   if MessageDlg('Rotate Managed Key', msg, mtConfirmation,
     [mbYes, mbNo], 0) <> mrYes then Exit;
 
-  if RotateManagedKey(FDoc, FModel, uuid, summary, err) then
-  begin
-    PersistAndReload(uuid);
-    MessageDlg('Rotate Managed Key', summary, mtInformation, [mbOK], 0);
-  end
-  else
-  begin
-    // meme en echec: des cles d'hote ont pu etre approuvees en route
-    PersistAndReload(uuid);
-    if err <> '' then
-      MessageDlg('Rotate Managed Key', err, mtError, [mbOK], 0);
+  // FBusy pendant toute la rotation: sa fenetre d'attente pompe les messages,
+  // et un second clic sur Rotate ou Delete s'imbriquait dans la premiere.
+  FBusy := True;
+  SyncButtons;
+  try
+    if RotateManagedKey(FDoc, FModel, uuid, FSaveProc, summary, err) then
+    begin
+      PersistAndReload(uuid);
+      MessageDlg('Rotate Managed Key', summary, mtInformation, [mbOK], 0);
+    end
+    else
+    begin
+      // meme en echec: des cles d'hote ont pu etre approuvees en route
+      PersistAndReload(uuid);
+      if err <> '' then
+        MessageDlg('Rotate Managed Key', err, mtError, [mbOK], 0);
+    end;
+  finally
+    FBusy := False;
+    SyncButtons;
   end;
 end;
 

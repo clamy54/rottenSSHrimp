@@ -21,7 +21,8 @@ const
   PREF_TERM_FONT_SIZE_DEFAULT = 12;
 
 var
-  PrefTerminalFontFamily: string = '';  // cle Monaspace; '' = famille par defaut
+  PrefTerminalFontFamily: string = '';  // cle de famille embarquee ('Neon',
+                                        // 'JetBrainsMono'...); '' = defaut
   PrefTerminalFontSize: Integer = PREF_TERM_FONT_SIZE_DEFAULT;
 
   PrefLogEnabled: Boolean = False;

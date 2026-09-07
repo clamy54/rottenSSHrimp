@@ -22,7 +22,8 @@ function ApplyThemeByName(const AName: string): Boolean;
 implementation
 
 uses
-  Classes, SysUtils, Graphics, fpjson, jsonparser, uTheme, uAppPaths;
+  Classes, SysUtils, Graphics, fpjson, jsonparser, uTheme, uAppPaths,
+  uJsonGuard;
 
 type
   TRegEntry = record
@@ -187,6 +188,10 @@ begin
       finally
         sl.Free;
       end;
+      // Profondeur bornee AVANT GetJSON: un theme trop imbrique faisait
+      // tomber le parseur (violation d'acces, hors de portee du try) et,
+      // charge avant la fenetre principale, bloquait chaque demarrage.
+      if JsonNestingTooDeep(raw) then Continue;
       data := nil;
       try
         try

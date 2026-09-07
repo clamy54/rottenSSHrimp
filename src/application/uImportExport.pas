@@ -44,13 +44,15 @@ function NewImportReport: TImportReport;
 implementation
 
 uses
-  fpjson, jsonparser, uRshValidation, uCryptoPolicy;
+  fpjson, jsonparser, uRshValidation, uCryptoPolicy, uJsonGuard;
 
 const
   // Refusee avant le parseur: ne protege que sa pile, pas l'arbre du modele.
   MAX_JSON_DEPTH = 256;
   JSON_FORMAT_NAME = 'rottensshrimp-export';
-  JSON_FORMAT_VERSION = 1;
+  // v2: id par noeud, description, timeout_s, inherit_credential, jump_via,
+  // rdp_gateway, container, pod. Un fichier v1 se relit tel quel.
+  JSON_FORMAT_VERSION = 2;
 
 function NewImportReport: TImportReport;
 begin
@@ -95,6 +97,62 @@ begin
     refs.Free;
 end;
 
+// Ce qui lie une connexion a une autre (bastion, hote d'un conteneur ou d'un
+// pod) est exporte par l'uuid du noeud vise: l'import le retrouve par la cle
+// « id » de ce noeud, s'il fait partie du meme export.
+procedure AddConnectionLinks(AModel: TRshModel; ANode: TRshNode;
+  AObj: TJSONObject);
+var
+  o: TJSONObject;
+  jump: string;
+  gw: TRshRdpGateway;
+  cc: TContainerConfig;
+  pc: TPodConfig;
+begin
+  case ANode.Protocol of
+    rpSsh, rpRdp, rpVnc:
+      begin
+        jump := AModel.GetJumpVia(ANode.Uuid);
+        if jump <> '' then
+          AObj.Add('jump_via', jump);
+        if ANode.Protocol = rpRdp then
+        begin
+          gw := AModel.GetRdpGateway(ANode.Uuid);
+          if gw.Hostname <> '' then
+          begin
+            o := TJSONObject.Create;
+            o.Add('hostname', gw.Hostname);
+            if gw.Port > 0 then
+              o.Add('port', gw.Port);
+            AObj.Add('rdp_gateway', o);
+          end;
+        end;
+      end;
+    rpContainer:
+      if AModel.GetContainerConfig(ANode.Uuid, cc) then
+      begin
+        o := TJSONObject.Create;
+        o.Add('via', cc.ParentUuid);
+        o.Add('engine', CONTAINER_ENGINE_NAMES[cc.Engine]);
+        o.Add('name', cc.ContainerName);
+        o.Add('shell', CONTAINER_SHELL_NAMES[cc.Shell]);
+        AObj.Add('container', o);
+      end;
+    rpPod:
+      if AModel.GetPodConfig(ANode.Uuid, pc) then
+      begin
+        o := TJSONObject.Create;
+        o.Add('via', pc.ParentUuid);
+        o.Add('namespace', pc.Namespace);
+        o.Add('pod', pc.PodName);
+        if pc.ContainerName <> '' then
+          o.Add('container', pc.ContainerName);
+        o.Add('shell', CONTAINER_SHELL_NAMES[pc.Shell]);
+        AObj.Add('pod', o);
+      end;
+  end;
+end;
+
 // ADepth borne la recursion: une chaine de parents cyclique deborderait la pile.
 function NodeToJson(AModel: TRshModel; ANodes: TRshNodeList;
   const AUuid: string; ADepth: Integer): TJSONObject;
@@ -121,6 +179,7 @@ begin
 
   if n <> nil then
   begin
+    Result.Add('id', n.Uuid);
     Result.Add('name', n.DisplayName);
     if n.Kind = nkGroup then
       Result.Add('type', 'group')
@@ -134,10 +193,17 @@ begin
     if n.Kind = nkConnection then
     begin
       Result.Add('protocol', PROTOCOL_NAMES[n.Protocol]);
-      Result.Add('hostname', n.Hostname);
-      Result.Add('port', n.Port);
+      // conteneur et pod n'ont ni hote ni port propres (port decoratif en base)
+      if n.Protocol in [rpSsh, rpRdp, rpVnc] then
+      begin
+        Result.Add('hostname', n.Hostname);
+        Result.Add('port', n.Port);
+      end;
       if n.ConnectTimeoutS > 0 then
         Result.Add('timeout_s', n.ConnectTimeoutS);
+      if n.InheritCredential then
+        Result.Add('inherit_credential', True);
+      AddConnectionLinks(AModel, n, Result);
       credUuid := n.CredentialUuid;
       if credUuid <> '' then
       try
@@ -272,11 +338,13 @@ end;
 
 function TryCreateConnection(AModel: TRshModel; const AParent, AName: string;
   AProto: TRshProtocol; const AHost: string; APort: Integer;
-  var AReport: TImportReport; AInheritCredential: Boolean = False): Boolean;
+  var AReport: TImportReport; out ANewUuid: string;
+  AInheritCredential: Boolean = False): Boolean;
 begin
   Result := False;
+  ANewUuid := '';
   try
-    AModel.CreateConnection(AParent, AName, AProto, AHost, APort,
+    ANewUuid := AModel.CreateConnection(AParent, AName, AProto, AHost, APort,
       AInheritCredential);
     Inc(AReport.ConnectionsCreated);
     Result := True;
@@ -287,6 +355,16 @@ begin
       AReport.Messages.Add(Format('"%s" skipped: %s', [AName, E.Message]));
     end;
   end;
+end;
+
+function TryCreateConnection(AModel: TRshModel; const AParent, AName: string;
+  AProto: TRshProtocol; const AHost: string; APort: Integer;
+  var AReport: TImportReport; AInheritCredential: Boolean = False): Boolean;
+var
+  unused: string;
+begin
+  Result := TryCreateConnection(AModel, AParent, AName, AProto, AHost, APort,
+    AReport, unused, AInheritCredential);
 end;
 
 function ImportOpenSshConfig(AModel: TRshModel; const AParentUuid: string;
@@ -400,13 +478,125 @@ begin
     end;
 end;
 
-procedure ImportJsonNode(AModel: TRshModel; const AParentUuid: string;
-  ANode: TJSONObject; ADepth: Integer; var AReport: TImportReport;
-  var AEntries: Integer);
+type
+  TJumpLink = record
+    Conn, OldTarget, Name: string;
+  end;
+
+  // Etat d'un import: la table id d'export -> uuid cree, les conteneurs/pods
+  // en attente de leur hote SSH (cree peut-etre plus loin dans l'arbre) et
+  // les bastions a relier une fois tout le monde en place.
+  TImportCtx = class
+  public
+    IdMap: TStringList;            // 'ancien id=nouvel uuid'
+    Deferred: TFPList;             // TJSONObject, possedes par le DOM
+    DeferredParents: TStringList;  // dossier cible, meme index
+    Jumps: array of TJumpLink;
+    constructor Create;
+    destructor Destroy; override;
+    procedure Register(ANode: TJSONObject; const ANewUuid: string);
+    function Lookup(const AOldId: string): string;
+  end;
+
+constructor TImportCtx.Create;
+begin
+  inherited Create;
+  IdMap := TStringList.Create;
+  Deferred := TFPList.Create;
+  DeferredParents := TStringList.Create;
+end;
+
+destructor TImportCtx.Destroy;
+begin
+  IdMap.Free;
+  Deferred.Free;
+  DeferredParents.Free;
+  inherited Destroy;
+end;
+
+procedure TImportCtx.Register(ANode: TJSONObject; const ANewUuid: string);
 var
-  kind, name, host, proto: string;
+  oldId: string;
+begin
+  oldId := ANode.Get('id', '');
+  // '=' separerait mal une cle qui en contient: on ne garde que des ids sains
+  if (oldId = '') or (Pos('=', oldId) > 0) then Exit;
+  if IdMap.IndexOfName(oldId) >= 0 then Exit;  // premier arrive, ids dupliques ignores
+  IdMap.Add(oldId + '=' + ANewUuid);
+end;
+
+function TImportCtx.Lookup(const AOldId: string): string;
+begin
+  Result := '';
+  if (AOldId = '') or (Pos('=', AOldId) > 0) then Exit;
+  Result := IdMap.Values[AOldId];
+end;
+
+procedure ApplyDescription(AModel: TRshModel; const AUuid, AName: string;
+  ANode: TJSONObject; var AReport: TImportReport);
+var
+  desc: string;
+begin
+  desc := ANode.Get('description', '');
+  if desc = '' then Exit;
+  try
+    AModel.UpdateNodeDescription(AUuid, desc);
+  except
+    on E: EModelError do
+      AReport.Messages.Add(Format('"%s": description not imported: %s',
+        [AName, E.Message]));
+  end;
+end;
+
+// Le reste de la connexion, une fois creee: delai, passerelle RDP, bastion
+// (differe: sa cible n'existe peut-etre pas encore).
+procedure ApplyConnectionExtras(AModel: TRshModel; ACtx: TImportCtx;
+  const AUuid, AName, AHost: string; APort: Integer; AInherit: Boolean;
+  ANode: TJSONObject; var AReport: TImportReport);
+var
+  t: Integer;
+  gw: TJSONObject;
+  jump: string;
+begin
+  ApplyDescription(AModel, AUuid, AName, ANode, AReport);
+  t := ANode.Get('timeout_s', 0);
+  if t > 0 then
+  try
+    AModel.UpdateConnection(AUuid, AHost, APort, '', t, AInherit);
+  except
+    on E: EModelError do
+      AReport.Messages.Add(Format('"%s": timeout not imported: %s',
+        [AName, E.Message]));
+  end;
+  if ANode.Find('rdp_gateway', jtObject) <> nil then
+  begin
+    gw := ANode.Objects['rdp_gateway'];
+    try
+      AModel.SetRdpGateway(AUuid, gw.Get('hostname', ''), gw.Get('port', 0));
+    except
+      on E: EModelError do
+        AReport.Messages.Add(Format('"%s": RDP gateway not imported: %s',
+          [AName, E.Message]));
+    end;
+  end;
+  jump := ANode.Get('jump_via', '');
+  if jump <> '' then
+  begin
+    SetLength(ACtx.Jumps, Length(ACtx.Jumps) + 1);
+    ACtx.Jumps[High(ACtx.Jumps)].Conn := AUuid;
+    ACtx.Jumps[High(ACtx.Jumps)].OldTarget := jump;
+    ACtx.Jumps[High(ACtx.Jumps)].Name := AName;
+  end;
+end;
+
+procedure ImportJsonNode(AModel: TRshModel; ACtx: TImportCtx;
+  const AParentUuid: string; ANode: TJSONObject; ADepth: Integer;
+  var AReport: TImportReport; var AEntries: Integer);
+var
+  kind, name, host, proto, newUuid: string;
   protoVal: TRshProtocol;
   port, i: Integer;
+  inherit: Boolean;
   kids: TJSONArray;
   newParent: string;
 begin
@@ -431,7 +621,7 @@ begin
     kids := ANode.Arrays['children'];
     for i := 0 to kids.Count - 1 do
       if kids.Items[i].JSONType = jtObject then
-        ImportJsonNode(AModel, AParentUuid, TJSONObject(kids.Items[i]),
+        ImportJsonNode(AModel, ACtx, AParentUuid, TJSONObject(kids.Items[i]),
           ADepth + 1, AReport, AEntries);
     Exit;
   end;
@@ -453,6 +643,13 @@ begin
         [name, proto]));
       Exit;
     end;
+    if protoVal in [rpContainer, rpPod] then
+    begin
+      // Son hote SSH est peut-etre plus loin dans l'arbre: on repasse apres.
+      ACtx.Deferred.Add(ANode);
+      ACtx.DeferredParents.Add(AParentUuid);
+      Exit;
+    end;
     host := ANode.Get('hostname', '');
     port := ANode.Get('port', 0);
     if port = 0 then
@@ -462,8 +659,13 @@ begin
       else
         port := 22;
       end;
-    TryCreateConnection(AModel, AParentUuid, name, protoVal,
-      host, port, AReport);
+    inherit := ANode.Get('inherit_credential', False);
+    if not TryCreateConnection(AModel, AParentUuid, name, protoVal,
+      host, port, AReport, newUuid, inherit) then
+      Exit;
+    ACtx.Register(ANode, newUuid);
+    ApplyConnectionExtras(AModel, ACtx, newUuid, name, host, port, inherit,
+      ANode, AReport);
     Exit;
   end;
 
@@ -487,18 +689,104 @@ begin
       Exit;
     end;
   end;
+  ACtx.Register(ANode, newParent);
+  ApplyDescription(AModel, newParent, name, ANode, AReport);
 
   if ANode.Find('children', jtArray) <> nil then
   begin
     kids := ANode.Arrays['children'];
     for i := 0 to kids.Count - 1 do
       if kids.Items[i].JSONType = jtObject then
-        ImportJsonNode(AModel, newParent, TJSONObject(kids.Items[i]),
+        ImportJsonNode(AModel, ACtx, newParent, TJSONObject(kids.Items[i]),
           ADepth + 1, AReport, AEntries);
   end;
 end;
 
-function JsonNestingTooDeep(const AText: string; AMax: Integer): Boolean; forward;
+// Conteneurs et pods, une fois tous les hotes SSH crees. Un hote absent de
+// l'export (ou lui-meme ecarte) laisse le noeud de cote, avec le motif.
+procedure ImportDeferred(AModel: TRshModel; ACtx: TImportCtx;
+  var AReport: TImportReport);
+var
+  i: Integer;
+  node, cfg: TJSONObject;
+  name, parent, via, kindKey, newUuid: string;
+begin
+  for i := 0 to ACtx.Deferred.Count - 1 do
+  begin
+    node := TJSONObject(ACtx.Deferred[i]);
+    parent := ACtx.DeferredParents[i];
+    name := node.Get('name', '');
+    if node.Get('protocol', '') = PROTOCOL_NAMES[rpPod] then
+      kindKey := 'pod'
+    else
+      kindKey := 'container';
+    if node.Find(kindKey, jtObject) = nil then
+    begin
+      Inc(AReport.Skipped);
+      AReport.Messages.Add(Format('"%s" skipped: no %s settings in the export',
+        [name, kindKey]));
+      Continue;
+    end;
+    cfg := node.Objects[kindKey];
+    via := ACtx.Lookup(cfg.Get('via', ''));
+    if via = '' then
+    begin
+      Inc(AReport.Skipped);
+      AReport.Messages.Add(Format('"%s" skipped: its SSH host is not part ' +
+        'of this export', [name]));
+      Continue;
+    end;
+    try
+      if kindKey = 'pod' then
+        newUuid := AModel.CreatePodConnection(parent, name, via,
+          cfg.Get('namespace', ''), cfg.Get('pod', ''),
+          cfg.Get('container', ''),
+          ContainerShellFromName(cfg.Get('shell', 'sh')))
+      else
+        newUuid := AModel.CreateContainerConnection(parent, name, via,
+          ContainerEngineFromName(cfg.Get('engine', 'docker')),
+          cfg.Get('name', ''),
+          ContainerShellFromName(cfg.Get('shell', 'sh')));
+      Inc(AReport.ConnectionsCreated);
+    except
+      on E: EModelError do
+      begin
+        Inc(AReport.Skipped);
+        AReport.Messages.Add(Format('"%s" skipped: %s', [name, E.Message]));
+        Continue;
+      end;
+    end;
+    ACtx.Register(node, newUuid);
+    ApplyDescription(AModel, newUuid, name, node, AReport);
+  end;
+end;
+
+// Bastions en dernier: la cible doit exister ET etre une connexion SSH sans
+// bastion elle-meme, ce que le modele verifie.
+procedure ImportJumps(AModel: TRshModel; ACtx: TImportCtx;
+  var AReport: TImportReport);
+var
+  i: Integer;
+  target: string;
+begin
+  for i := 0 to High(ACtx.Jumps) do
+  begin
+    target := ACtx.Lookup(ACtx.Jumps[i].OldTarget);
+    if target = '' then
+    begin
+      AReport.Messages.Add(Format('"%s": jump host not part of this export, ' +
+        'connection imported without it', [ACtx.Jumps[i].Name]));
+      Continue;
+    end;
+    try
+      AModel.SetJumpVia(ACtx.Jumps[i].Conn, target);
+    except
+      on E: EModelError do
+        AReport.Messages.Add(Format('"%s": jump host not imported: %s',
+          [ACtx.Jumps[i].Name, E.Message]));
+    end;
+  end;
+end;
 
 function ImportJson(AModel: TRshModel; const AParentUuid: string;
   const AText: string): TImportReport;
@@ -506,10 +794,12 @@ var
   data: TJSONData;
   doc, root: TJSONObject;
   rep: TImportReport;
+  ctx: TImportCtx;
   entries, ver: Integer;
 begin
   rep := NewImportReport;
   data := nil;
+  ctx := nil;
   // GetJSON construit le DOM par recursion: dix mille '[' epuisent sa pile.
   if JsonNestingTooDeep(AText, MAX_JSON_DEPTH) then
   begin
@@ -556,10 +846,13 @@ begin
     if root <> nil then
     begin
       entries := 0;
+      ctx := TImportCtx.Create;
       // Un seul batch: le content_mac n'est re-scelle qu'une fois, sinon O(n^2).
       AModel.BeginBatch;
       try
-        ImportJsonNode(AModel, AParentUuid, root, 0, rep, entries);
+        ImportJsonNode(AModel, ctx, AParentUuid, root, 0, rep, entries);
+        ImportDeferred(AModel, ctx, rep);
+        ImportJumps(AModel, ctx, rep);
         AModel.CommitBatch;
       except
         on E: EImportExportError do
@@ -578,39 +871,8 @@ begin
     end;
     Result := rep;
   finally
+    ctx.Free;
     data.Free;
-  end;
-end;
-
-function JsonNestingTooDeep(const AText: string; AMax: Integer): Boolean;
-var
-  i, depth: Integer;
-  inStr, esc: Boolean;
-  c: Char;
-begin
-  Result := False;
-  depth := 0;
-  inStr := False;
-  esc := False;
-  for i := 1 to Length(AText) do
-  begin
-    c := AText[i];
-    if inStr then
-    begin
-      if esc then esc := False
-      else if c = '\' then esc := True
-      else if c = '"' then inStr := False;
-      Continue;
-    end;
-    case c of
-      '"': inStr := True;
-      '[', '{':
-        begin
-          Inc(depth);
-          if depth > AMax then Exit(True);
-        end;
-      ']', '}': if depth > 0 then Dec(depth);
-    end;
   end;
 end;
 

@@ -119,7 +119,8 @@ application instead of coming from the system, is in
 
 RottenSSHrimp links or loads work that is not ours: libsodium, libssh2, FreeRDP,
 libvncclient, SQLite, OpenSSL, zlib, libjpeg-turbo, cJSON, the LCL and the FPC
-runtime. It embeds the Monaspace fonts and two icon sets.
+runtime. It embeds the Monaspace fonts, a Nerd Fonts build of JetBrains Mono
+NL, and two icon sets.
 
 Every one of them is inventoried in
 [`LICENSES/THIRD-PARTY-NOTICES.md`](LICENSES/THIRD-PARTY-NOTICES.md), with its

@@ -11,7 +11,7 @@
       <UseAppBundle Value="False"/>
       <ResourceType Value="res"/>
       <Icon Value="0"/>
-      <Resources Count="1309">
+      <Resources Count="1313">
         <Resource_0 FileName="../resources/fonts/MonaspaceNeonFrozen-Regular.ttf" Type="RCDATA" ResourceName="NEON_REGULAR"/>
         <Resource_1 FileName="../resources/fonts/MonaspaceNeonFrozen-Bold.ttf" Type="RCDATA" ResourceName="NEON_BOLD"/>
         <Resource_2 FileName="../resources/fonts/MonaspaceNeonFrozen-Italic.ttf" Type="RCDATA" ResourceName="NEON_ITALIC"/>
@@ -1321,6 +1321,10 @@
         <Resource_1306 FileName="../resources/icons/tree/viewport-wide_onlight_24.png" Type="RCDATA" ResourceName="TREE_VIEWPORT_WIDE_ONLIGHT_24"/>
         <Resource_1307 FileName="../resources/icons/tree/viewport-wide_onlight_32.png" Type="RCDATA" ResourceName="TREE_VIEWPORT_WIDE_ONLIGHT_32"/>
         <Resource_1308 FileName="../resources/icons/tree/viewport-wide_onlight_48.png" Type="RCDATA" ResourceName="TREE_VIEWPORT_WIDE_ONLIGHT_48"/>
+        <Resource_1309 FileName="../resources/fonts/JetBrainsMonoNLNerdFontMono-Regular.ttf" Type="RCDATA" ResourceName="JETBRAINSMONO_REGULAR"/>
+        <Resource_1310 FileName="../resources/fonts/JetBrainsMonoNLNerdFontMono-Bold.ttf" Type="RCDATA" ResourceName="JETBRAINSMONO_BOLD"/>
+        <Resource_1311 FileName="../resources/fonts/JetBrainsMonoNLNerdFontMono-Italic.ttf" Type="RCDATA" ResourceName="JETBRAINSMONO_ITALIC"/>
+        <Resource_1312 FileName="../resources/fonts/JetBrainsMonoNLNerdFontMono-BoldItalic.ttf" Type="RCDATA" ResourceName="JETBRAINSMONO_BOLDITALIC"/>
       </Resources>
     </General>
     <BuildModes>
@@ -1395,6 +1399,10 @@
       </Unit>
       <Unit>
         <Filename Value="../src/util/uSafeSave.pas"/>
+        <IsPartOfProject Value="True"/>
+      </Unit>
+      <Unit>
+        <Filename Value="../src/util/uJsonGuard.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit>
       <Unit>

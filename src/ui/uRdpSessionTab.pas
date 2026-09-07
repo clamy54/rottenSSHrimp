@@ -74,6 +74,7 @@ type
     procedure ClipPoll(Sender: TObject);
     function TryReadLocalClipboard(out AText: string): Boolean;
     procedure SendClipToServer(const AText: string);
+    function ClipForeground: Boolean;
     procedure TransportReconnect(const AStatus: string; AActive: Boolean);
     procedure CertAsk(const AInfo: TRdpCertInfo; var ADecision: TRdpCertDecision);
     procedure CertLookup(const AHost: string; APort: Integer;
@@ -175,7 +176,8 @@ begin
   // Le transport tronque a 2 Mo d'UNITES UTF-16, une unite pesant jusqu'a 3
   // octets UTF-8: sous-couvrir la borne = resynchro manquee.
   FClipBridge := TClipboardBridge.Create(
-    @TryReadLocalClipboard, @SendClipToServer, 3 * 2 * 1024 * 1024);
+    @TryReadLocalClipboard, @SendClipToServer, 3 * 2 * 1024 * 1024,
+    @ClipForeground);
 
   FView := TRottenRdpControl.Create(Self);
   FView.Parent := FScroll;
@@ -523,6 +525,13 @@ procedure TRdpSessionTab.SendClipToServer(const AText: string);
 begin
   if FTransport <> nil then
     FTransport.AnnounceLocalClipboard(UTF8Decode(AText));
+end;
+
+// Onglet visible seulement: un onglet cache n'annonce rien, sinon ce que le
+// serveur A vient de deposer dans le presse-papiers partirait chez B.
+function TRdpSessionTab.ClipForeground: Boolean;
+begin
+  Result := (PageControl <> nil) and (PageControl.ActivePage = Self);
 end;
 
 procedure TRdpSessionTab.ClipPoll(Sender: TObject);

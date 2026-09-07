@@ -23,6 +23,9 @@ function FileIdentity(const APath: string; out ADev, AIno: Int64): Boolean;
 // l'appelant renommerait par-dessus le LIEN
 function ResolveLink(const APath: string): string;
 function CreateTempIn(const ADest: string; out ATmpName: string): TOwnedHandleStream;
+// Contenu rendu durable AVANT le rename: fsync sous Unix, FlushFileBuffers
+// sous Windows. False = le disque n'a pas confirme, la sauvegarde ne l'est pas.
+function FlushToDisk(AHandle: THandle): Boolean;
 function ReplaceByRename(const ATmp, ADest: string): Boolean;
 // Variantes « privees »: 0600/0700 quel que soit l'umask; no-op sous Windows.
 function ReplaceByRenamePrivate(const ATmp, ADest: string): Boolean;
@@ -95,6 +98,7 @@ function GetFinalPathNameByHandleW(h: THandle; lpszFilePath: PWideChar;
   cchFilePath, dwFlags: LongWord): LongWord; stdcall; external 'kernel32.dll';
 function MoveFileExW(lpExisting, lpNew: PWideChar; dwFlags: LongWord): LongBool;
   stdcall; external 'kernel32.dll';
+function FlushFileBuffers(h: THandle): LongBool; stdcall; external 'kernel32.dll';
 function ReplaceFileW(lpReplaced, lpReplacement, lpBackup: PWideChar;
   dwFlags: LongWord; lpExclude, lpReserved: Pointer): LongBool;
   stdcall; external 'kernel32.dll';
@@ -169,6 +173,11 @@ begin
     nil, CREATE_NEW_W, FILE_ATTR_NORMAL, 0);
 end;
 
+function FlushToDisk(AHandle: THandle): Boolean;
+begin
+  Result := FlushFileBuffers(AHandle);
+end;
+
 function ReplaceByRename(const ATmp, ADest: string): Boolean;
 begin
   // ReplaceFileW preserve attributs/ACL de la cible mais exige qu'elle existe
@@ -227,6 +236,11 @@ begin
   end;
   if (fpLStat(PChar(Result), st) = 0) and fpS_ISLNK(st.st_mode) then
     raise EStreamError.CreateFmt('Too many symlink levels resolving %s', [APath]);
+end;
+
+function FlushToDisk(AHandle: THandle): Boolean;
+begin
+  Result := fpfsync(cint(AHandle)) = 0;
 end;
 
 function ExclusiveCreate(const AName: string): THandle;

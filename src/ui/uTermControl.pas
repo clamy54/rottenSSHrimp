@@ -655,6 +655,27 @@ begin
   Invalidate;
 end;
 
+// Sortie sans aucun ESC[201~, quel que soit l'emboitement, en O(n).
+function StripPasteEnd(const S: RawByteString): RawByteString;
+const
+  MARK: RawByteString = #27'[201~';
+var
+  i, n, m: Integer;
+begin
+  m := Length(MARK);
+  SetLength(Result, Length(S));
+  n := 0;
+  for i := 1 to Length(S) do
+  begin
+    Inc(n);
+    Result[n] := S[i];
+    if (n >= m) and (Result[n] = '~') and
+       (CompareByte(Result[n - m + 1], MARK[1], m) = 0) then
+      Dec(n, m);
+  end;
+  SetLength(Result, n);
+end;
+
 procedure TRottenTerminalControl.DoPasteClipboard;
 var
   txt: string;
@@ -681,8 +702,12 @@ begin
   SetLength(cleaned, n);
   cleaned := StringReplace(cleaned, #13#10, #13, [rfReplaceAll]);
   cleaned := StringReplace(cleaned, #10, #13, [rfReplaceAll]);
-  // fin de bracketed paste embarquee = injection: on la desamorce
-  cleaned := StringReplace(cleaned, #27'[201~', '', [rfReplaceAll]);
+  // fin de bracketed paste embarquee = injection: on la desamorce. En une
+  // passe lineaire: on retire le marqueur des qu'il apparait en FIN de sortie,
+  // ce qui couvre ESC[20 + ESC[201~ + 1~ (une suppression en decouvrait un
+  // autre) sans rescanner la chaine, un point fixe par StringReplace etait
+  // quadratique et tenait le thread UI plusieurs secondes sur 200 Ko.
+  cleaned := StripPasteEnd(cleaned);
 
   lineCount := 1;
   for i := 1 to Length(cleaned) do

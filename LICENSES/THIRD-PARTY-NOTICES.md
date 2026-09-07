@@ -7,6 +7,7 @@ RottenSSHrimp is distributed under GPL-3.0-or-later (see GPL-3.0-or-later.txt).
 | Component | Version | License | File |
 |---|---|---|---|
 | Monaspace Frozen, 5 families x 4 styles (20 TTF) | frozen assets | SIL OFL 1.1 | Monaspace-OFL-1.1.txt |
+| JetBrainsMono NL Nerd Font Mono, 4 styles (4 TTF) | 2.304 / Nerd Fonts 3.5.1 | SIL OFL 1.1 | JetBrainsMono-OFL-1.1.txt |
 | Tabler Icons (monochrome tree icons) | 3.x | MIT | Tabler-MIT.txt |
 | Papirus icon theme (colour tree icons) | 20250501 | GPL-3.0 | GPL-3.0-or-later.txt |
 | Lazarus LCL | 4.x | modified LGPL with linking exception | FPC-LCL-modified-LGPL.txt |
@@ -155,6 +156,21 @@ own work under this project's licence.
 
 The Monaspace fonts are redistributed unmodified, as required by this
 project's policy. The reserved font names are not reused.
+
+**JetBrainsMono NL Nerd Font Mono** (https://www.nerdfonts.com/), the Nerd
+Fonts 3.5.1 build of JetBrains Mono NL 2.304
+(https://www.jetbrains.com/lp/mono/), SIL OFL 1.1, copyright 2020 The
+JetBrains Mono NL Project Authors. JetBrains declares no Reserved Font Name,
+so the renamed, patched build is redistributable under the same OFL. The Nerd
+Fonts patcher (MIT) adds icon glyphs taken from third-party sets, each under
+its own licence: Font Awesome (OFL 1.1), Devicons (MIT), Octicons (MIT),
+Powerline Symbols (MIT), Material Design Icons (Apache-2.0), Weather Icons
+(OFL 1.1), Codicons (CC BY 4.0), Seti-UI (MIT) and others listed in the Nerd
+Fonts LICENSE file (https://github.com/ryanoasis/nerd-fonts/blob/master/LICENSE).
+The four faces (Regular, Bold, Italic, BoldItalic) are embedded as downloaded
+from the Nerd Fonts release. It is offered as a terminal font next to the
+Monaspace families (Tools > Terminal Font). Its licence text is in
+JetBrainsMono-OFL-1.1.txt.
 
 ## Tree node icons
 

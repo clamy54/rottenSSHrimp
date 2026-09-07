@@ -147,6 +147,8 @@ begin
     Inc(y, 34);
     AddCredit(f, y, RSSH_APP_NAME + ' uses the Monaspace font family:',
       'https://monaspace.githubnext.com/');
+    AddCredit(f, y, 'and JetBrains Mono NL, Nerd Fonts patched (OFL-1.1):',
+      'https://www.nerdfonts.com/');
     AddCredit(f, y, 'Tree icons from the Tabler icon set (MIT):',
       'https://tabler.io/icons');
     AddCredit(f, y, 'and from the Papirus icon theme (GPL-3.0):',

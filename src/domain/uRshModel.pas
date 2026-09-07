@@ -118,8 +118,9 @@ type
     procedure DeleteSecretsOf(const AOwnerUuid: string);
     procedure GcOrphanCredentials;
     function DuplicateSubtree(const ASrcUuid, ADestParent: string;
-      ASortOrder: Integer; const ANameSuffix: string;
+      ASortOrder: Integer; const ANameSuffix: string; AMap: TStrings;
       ADepth: Integer = 0): string;
+    procedure CopyConnectionSettings(const ASrc, ADst: string; AMap: TStrings);
   public
     constructor Create(ADoc: TRshDocument);
 
@@ -1777,8 +1778,11 @@ begin
   FDoc.MarkDirty;
 end;
 
+// AMap recoit 'ancien uuid=nouveau' pour chaque noeud copie: les tables de
+// reglages sont recopiees ensuite, references internes au sous-arbre remappees.
 function TRshModel.DuplicateSubtree(const ASrcUuid, ADestParent: string;
-  ASortOrder: Integer; const ANameSuffix: string; ADepth: Integer): string;
+  ASortOrder: Integer; const ANameSuffix: string; AMap: TStrings;
+  ADepth: Integer): string;
 var
   src: TRshNode;
   st: TSqliteStmt;
@@ -1795,6 +1799,7 @@ begin
     src.SortOrder := ASortOrder;
     InsertNodeRow(src);
     Result := src.Uuid;
+    AMap.Add(ASrcUuid + '=' + Result);
     if src.Kind = nkGroup then
     begin
       st := Db.Prepare('INSERT INTO folder_credentials' +
@@ -1826,14 +1831,161 @@ begin
     st.Free;
   end;
   for i := 0 to High(children) do
-    DuplicateSubtree(children[i], Result, i, '', ADepth + 1);
+    DuplicateSubtree(children[i], Result, i, '', AMap, ADepth + 1);
+end;
+
+// Tout ce qui pend a une connexion hors de la ligne nodes/connections:
+// bastion, offre de bastion, passerelle RDP, profils SSH/RDP/VNC, conteneur,
+// pod. Sans ca, une copie tentait la connexion directe la ou l'original
+// passait par un bastion, et un conteneur copie n'avait plus d'hote du tout.
+// Une reference vers un noeud du sous-arbre copie suit la copie; vers
+// l'exterieur, elle reste telle quelle.
+procedure TRshModel.CopyConnectionSettings(const ASrc, ADst: string;
+  AMap: TStrings);
+
+  function Remap(const AUuid: string): string;
+  begin
+    if (AUuid <> '') and (AMap.IndexOfName(AUuid) >= 0) then
+      Result := AMap.Values[AUuid]
+    else
+      Result := AUuid;
+  end;
+
+  procedure CopyVerbatim(const ASql: string);
+  var
+    st: TSqliteStmt;
+  begin
+    st := Db.Prepare(ASql);
+    try
+      st.BindText(1, ADst);
+      st.BindText(2, ASrc);
+      st.Step;
+    finally
+      st.Free;
+    end;
+  end;
+
+var
+  st, ins: TSqliteStmt;
+  s1, s2, s3, s4: string;
+  n1, n2: Boolean;
+begin
+  CopyVerbatim('INSERT INTO rdp_connection_settings(connection_uuid,' +
+    ' profile_uuid, desktop_width, desktop_height, gateway_hostname,' +
+    ' gateway_port) SELECT ?, profile_uuid, desktop_width, desktop_height,' +
+    ' gateway_hostname, gateway_port FROM rdp_connection_settings' +
+    ' WHERE connection_uuid=?;');
+  CopyVerbatim('INSERT INTO vnc_connection_settings(connection_uuid,' +
+    ' profile_uuid, view_actual_size) SELECT ?, profile_uuid,' +
+    ' view_actual_size FROM vnc_connection_settings WHERE connection_uuid=?;');
+  CopyVerbatim('INSERT INTO jump_host_offers(connection_uuid)' +
+    ' SELECT ? FROM jump_host_offers WHERE connection_uuid=?;');
+
+  // ssh_connection_settings: jump_connection_uuid a remapper, NULLs preserves
+  st := Db.Prepare('SELECT profile_uuid, jump_connection_uuid, startup_command' +
+    ' FROM ssh_connection_settings WHERE connection_uuid=?;');
+  try
+    st.BindText(1, ASrc);
+    if st.Step then
+    begin
+      n1 := st.ColIsNull(0); s1 := st.ColText(0);
+      n2 := st.ColIsNull(1); s2 := Remap(st.ColText(1));
+      s3 := st.ColText(2);
+      ins := Db.Prepare('INSERT INTO ssh_connection_settings(connection_uuid,' +
+        ' profile_uuid, jump_connection_uuid, startup_command) VALUES(?,?,?,?);');
+      try
+        ins.BindText(1, ADst);
+        if n1 then ins.BindNull(2) else ins.BindText(2, s1);
+        if n2 then ins.BindNull(3) else ins.BindText(3, s2);
+        ins.BindText(4, s3);
+        ins.Step;
+      finally
+        ins.Free;
+      end;
+    end;
+  finally
+    st.Free;
+  end;
+
+  st := Db.Prepare('SELECT jump_via_uuid FROM connection_jump' +
+    ' WHERE connection_uuid=?;');
+  try
+    st.BindText(1, ASrc);
+    if st.Step then
+    begin
+      s1 := Remap(st.ColText(0));
+      ins := Db.Prepare('INSERT INTO connection_jump(connection_uuid,' +
+        ' jump_via_uuid) VALUES(?,?);');
+      try
+        ins.BindText(1, ADst);
+        ins.BindText(2, s1);
+        ins.Step;
+      finally
+        ins.Free;
+      end;
+    end;
+  finally
+    st.Free;
+  end;
+
+  st := Db.Prepare('SELECT parent_uuid, engine, container_name, shell_mode' +
+    ' FROM connection_container WHERE connection_uuid=?;');
+  try
+    st.BindText(1, ASrc);
+    if st.Step then
+    begin
+      s1 := Remap(st.ColText(0)); s2 := st.ColText(1);
+      s3 := st.ColText(2); s4 := st.ColText(3);
+      ins := Db.Prepare('INSERT INTO connection_container(connection_uuid,' +
+        ' parent_uuid, engine, container_name, shell_mode) VALUES(?,?,?,?,?);');
+      try
+        ins.BindText(1, ADst);
+        ins.BindText(2, s1);
+        ins.BindText(3, s2);
+        ins.BindText(4, s3);
+        ins.BindText(5, s4);
+        ins.Step;
+      finally
+        ins.Free;
+      end;
+    end;
+  finally
+    st.Free;
+  end;
+
+  st := Db.Prepare('SELECT parent_uuid, namespace, pod_name, container_name,' +
+    ' shell_mode FROM connection_pod WHERE connection_uuid=?;');
+  try
+    st.BindText(1, ASrc);
+    if st.Step then
+    begin
+      s1 := Remap(st.ColText(0));
+      ins := Db.Prepare('INSERT INTO connection_pod(connection_uuid,' +
+        ' parent_uuid, namespace, pod_name, container_name, shell_mode)' +
+        ' VALUES(?,?,?,?,?,?);');
+      try
+        ins.BindText(1, ADst);
+        ins.BindText(2, s1);
+        ins.BindText(3, st.ColText(1));
+        ins.BindText(4, st.ColText(2));
+        ins.BindText(5, st.ColText(3));
+        ins.BindText(6, st.ColText(4));
+        ins.Step;
+      finally
+        ins.Free;
+      end;
+    end;
+  finally
+    st.Free;
+  end;
 end;
 
 function TRshModel.DuplicateNode(const AUuid: string): string;
 var
   src: TRshNode;
-  cnt: Integer;
+  cnt, i: Integer;
   st: TSqliteStmt;
+  map: TStringList;
 begin
   src := GetNode(AUuid);
   try
@@ -1850,16 +2002,23 @@ begin
     finally
       st.Free;
     end;
+    map := TStringList.Create;
     Db.BeginImmediate;
     try
       EnsureNodeBudget(cnt);
       Result := DuplicateSubtree(AUuid, src.ParentUuid,
-        NextSortOrder(src.ParentUuid), ' (copy)');
+        NextSortOrder(src.ParentUuid), ' (copy)', map);
+      // apres la copie de TOUS les noeuds: une reference vers un noeud copie
+      // plus loin dans l'arbre doit deja connaitre son nouveau uuid
+      for i := 0 to map.Count - 1 do
+        CopyConnectionSettings(map.Names[i], map.ValueFromIndex[i], map);
       Db.Commit;
     except
       Db.Rollback;
+      map.Free;
       raise;
     end;
+    map.Free;
   finally
     src.Free;
   end;

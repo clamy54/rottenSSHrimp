@@ -4,7 +4,9 @@ unit uSshCopyIdConnect;
 
 // « Copy SSH ID » et rotation de cle geree, par le transport SSH standard.
 // Rotation en deux passes, ordre non negociable: poser la nouvelle ligne partout
-// avec l'ANCIENNE cle, stocker, puis retirer l'ancienne avec la NOUVELLE.
+// avec l'ANCIENNE cle, stocker, SAUVEGARDER le document, puis retirer
+// l'ancienne avec la NOUVELLE. Sans la sauvegarde entre les deux, un .rsh que
+// l'on n'arrive plus a ecrire garderait une cle deja revoquee partout.
 
 interface
 
@@ -16,8 +18,12 @@ function CanCopySshId(AModel: TRshModel; const AConnUuid: string): Boolean;
 function CopySshIdToHost(ADoc: TRshDocument; AModel: TRshModel;
   const AConnUuid: string; out AErr: string): Boolean;
 
+// ASave: sauvegarde du document (celle du menu, dialogues compris). Elle est
+// appelee entre les deux passes; si le document reste non sauve, la seconde
+// passe est SAUTEE et le resume le dit.
 function RotateManagedKey(ADoc: TRshDocument; AModel: TRshModel;
-  const ACredUuid: string; out ASummary: string; out AErr: string): Boolean;
+  const ACredUuid: string; ASave: TNotifyEvent; out ASummary: string;
+  out AErr: string): Boolean;
 
 implementation
 
@@ -25,6 +31,11 @@ uses
   Forms, Controls, StdCtrls, Dialogs,
   uSecureBytes, uSshTransport, uSshTunnel, uSshTunnelConnect, uSshConnect,
   uSshKeyGen, uAuthPrompt, uFidoPrompt, uSshSkKeyGen;
+
+const
+  // Sortie distante conservee au plus: un script bavard ou un serveur hostile
+  // ne doit pas pouvoir remplir la memoire, le delai ne borne que le temps.
+  COPYID_OUTPUT_MAX = 256 * 1024;
 
 type
   TCopyIdRun = class
@@ -34,6 +45,7 @@ type
     ExitCode: Integer;
     Finished: Boolean;
     Failed: Boolean;
+    Overflow: Boolean;
     procedure HandleData(const AData: RawByteString);
     procedure HandleError(const AMessage: string);
     procedure HandleFinished(AExitCode: Integer);
@@ -42,6 +54,7 @@ type
   TCopyIdWaitDialog = class
   private
     FForm: TForm;
+    FDisabled: TList;
     FCancelled: Boolean;
     procedure CancelClick(Sender: TObject);
     procedure FormCloseQuery(Sender: TObject; var CanClose: Boolean);
@@ -53,6 +66,13 @@ type
 
 procedure TCopyIdRun.HandleData(const AData: RawByteString);
 begin
+  if Overflow then Exit;
+  if Length(Output) + Length(AData) > COPYID_OUTPUT_MAX then
+  begin
+    Output := Output + Copy(AData, 1, COPYID_OUTPUT_MAX - Length(Output));
+    Overflow := True;
+    Exit;
+  end;
   Output := Output + AData;
 end;
 
@@ -106,10 +126,15 @@ begin
   btn.OnClick := @CancelClick;
 
   FForm.Show;
+  // Non modale (la boucle est a l'appelant) mais les autres fenetres doivent
+  // dormir comme sous ShowModal: ProcessMessages livrait leurs clics, et une
+  // seconde rotation pouvait s'imbriquer dans la premiere.
+  FDisabled := Screen.DisableForms(FForm);
 end;
 
 destructor TCopyIdWaitDialog.Destroy;
 begin
+  Screen.EnableForms(FDisabled);
   FForm.Free;
   inherited Destroy;
 end;
@@ -185,6 +210,9 @@ begin
 end;
 
 // rc <= 1 ET temporaire non vide: sinon un disque plein tronque authorized_keys.
+// La branche d'abandon sort en 1: son rm -f reussissait et rendait 0, la
+// rotation annoncait alors une revocation qui n'avait pas eu lieu. Et on relit
+// le fichier a la fin: la ligne doit avoir DISPARU, pas seulement ete filtree.
 function RevokeCommand(const AOldLine: string): string;
 var
   esc: string;
@@ -195,8 +223,9 @@ begin
     ' ~/.ssh/authorized_keys > ~/.ssh/authorized_keys.tmp; rc=$?; ' +
     'if [ "$rc" -le 1 ] && [ -s ~/.ssh/authorized_keys.tmp ]; then ' +
     'mv ~/.ssh/authorized_keys.tmp ~/.ssh/authorized_keys && ' +
-    'chmod 600 ~/.ssh/authorized_keys; ' +
-    'else rm -f ~/.ssh/authorized_keys.tmp; fi';
+    'chmod 600 ~/.ssh/authorized_keys && ' +
+    '! grep -qxF ' + esc + ' ~/.ssh/authorized_keys; ' +
+    'else rm -f ~/.ssh/authorized_keys.tmp; exit 1; fi';
 end;
 
 // Prend possession d'APassword. True = la commande a tourne, exit code compris.
@@ -276,6 +305,13 @@ begin
       begin
         Application.ProcessMessages;
         if run.Finished or run.Failed then Break;
+        if run.Overflow then
+        begin
+          tr.Shutdown;
+          AErr := Format('The remote command produced more than %d KiB of ' +
+            'output: aborted.', [COPYID_OUTPUT_MAX div 1024]);
+          Break;
+        end;
         if dlg.Cancelled or prompts.Cancelled then
         begin
           ACancelled := True;
@@ -301,6 +337,8 @@ begin
     end;
 
     if ACancelled then
+      Exit;
+    if run.Overflow then
       Exit;
     if run.Failed then
     begin
@@ -406,7 +444,8 @@ begin
 end;
 
 function RotateManagedKey(ADoc: TRshDocument; AModel: TRshModel;
-  const ACredUuid: string; out ASummary: string; out AErr: string): Boolean;
+  const ACredUuid: string; ASave: TNotifyEvent; out ASummary: string;
+  out AErr: string): Boolean;
 var
   cred: TRshCredential;
   hosts: TStringArray;
@@ -542,6 +581,27 @@ begin
       end;
     end;
 
+    // ---- Sauvegarde du .rsh AVANT de revoquer quoi que ce soit ----
+    // La nouvelle paire ne vit que dans la copie de travail. Revoquer d'abord
+    // et echouer a sauver ensuite laissait le fichier principal avec une cle
+    // morte partout: on s'arrete ici, les deux cles restent valables.
+    if Length(hosts) > 0 then
+    begin
+      if Assigned(ASave) then
+        ASave(nil);
+      if ADoc.Dirty or (ADoc.SourcePath = '') then
+      begin
+        ASummary := Format('The new key pair was installed on %d host(s) ' +
+          'and stored in the working copy, but the document has NOT been ' +
+          'saved.', [Length(hosts)]) + LineEnding + LineEnding +
+          'The old key was deliberately left in place on every host: both ' +
+          'keys work until the document is saved. Save it, then remove the ' +
+          'old key lines by hand or rotate again.';
+        Result := True;
+        Exit;
+      end;
+    end;
+
     // ---- Passe 2: retirer l'ancienne ligne, sous la NOUVELLE ----
     warnings := '';
     for i := 0 to High(hosts) do
@@ -578,8 +638,8 @@ begin
     if warnings <> '' then
       ASummary := ASummary + LineEnding + LineEnding +
         'Warnings:' + LineEnding + TrimRight(warnings) + LineEnding +
-        'The old private key no longer exists anywhere; stale lines are ' +
-        'inert and can be removed by hand.';
+        'This document no longer holds the old private key, but any earlier ' +
+        'backup or copy of it still does: remove those stale lines by hand.';
     Result := True;
   finally
     newPem.Free;

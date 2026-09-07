@@ -71,6 +71,7 @@ type
     procedure ClipPoll(Sender: TObject);
     function TryReadClip(out AText: string): Boolean;
     procedure SendClipToServer(const AText: string);
+    function ClipForeground: Boolean;
     procedure UpdateCaption;
     procedure DeferredClose(Data: PtrInt);
     procedure RequestClose;
@@ -185,7 +186,7 @@ begin
   FPaintTimer.Enabled := True;
 
   FClipBridge := TClipboardBridge.Create(
-    @TryReadClip, @SendClipToServer, VNC_CLIP_SEND_MAX);
+    @TryReadClip, @SendClipToServer, VNC_CLIP_SEND_MAX, @ClipForeground);
 
   if FClipEnabled and (not AConfig.ViewOnly) then
   begin
@@ -527,6 +528,13 @@ procedure TVncSessionTab.SendClipToServer(const AText: string);
 begin
   if FTransport <> nil then
     FTransport.SendClipboard(AText);
+end;
+
+// Onglet visible seulement: VNC pousse le texte entier, pas une annonce, donc
+// un onglet cache enverrait ce que le serveur A vient de deposer.
+function TVncSessionTab.ClipForeground: Boolean;
+begin
+  Result := (PageControl <> nil) and (PageControl.ActivePage = Self);
 end;
 
 procedure TVncSessionTab.UpdateCaption;

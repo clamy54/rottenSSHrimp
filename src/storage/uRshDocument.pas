@@ -1506,15 +1506,15 @@ begin
     try
       if Length(sealed) > 0 then
         tmpStream.WriteBuffer(sealed[0], Length(sealed));
-      {$IFDEF UNIX}
-      // le fsync du repertoire ne rend durable que le NOM, pas le contenu
-      if fpfsync(THandleStream(tmpStream).Handle) <> 0 then
+      // Le fsync du repertoire ne rend durable que le NOM, pas le contenu.
+      // Windows aussi: sans FlushFileBuffers, le rename puis « saved » ne
+      // survivaient pas a une coupure, le contenu dormant dans le cache.
+      if not FlushToDisk(THandleStream(tmpStream).Handle) then
       begin
         AErr := DocErr(decIo, 'Disk write not confirmed (fsync).',
-          Format('errno=%d', [fpGetErrno]));
+          Format('errno=%d', [GetLastOSError]));
         Exit;
       end;
-      {$ENDIF}
     finally
       tmpStream.Free;
     end;

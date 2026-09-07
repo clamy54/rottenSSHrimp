@@ -2,8 +2,9 @@ unit uPrefsDialog;
 
 {$mode objfpc}{$H+}
 
-// Police des sessions terminal. On ne propose que les Monaspace embarquees,
-// jamais les polices systeme: meme rendu partout.
+// Police des sessions terminal. On ne propose que les polices embarquees
+// (Monaspace, JetBrains Mono Nerd Font), jamais les polices systeme: meme
+// rendu partout.
 
 interface
 
@@ -20,19 +21,27 @@ type
   TFontPrefsForm = class(TForm)
   private
     FFamily: TComboBox;
+    FKeys: TStringList;   // cle par ligne du combo; l'affichage est le nom complet
     FSize: TComboBox;
     FPreview: TLabel;
     procedure ChoiceChanged(Sender: TObject);
     procedure UpdatePreview;
+    function SelectedKey: string;
   end;
+
+function TFontPrefsForm.SelectedKey: string;
+begin
+  Result := '';
+  if (FKeys <> nil) and (FFamily.ItemIndex >= 0) and
+     (FFamily.ItemIndex < FKeys.Count) then
+    Result := FKeys[FFamily.ItemIndex];
+end;
 
 procedure TFontPrefsForm.UpdatePreview;
 var
   fam: string;
 begin
-  fam := '';
-  if FFamily.ItemIndex >= 0 then
-    fam := ResolveMonaspace(FFamily.Items[FFamily.ItemIndex]);
+  fam := ResolveMonaspace(SelectedKey);
   if fam = '' then
     fam := MonaspaceDefaultFamily;
   FPreview.Font.Name := fam;
@@ -64,6 +73,7 @@ begin
 
   f := TFontPrefsForm.CreateNew(nil);
   try
+    f.FKeys := TStringList.Create;
     f.Caption := 'Terminal Font';
     f.BorderStyle := bsDialog;
     f.Position := poScreenCenter;
@@ -76,7 +86,7 @@ begin
 
     f.FFamily := TComboBox.Create(f);
     f.FFamily.Parent := f;
-    f.FFamily.SetBounds(112, 16, 200, 26);
+    f.FFamily.SetBounds(112, 16, 240, 26);
     f.FFamily.Style := csDropDownList;
     cur := PrefTerminalFontFamily;
     if cur = '' then
@@ -87,7 +97,8 @@ begin
       // seulement les familles reellement chargees: proposer le reste ment
       if ResolveMonaspace(key) = '' then
         Continue;
-      f.FFamily.Items.Add(key);
+      f.FKeys.Add(key);
+      f.FFamily.Items.Add(MonaspaceFamilyLabel(i));
       if SameText(key, cur) then
         f.FFamily.ItemIndex := f.FFamily.Items.Count - 1;
     end;
@@ -146,14 +157,15 @@ begin
     if f.ShowModal <> mrOK then
       Exit;
 
-    if f.FFamily.ItemIndex >= 0 then
-      PrefTerminalFontFamily := f.FFamily.Items[f.FFamily.ItemIndex];
+    if f.SelectedKey <> '' then
+      PrefTerminalFontFamily := f.SelectedKey;
     PrefTerminalFontSize := StrToIntDef(f.FSize.Text,
       PREF_TERM_FONT_SIZE_DEFAULT);
     ApplyPreferencesToTheme;
     SavePreferences;
     Result := True;
   finally
+    f.FKeys.Free;
     f.Free;
   end;
 end;
