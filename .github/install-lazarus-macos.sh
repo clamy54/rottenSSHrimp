@@ -5,20 +5,35 @@
 # Pas setup-lazarus: sur macOS il ne pose que la variante x86_64 (l'app
 # sortirait en Intel/Rosetta) et s'arrete a 4.4. On installe la distribution
 # aarch64 officielle 4.8, celle qui sert en local.
+#
+# SourceForge bride le debit des runners GitHub au point de faire expirer le
+# job: on sert d'abord le miroir clamy54/lazarus-mirror (memes fichiers), et
+# SourceForge n'est plus que le secours. Le cache d'actions du workflow evite
+# meme ce premier telechargement d'un run au suivant.
 set -euo pipefail
 
-base="https://sourceforge.net/projects/lazarus/files/Lazarus%20macOS%20aarch64/Lazarus%204.8"
+mirror="https://github.com/clamy54/lazarus-mirror/releases/download/lazarus-4.8-aarch64"
+sf="https://sourceforge.net/projects/lazarus/files/Lazarus%20macOS%20aarch64/Lazarus%204.8"
+dl="$HOME/laz-dl"; mkdir -p "$dl"
 
-curl -fsSL -o /tmp/fpc.dmg "$base/fpc-3.2.4rc1a.intelarm64-macosx.dmg/download"
-sudo hdiutil attach -noautoopen /tmp/fpc.dmg
+fetch() {  # $1 nom du fichier; garde la copie du cache si elle est la
+  [ -s "$dl/$1" ] && { echo "$1: depuis le cache"; return 0; }
+  curl -fsSL --retry 3 -o "$dl/$1" "$mirror/$1" && { echo "$1: depuis le miroir GitHub"; return 0; }
+  echo "$1: miroir indisponible, repli SourceForge" >&2
+  curl -fsSL --retry 3 -o "$dl/$1" "$sf/$1/download"
+}
+
+fetch fpc-3.2.4rc1a.intelarm64-macosx.dmg
+fetch lazarus-darwin-aarch64-4.8.zip
+
+sudo hdiutil attach -noautoopen "$dl/fpc-3.2.4rc1a.intelarm64-macosx.dmg"
 # le dmg 3.2.4rc1a monte en fpc-3.2.4rc1...-flat: glob sur fpc-*
 pkg="$(find /Volumes/fpc-* -maxdepth 1 \( -name '*.mpkg' -o -name '*.pkg' \) | head -1)"
 [ -n "$pkg" ] || { echo "paquet FPC introuvable dans le dmg" >&2; ls /Volumes >&2; exit 1; }
 sudo installer -package "$pkg" -target /
 sudo hdiutil detach /Volumes/fpc-*
 
-curl -fsSL -o /tmp/lazarus.zip "$base/lazarus-darwin-aarch64-4.8.zip/download"
-unzip -q /tmp/lazarus.zip -d "$HOME/laz"
+unzip -q "$dl/lazarus-darwin-aarch64-4.8.zip" -d "$HOME/laz"
 
 # la config portable du zip pointe /Developer/lazarus, inaccessible (racine
 # scellee SSV): on la fait pointer sur l'emplacement reel
