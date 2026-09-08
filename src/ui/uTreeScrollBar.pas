@@ -41,6 +41,8 @@ type
     function DoMouseWheel(Shift: TShiftState; WheelDelta: Integer;
       MousePos: TPoint): Boolean; override;
     procedure KeyDown(var Key: Word; Shift: TShiftState); override;
+    procedure MouseDown(Button: TMouseButton; Shift: TShiftState;
+      X, Y: Integer); override;
   public
     function MaxScrollTop: Integer;
     function ViewportHeight: Integer;
@@ -221,6 +223,19 @@ begin
   // la LCL positionne sans passer par SetScrollTop: l'animation tirerait ailleurs
   WheelStop;
   inherited KeyDown(Key, Shift);
+end;
+
+// Selection multiple: la LCL ne connait que Ctrl+clic. Sous macOS c'est Cmd
+// qui ajoute a la selection (Ctrl+clic y est le clic droit): on le presente
+// comme Ctrl avant de laisser faire.
+procedure TScrollTreeView.MouseDown(Button: TMouseButton; Shift: TShiftState;
+  X, Y: Integer);
+begin
+  {$IFDEF DARWIN}
+  if ssMeta in Shift then
+    Shift := Shift + [ssCtrl];
+  {$ENDIF}
+  inherited MouseDown(Button, Shift, X, Y);
 end;
 
 function TScrollTreeView.MaxScrollTop: Integer;

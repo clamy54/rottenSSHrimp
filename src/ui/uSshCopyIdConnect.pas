@@ -209,22 +209,41 @@ begin
     'printf ''%s\n'' ' + esc + ' >> ~/.ssh/authorized_keys; }';
 end;
 
+// Le blob base64 de la cle: c'est LUI qui identifie la cle, pas la ligne.
+// Une ligne d'authorized_keys peut porter des options devant et un autre
+// commentaire derriere; filtrer la ligne entiere laissait la cle en place.
+function KeyBlobOf(const ALine: string): string;
+var
+  parts: TStringArray;
+  i: Integer;
+begin
+  Result := '';
+  parts := Trim(ALine).Split([' ', #9], TStringSplitOptions.ExcludeEmpty);
+  // le blob d'une cle SSH commence toujours par « AAAA » (longueur du type)
+  for i := 0 to High(parts) do
+    if (Length(parts[i]) > 40) and (Copy(parts[i], 1, 4) = 'AAAA') then
+      Exit(parts[i]);
+end;
+
 // rc <= 1 ET temporaire non vide: sinon un disque plein tronque authorized_keys.
 // La branche d'abandon sort en 1: son rm -f reussissait et rendait 0, la
 // rotation annoncait alors une revocation qui n'avait pas eu lieu. Et on relit
-// le fichier a la fin: la ligne doit avoir DISPARU, pas seulement ete filtree.
+// le fichier a la fin: le blob doit avoir DISPARU, pas seulement ete filtre.
 function RevokeCommand(const AOldLine: string): string;
 var
-  esc: string;
+  esc, blob: string;
 begin
-  esc := ShellSingleQuote(AOldLine);
+  blob := KeyBlobOf(AOldLine);
+  if blob = '' then
+    blob := Trim(AOldLine);
+  esc := ShellSingleQuote(blob);
   Result :=
-    'umask 077; grep -vxF ' + esc +
+    'umask 077; grep -vF ' + esc +
     ' ~/.ssh/authorized_keys > ~/.ssh/authorized_keys.tmp; rc=$?; ' +
     'if [ "$rc" -le 1 ] && [ -s ~/.ssh/authorized_keys.tmp ]; then ' +
     'mv ~/.ssh/authorized_keys.tmp ~/.ssh/authorized_keys && ' +
     'chmod 600 ~/.ssh/authorized_keys && ' +
-    '! grep -qxF ' + esc + ' ~/.ssh/authorized_keys; ' +
+    '! grep -qF ' + esc + ' ~/.ssh/authorized_keys; ' +
     'else rm -f ~/.ssh/authorized_keys.tmp; exit 1; fi';
 end;
 

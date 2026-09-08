@@ -214,24 +214,24 @@ begin
     end;
     Queue(@FOwner.DrainData);
   end;
-  // Attente bornee puis SIGKILL: un waitpid bloquant pendrait sur un teigneux.
+  // Jamais de waitpid bloquant: un fils qui ferme son terminal, reste vivant
+  // et ignore SIGHUP y retenait ce thread, et Stop attendait ce thread. On
+  // sonde; des qu'un arret est demande, delai borne puis SIGKILL.
   status := 0;
   if FOwner.FChildPid > 0 then
   begin
-    if FOwner.FStopping then
+    i := 0;
+    while FpWaitPid(FOwner.FChildPid, @status, WNOHANG) = 0 do
     begin
-      i := 0;
-      while FpWaitPid(FOwner.FChildPid, @status, WNOHANG) = 0 do
+      if FOwner.FStopping or Terminated then
       begin
         if i = 30 then
           FpKill(FOwner.FChildPid, SIGKILL);
         if i > 80 then Break;
-        Sleep(10);
         Inc(i);
       end;
-    end
-    else
-      FpWaitPid(FOwner.FChildPid, @status, 0);
+      Sleep(10);
+    end;
   end;
   FOwner.FExitCode := WEXITSTATUS(status);
   FOwner.FExited := True;

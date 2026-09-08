@@ -27,6 +27,9 @@ type
     Col: Integer;
   end;
 
+  // ADx/ADy: -1, 0 ou +1, un seul des deux non nul
+  TTermNeighborEvent = procedure(Sender: TObject; ADx, ADy: Integer) of object;
+
   TRottenTerminalControl = class(TCustomControl, IThemedScrollTarget)
   private
     FEmu: TTermEmulator;
@@ -48,6 +51,7 @@ type
     FOnGridResize: TTermGridEvent;
     FOnTitleChanged: TTermStrEvent;
     FOnEscapeCapture: TNotifyEvent;
+    FOnNeighborFocus: TTermNeighborEvent;
     FPalette: array[0..255] of TColor;
     FDefFg, FDefBg: TColor;
     procedure BuildPalette;
@@ -121,6 +125,10 @@ type
     property OnTitleChanged: TTermStrEvent read FOnTitleChanged write FOnTitleChanged;
     property OnEscapeCapture: TNotifyEvent read FOnEscapeCapture
       write FOnEscapeCapture;
+    // Ctrl+Alt+fleches (Cmd+Alt sous macOS): passer au terminal voisin dans
+    // une grille. Non assigne = la combinaison va au shell.
+    property OnNeighborFocus: TTermNeighborEvent read FOnNeighborFocus
+      write FOnNeighborFocus;
   end;
 
 implementation
@@ -1142,6 +1150,21 @@ begin
     Key := 0;
     if Assigned(FOnEscapeCapture) then
       FOnEscapeCapture(Self);
+    Exit;
+  end;
+  // terminal voisin dans une grille, meme modificateurs que l'echappement
+  if Assigned(FOnNeighborFocus) and (ssAlt in Shift) and
+     {$IFDEF DARWIN}(ssMeta in Shift){$ELSE}(ssCtrl in Shift){$ENDIF} and
+     ((Key = VK_LEFT) or (Key = VK_RIGHT) or (Key = VK_UP) or (Key = VK_DOWN)) then
+  begin
+    case Key of
+      VK_LEFT: FOnNeighborFocus(Self, -1, 0);
+      VK_RIGHT: FOnNeighborFocus(Self, 1, 0);
+      VK_UP: FOnNeighborFocus(Self, 0, -1);
+    else
+      FOnNeighborFocus(Self, 0, 1);
+    end;
+    Key := 0;
     Exit;
   end;
 

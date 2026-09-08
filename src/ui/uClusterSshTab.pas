@@ -4,6 +4,8 @@ unit uClusterSshTab;
 
 // Onglet Broadcast SSH facon clusterssh: N terminaux, une barre qui diffuse en
 // OCTETS. Chaque cellule est une VRAIE session, comptee au plafond global.
+// Mode Multi-Terminal: la meme grille sans la barre, on tape dans la cellule
+// qui a le focus (clic, ou Ctrl+Alt+fleches pour passer a la voisine).
 
 interface
 
@@ -18,6 +20,8 @@ const
   CLUSTER_MAX_SESSIONS = 16;
 
 type
+  TClusterMode = (cmBroadcast, cmMulti);
+
   TClusterSshTab = class;
 
   TClusterCell = class(TCustomControl)
@@ -51,6 +55,9 @@ type
       var ADecision: TSshHostKeyDecision);
     procedure HostKeySave(const AInfo: TSshHostKeyInfo);
     procedure UpdateHeader;
+    procedure TermEnter(Sender: TObject);
+    procedure TermExit(Sender: TObject);
+    procedure TermNeighbor(Sender: TObject; ADx, ADy: Integer);
   public
     constructor CreateCell(AOwnerTab: TClusterSshTab; ADoc: TRshDocument;
       const ADisplayName, AConnUuid: string; AParams: TSshConnectParams;
@@ -87,6 +94,8 @@ type
     FHandles: array of TClusterCellHandle;
     FManager: TSessionManager;
     FGroupName: string;
+    FMode: TClusterMode;
+    FCols: Integer;        // colonnes de la derniere mise en page
     FClosing: Boolean;
     FBulkHostKeySet: Boolean;
     FBulkHostKeyDecision: TSshHostKeyDecision;
@@ -100,13 +109,19 @@ type
     procedure PasteBroadcast;
     procedure CellChanged;
     procedure Broadcast(const AData: RawByteString);
+    function ModeWord: string;
+    // focus sur la cellule voisine de ACell: en ligne (ADx) ou en colonne
+    // (ADy), en boucle, en sautant ce qui ne peut pas prendre le focus
+    procedure FocusNeighbor(ACell: TClusterCell; ADx, ADy: Integer);
+    procedure FocusFirstCell;
   public
     constructor CreateCluster(APages: TPageControl; ADoc: TRshDocument;
       AManager: TSessionManager; const AGroupName: string;
       const ADisplays, AConnUuids: array of string;
       const AParams: array of TSshConnectParams;
       const ATunnels: array of TSshTunnel;
-      const ABrokers: array of TSshTunnelBroker);
+      const ABrokers: array of TSshTunnelBroker;
+      AMode: TClusterMode = cmBroadcast);
     destructor Destroy; override;
 
     procedure Start;
@@ -125,6 +140,7 @@ type
     function TabBarCaption: string; override;
 
     property GroupName: string read FGroupName;
+    property Mode: TClusterMode read FMode;
   end;
 
 implementation
@@ -178,7 +194,10 @@ end;
 
 function TClusterCellHandle.DisplayName: string;
 begin
-  Result := FCell.FDisplayName + ' (broadcast)';
+  if (FCell.FOwnerTab <> nil) and (FCell.FOwnerTab.Mode = cmMulti) then
+    Result := FCell.FDisplayName + ' (multi)'
+  else
+    Result := FCell.FDisplayName + ' (broadcast)';
 end;
 
 procedure TClusterCellHandle.BeginShutdown;
@@ -210,6 +229,9 @@ begin
   FTerm.Parent := Self;
   FTerm.OnSendData := @TermSend;
   FTerm.OnGridResize := @TermGridResize;
+  FTerm.OnEnter := @TermEnter;
+  FTerm.OnExit := @TermExit;
+  FTerm.OnNeighborFocus := @TermNeighbor;
   FTerm.SetTerminalFontSize(AFontSize);
   FTerm.SetDefaultColors(AAccent, clTermBg);
 
@@ -379,10 +401,37 @@ begin
     AInfo.Fingerprint, AInfo.Blob);
 end;
 
+// La cellule qui a le focus est marquee: c'est elle qui recoit les frappes.
 procedure TClusterCell.UpdateHeader;
 begin
-  FLabel.Caption := Format(' %s — %s',
-    [FDisplayName, SessionStateName(FState)]);
+  if (FTerm <> nil) and FTerm.Focused then
+  begin
+    FLabel.Font.Style := [fsBold];
+    FLabel.Caption := Format(' ▶ %s — %s',
+      [FDisplayName, SessionStateName(FState)]);
+  end
+  else
+  begin
+    FLabel.Font.Style := [];
+    FLabel.Caption := Format(' %s — %s',
+      [FDisplayName, SessionStateName(FState)]);
+  end;
+end;
+
+procedure TClusterCell.TermEnter(Sender: TObject);
+begin
+  UpdateHeader;
+end;
+
+procedure TClusterCell.TermExit(Sender: TObject);
+begin
+  UpdateHeader;
+end;
+
+procedure TClusterCell.TermNeighbor(Sender: TObject; ADx, ADy: Integer);
+begin
+  if FOwnerTab <> nil then
+    FOwnerTab.FocusNeighbor(Self, ADx, ADy);
 end;
 
 constructor TClusterSshTab.CreateCluster(APages: TPageControl;
@@ -390,7 +439,7 @@ constructor TClusterSshTab.CreateCluster(APages: TPageControl;
   const ADisplays, AConnUuids: array of string;
   const AParams: array of TSshConnectParams;
   const ATunnels: array of TSshTunnel;
-  const ABrokers: array of TSshTunnelBroker);
+  const ABrokers: array of TSshTunnelBroker; AMode: TClusterMode);
 var
   i, fsz, consumed: Integer;
 begin
@@ -398,15 +447,21 @@ begin
   PageControl := APages;
   FManager := AManager;
   FGroupName := AGroupName;
-  Caption := AGroupName + ' — Broadcast';
+  FMode := AMode;
+  Caption := AGroupName + ' — ' + ModeWord;
 
-  FBar := TEdit.Create(Self);
-  FBar.Parent := Self;
-  FBar.Align := alBottom;
-  FBar.Height := BAR_H;
-  FBar.TextHint := 'Broadcast to all sessions…';
-  FBar.OnKeyDown := @BarKeyDown;
-  FBar.OnUTF8KeyPress := @BarUtf8KeyPress;
+  // pas de barre en multi: chaque cellule recoit ses propres frappes
+  FBar := nil;
+  if FMode = cmBroadcast then
+  begin
+    FBar := TEdit.Create(Self);
+    FBar.Parent := Self;
+    FBar.Align := alBottom;
+    FBar.Height := BAR_H;
+    FBar.TextHint := 'Broadcast to all sessions…';
+    FBar.OnKeyDown := @BarKeyDown;
+    FBar.OnUTF8KeyPress := @BarUtf8KeyPress;
+  end;
 
   FGridHost := TPanel.Create(Self);
   FGridHost.Parent := Self;
@@ -509,9 +564,17 @@ begin
       end;
 end;
 
+function TClusterSshTab.ModeWord: string;
+begin
+  if FMode = cmMulti then
+    Result := 'Multi'
+  else
+    Result := 'Broadcast';
+end;
+
 function TClusterSshTab.TabBarCaption: string;
 begin
-  Result := Format('%s — Broadcast (%d)', [FGroupName, ActiveCount]);
+  Result := Format('%s — %s (%d)', [FGroupName, ModeWord, ActiveCount]);
 end;
 
 function TClusterSshTab.ConfirmClose: Boolean;
@@ -519,7 +582,7 @@ begin
   if ActiveCount = 0 then
     Exit(True);
   Result := QuestionDlg('Disconnect',
-    Format('Disconnect %d broadcast session(s)?', [ActiveCount]),
+    Format('Disconnect %d session(s)?', [ActiveCount]),
     mtConfirmation,
     [mrOK, 'Disconnect', mrCancel, 'Cancel', 'IsCancel'], 0) = mrOK;
 end;
@@ -583,8 +646,68 @@ end;
 
 procedure TClusterSshTab.FocusContent;
 begin
-  if FBar.CanFocus then
-    FBar.SetFocus;
+  if FBar <> nil then
+  begin
+    if FBar.CanFocus then
+      FBar.SetFocus;
+  end
+  else
+    FocusFirstCell;
+end;
+
+procedure TClusterSshTab.FocusFirstCell;
+var
+  i: Integer;
+begin
+  // une cellule a deja le focus: on ne le deplace pas
+  for i := 0 to High(FCells) do
+    if (FCells[i] <> nil) and FCells[i].FTerm.Focused then Exit;
+  for i := 0 to High(FCells) do
+    if (FCells[i] <> nil) and FCells[i].FTerm.CanFocus then
+    begin
+      FCells[i].FTerm.SetFocus;
+      Exit;
+    end;
+end;
+
+procedure TClusterSshTab.FocusNeighbor(ACell: TClusterCell; ADx, ADy: Integer);
+var
+  i, idx, n, k, cols, rows, col, row: Integer;
+begin
+  n := Length(FCells);
+  if n < 2 then Exit;
+  idx := -1;
+  for i := 0 to n - 1 do
+    if FCells[i] = ACell then
+    begin
+      idx := i;
+      Break;
+    end;
+  if idx < 0 then Exit;
+  cols := FCols;
+  if cols < 1 then cols := 1;
+  rows := (n + cols - 1) div cols;
+  col := idx mod cols;
+  row := idx div cols;
+  k := idx;
+  for i := 1 to n do
+  begin
+    if ADy <> 0 then
+    begin
+      // meme colonne, ligne suivante en boucle; la derniere ligne peut etre
+      // incomplete, on saute les cases vides
+      row := (row + ADy + rows) mod rows;
+      k := row * cols + col;
+      if k >= n then Continue;
+    end
+    else
+      k := (k + ADx + n) mod n;
+    if (k <> idx) and (FCells[k] <> nil) and FCells[k].FTerm.CanFocus then
+    begin
+      FCells[k].FTerm.SetFocus;
+      Exit;
+    end;
+  end;
 end;
 
 procedure TClusterSshTab.CellChanged;
@@ -620,8 +743,13 @@ begin
     FManager.UnregisterSession(FHandles[idx]);
     FreeAndNil(FHandles[idx]);
   end;
-  if FCells[idx].FTerm.Focused and FBar.CanFocus then
-    FBar.SetFocus;
+  if FCells[idx].FTerm.Focused then
+  begin
+    if (FBar <> nil) and FBar.CanFocus then
+      FBar.SetFocus
+    else
+      FocusNeighbor(FCells[idx], 1, 0);
+  end;
   FCells[idx].Free;
   Delete(FCells, idx, 1);
   Delete(FHandles, idx, 1);
@@ -653,6 +781,7 @@ begin
   while cols * cols < n do
     Inc(cols);
   rows := (n + cols - 1) div cols;
+  FCols := cols;
   cw := FGridHost.ClientWidth div cols;
   ch := FGridHost.ClientHeight div rows;
   if (cw < 40) or (ch < 40) then Exit;
@@ -777,7 +906,8 @@ begin
     Exit;
 
   Broadcast(cleaned);
-  FBar.SelText := StringReplace(string(cleaned), #13, ' ', [rfReplaceAll]);
+  if FBar <> nil then
+    FBar.SelText := StringReplace(string(cleaned), #13, ' ', [rfReplaceAll]);
 end;
 
 end.

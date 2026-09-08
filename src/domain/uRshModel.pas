@@ -163,6 +163,11 @@ type
     procedure SetJumpHostOffered(const AConnUuid: string; AOffered: Boolean);
     procedure LoadJumpHostOffers(AList: TStrings);
     function CountJumpDependents(const AConnUuid: string): Integer;
+    // Connexions HORS du sous-arbre d'ANodeUuid qui dependent d'un noeud
+    // DEDANS: bastion, hote de conteneur, hote de pod. Supprimer le sous-arbre
+    // les laisserait sans tunnel (acces direct, en clair) ou sans hote.
+    procedure CountExternalDependents(const ANodeUuid: string;
+      out AJumps, AContainers, APods: Integer);
     function CreateContainerConnection(const AParentGroupUuid: string;
       AName: string; const AParentSshUuid: string; AEngine: TContainerEngine;
       const AContainerName: string; AShell: TContainerShell): string;
@@ -1407,6 +1412,54 @@ begin
     raise;
   end;
   FDoc.MarkDirty;
+end;
+
+procedure TRshModel.CountExternalDependents(const ANodeUuid: string;
+  out AJumps, AContainers, APods: Integer);
+
+  function TableExists(const AName: string): Boolean;
+  var
+    st: TSqliteStmt;
+  begin
+    st := Db.Prepare('SELECT 1 FROM sqlite_master WHERE type=''table''' +
+      ' AND name=? LIMIT 1;');
+    try
+      st.BindText(1, AName);
+      Result := st.Step;
+    finally
+      st.Free;
+    end;
+  end;
+
+  // UNION et pas UNION ALL: la deduplication fait terminer la recursion sur
+  // un cycle forge, comme dans DuplicateNode
+  function CountIn(const ATable, ARefCol: string): Integer;
+  var
+    st: TSqliteStmt;
+  begin
+    Result := 0;
+    if not TableExists(ATable) then Exit;
+    st := Db.Prepare('WITH RECURSIVE sub(uuid) AS (' +
+      ' SELECT uuid FROM nodes WHERE uuid=?' +
+      ' UNION SELECT n.uuid FROM nodes n JOIN sub s ON n.parent_uuid=s.uuid)' +
+      ' SELECT COUNT(*) FROM ' + ATable + ' t' +
+      ' WHERE t.' + ARefCol + ' IN (SELECT uuid FROM sub)' +
+      ' AND t.connection_uuid NOT IN (SELECT uuid FROM sub);');
+    try
+      st.BindText(1, ANodeUuid);
+      if st.Step then
+        Result := st.ColInt64(0);
+    finally
+      st.Free;
+    end;
+  end;
+
+begin
+  AJumps := 0; AContainers := 0; APods := 0;
+  if ANodeUuid = '' then Exit;
+  AJumps := CountIn('connection_jump', 'jump_via_uuid');
+  AContainers := CountIn('connection_container', 'parent_uuid');
+  APods := CountIn('connection_pod', 'parent_uuid');
 end;
 
 function TRshModel.CountContainerDependents(const AParentUuid: string): Integer;

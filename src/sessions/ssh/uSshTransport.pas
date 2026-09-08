@@ -165,6 +165,7 @@ type
 
     FOutLock: TCriticalSection;
     FOutBuf: RawByteString;
+    FOutOverflow: Boolean;   // file sortante saturee: la session se ferme
 
     FPendingCols, FPendingRows: Integer;
     FResizeWanted: Boolean;
@@ -599,12 +600,24 @@ begin
     Result := Format('%s (%d)', [AContext, rc]);
 end;
 
+// File BORNEE. Le terminal repond seul a certaines requetes du serveur
+// (position du curseur, identification): un serveur qui les enchaine sans
+// jamais lire la socket faisait grossir cette file sans fin. Au-dela du
+// plafond, on cesse d'accumuler et le thread coupe la session.
 procedure TSshTransport.SendData(const AData: RawByteString);
+const
+  OUT_MAX = 4 * 1024 * 1024;
 begin
   if AData = '' then
     Exit;
   FOutLock.Acquire;
   try
+    if FOutOverflow then Exit;
+    if Length(FOutBuf) + Length(AData) > OUT_MAX then
+    begin
+      FOutOverflow := True;
+      Exit;
+    end;
     FOutBuf := FOutBuf + AData;
   finally
     FOutLock.Release;
@@ -1351,7 +1364,7 @@ var
   pending: RawByteString;
   wrote: cssize_t;
   cols, rows: Integer;
-  doResize: Boolean;
+  doResize, overflow: Boolean;
   idle: Boolean;
   secondsToNext: cint;
   rc: cint;
@@ -1389,8 +1402,15 @@ begin
     try
       pending := FOutBuf;
       FOutBuf := '';
+      overflow := FOutOverflow;
     finally
       FOutLock.Release;
+    end;
+    if overflow then
+    begin
+      Fail('SSH outbound queue overflow: the server stopped reading, ' +
+        'session closed.');
+      Exit;
     end;
     while (pending <> '') and (not Terminated) do
     begin

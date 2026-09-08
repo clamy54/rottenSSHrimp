@@ -395,8 +395,12 @@ begin
     channel := libssh2_channel_direct_tcpip_ex(FSession,
       PAnsiChar(AnsiString(FTargetHost)), FTargetPort,
       PAnsiChar('127.0.0.1'), FLocalPort);
+    // seule EAGAIN merite d'attendre; toute autre erreur est definitive et
+    // reboucler dessus brulait un coeur sans jamais la remonter
     if (channel = nil) and
-       (libssh2_session_last_errno(FSession) = LIBSSH2_ERROR_EAGAIN) then
+       (libssh2_session_last_errno(FSession) <> LIBSSH2_ERROR_EAGAIN) then
+      Break;
+    if channel = nil then
     begin
       if Terminated then Break;
       if (GetTickCount64 - openStart) >=

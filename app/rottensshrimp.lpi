@@ -1498,6 +1498,14 @@
         <IsPartOfProject Value="True"/>
       </Unit>
       <Unit>
+        <Filename Value="../src/platform/uIcmpPing.pas"/>
+        <IsPartOfProject Value="True"/>
+      </Unit>
+      <Unit>
+        <Filename Value="../src/ui/uPingTab.pas"/>
+        <IsPartOfProject Value="True"/>
+      </Unit>
+      <Unit>
         <Filename Value="../src/crypto/uSshKeyGen.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit>

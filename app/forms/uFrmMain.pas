@@ -164,6 +164,16 @@ type
     procedure ConnectAllInFolderClick(Sender: TObject);
     procedure DisconnectAllInFolderClick(Sender: TObject);
     procedure ClusterSshClick(Sender: TObject);
+    procedure MultiSshClick(Sender: TObject);
+    procedure ClusterSelectedClick(Sender: TObject);
+    procedure MultiSelectedClick(Sender: TObject);
+    procedure ClusterFolder(AMode: TClusterMode);
+    procedure ClusterSelection(AMode: TClusterMode);
+    procedure StartClusterFor(AList: TRshQuickList; const AName: string;
+      AMode: TClusterMode);
+    // nil si moins de deux noeuds selectionnes; les dossiers sont developpes
+    function SelectedConnUuids(out AAllSsh: Boolean): TStringList;
+    procedure TrimSelection;
     function GroupNameOf(const AUuid: string): string;
     function ExistingVncTab(const AConnUuid: string): TVncSessionTab;
     function SessionTabConnUuid(APage: TTabSheet): string;
@@ -187,6 +197,7 @@ type
     procedure LocalTerminalClick(Sender: TObject);
     procedure CredentialManagerClick(Sender: TObject);
     procedure CopySshIdClick(Sender: TObject);
+    procedure PingHostClick(Sender: TObject);
     procedure TerminalFontClick(Sender: TObject);
     procedure TakeScreenshotClick(Sender: TObject);
     procedure ThemeClick(Sender: TObject);
@@ -249,7 +260,7 @@ implementation
 
 uses
   Math, Dialogs, Clipbrd, LCLIntf, LazFileUtils, uTheme, uAbout, uVersion,
-  uPasswordDialog, uTreeIcons, uIconPicker, uNodeDialogs, uLocalTermTab,
+  uPasswordDialog, uTreeIcons, uIconPicker, uNodeDialogs, uLocalTermTab, uPingTab,
   uSshConnect, uSafeSave, uRdpConnect, uPrefsDialog, uPreferences, uLog,
   uCrashRecoveryDialog, uThemeLoad, uTermControl, uRdpControl, uVncControl,
   uSshKnownHosts, uHostKeyDialog, uContainerConnect, uContainerDialog,
@@ -581,6 +592,11 @@ begin
   FTree.Images := FTreeImages;
   FTree.ReadOnly := False;
   FTree.RightClickSelect := True;
+  // Ctrl+clic / Maj+clic comme l'explorateur (Cmd sous macOS, voir
+  // TScrollTreeView.MouseDown); un clic droit sur un noeud deja selectionne
+  // garde la selection, la LCL s'en charge.
+  FTree.MultiSelect := True;
+  FTree.MultiSelectStyle := [msControlSelect, msShiftSelect, msVisibleOnly];
   FTree.DragMode := dmAutomatic;
   FTree.OnDeletion := @TreeDeletion;
   FTree.OnAdvancedCustomDrawItem := @TreeAdvancedDrawItem;
@@ -860,7 +876,100 @@ end;
 
 procedure TfrmMain.TreeSelectionChanged(Sender: TObject);
 begin
+  TrimSelection;
   UpdateDocumentState;
+end;
+
+// Pas plus de CLUSTER_MAX_SESSIONS noeuds selectionnes: au-dela, une plage
+// Maj+clic est tronquee aux premiers dans l'ordre de l'arbre, et on le dit.
+procedure TfrmMain.TrimSelection;
+var
+  kept: Integer;
+  node: TTreeNode;
+  trimmed: Boolean;
+begin
+  if (FTree = nil) or (FTree.SelectionCount <= CLUSTER_MAX_SESSIONS) then Exit;
+  trimmed := False;
+  FTree.LockSelectionChangeEvent;
+  try
+    kept := 0;
+    node := FTree.Items.GetFirstNode;
+    while node <> nil do
+    begin
+      if node.MultiSelected then
+      begin
+        Inc(kept);
+        if kept > CLUSTER_MAX_SESSIONS then
+        begin
+          node.MultiSelected := False;
+          trimmed := True;
+        end;
+      end;
+      node := node.GetNext;
+    end;
+  finally
+    FTree.UnlockSelectionChangeEvent;
+  end;
+  if trimmed then
+    SessionNotice(Format('Selection limited to %d hosts.',
+      [CLUSTER_MAX_SESSIONS]));
+end;
+
+// Selection multiple: au moins deux noeuds. Un dossier vaut toutes les
+// connexions qu'il contient, sous-dossiers compris: selectionner le dossier
+// revient a selectionner ses hotes, pour Connect comme pour Broadcast. La
+// racine est ignoree. Doublons (un hote ET son dossier) comptes une fois.
+function TfrmMain.SelectedConnUuids(out AAllSsh: Boolean): TStringList;
+
+  procedure AddConn(const AUuid: string; AProto: TRshProtocol);
+  begin
+    if Result.IndexOf(AUuid) >= 0 then Exit;
+    Result.Add(AUuid);
+    if AProto <> rpSsh then AAllSsh := False;
+  end;
+
+var
+  i, j: Integer;
+  node: TTreeNode;
+  ref: TNodeRef;
+  n: TRshNode;
+  sub: TRshQuickList;
+begin
+  Result := nil;
+  AAllSsh := True;
+  if (FTree = nil) or (FModel = nil) or (FTree.SelectionCount < 2) then Exit;
+  Result := TStringList.Create;
+  for i := 0 to FTree.SelectionCount - 1 do
+  begin
+    node := FTree.Selections[i];
+    ref := nil;
+    if node.Data <> nil then ref := TNodeRef(node.Data);
+    if (ref = nil) or (ref.Uuid = '') then Continue;
+    try
+      if ref.Kind = nkGroup then
+      begin
+        sub := FModel.ListSubtreeConnections(ref.Uuid);
+        try
+          for j := 0 to sub.Count - 1 do
+            AddConn(sub[j].ConnUuid, sub[j].Protocol);
+        finally
+          sub.Free;
+        end;
+      end
+      else
+      begin
+        n := FModel.GetNode(ref.Uuid);
+        try
+          AddConn(n.Uuid, n.Protocol);
+        finally
+          n.Free;
+        end;
+      end;
+    except
+      on EModelError do ;
+    end;
+  end;
+  if Result.Count = 0 then FreeAndNil(Result);
 end;
 
 function TfrmMain.CurrentSessionTab: TSshSessionTab;
@@ -1777,7 +1886,21 @@ end;
 procedure TfrmMain.ConnectClick(Sender: TObject);
 var
   ref: TNodeRef;
+  multi: TStringList;
+  allSsh: Boolean;
+  i: Integer;
 begin
+  // selection multiple: chaque hote sans session ouverte, comme un dossier
+  multi := SelectedConnUuids(allSsh);
+  if multi <> nil then
+  try
+    for i := 0 to multi.Count - 1 do
+      if not HasOpenSessionForConn(multi[i]) then
+        ConnectByUuid(multi[i]);
+    Exit;
+  finally
+    multi.Free;
+  end;
   ref := SelectedRef;
   if (ref = nil) or (ref.Kind <> nkConnection) then Exit;
   ConnectByUuid(ref.Uuid);
@@ -2221,7 +2344,7 @@ var
   tr: TRect;
   bg, fg: TColor;
   ty: Integer;
-  isActive: Boolean;
+  isActive, selected: Boolean;
 begin
   DefaultDraw := True;
   if Stage <> cdPostPaint then Exit;
@@ -2230,14 +2353,17 @@ begin
     ref := TNodeRef(Node.Data);
   isActive := (ref <> nil) and (ref.Kind = nkConnection) and
     HasOpenSessionForConn(ref.Uuid);
-  if (cdsSelected in State) and (not isActive) then Exit;
-  if cdsSelected in State then
+  // cdsMarked = membre d'une selection multiple sans le focus: sans lui, ce
+  // post-paint repeignait ces noeuds en fond ordinaire et effacait la selection
+  selected := (cdsSelected in State) or (cdsMarked in State);
+  if selected and (not isActive) then Exit;
+  if selected then
     bg := clSideSel
   else
     bg := clSideBg;
   if isActive then
     fg := clSideActive
-  else if cdsSelected in State then
+  else if selected then
     fg := clSideTextHi
   else
     fg := clSideText;
@@ -2271,9 +2397,10 @@ end;
 procedure TfrmMain.TreePopupNeeded(Sender: TObject);
 var
   ref: TNodeRef;
-  isRoot, isGroup, isConn: Boolean;
+  isRoot, isGroup, isConn, allSsh: Boolean;
   currentIcon: string;
   n: TRshNode;
+  multi: TStringList;
 
   function Add(const ACaption: string; AHandler: TNotifyEvent;
     AEnabled: Boolean = True): TMenuItem;
@@ -2288,6 +2415,23 @@ var
 begin
   FTreePopup.Items.Clear;
   if FModel = nil then Exit;
+  // Plusieurs hotes selectionnes: Connect, et Broadcast si tous sont SSH.
+  // Rien d'autre, les autres actions n'ont de sens que sur un noeud.
+  multi := SelectedConnUuids(allSsh);
+  if multi <> nil then
+  begin
+    multi.Free;
+    Add('Connect', @ConnectClick);
+    if allSsh then
+    begin
+      Add('Broadcast SSH…', @ClusterSelectedClick);
+      Add('Multi-Terminal…', @MultiSelectedClick);
+    end;
+    {$IFNDEF DARWIN}
+    ThemeMenuItems(FTreePopup.Items);
+    {$ENDIF}
+    Exit;
+  end;
   ref := SelectedRef;
   if ref = nil then Exit;
   isRoot := ref.Uuid = '';
@@ -2309,12 +2453,25 @@ begin
     Add('Connect All in Folder', @ConnectAllInFolderClick);
     Add('Disconnect All in Folder', @DisconnectAllInFolderClick);
     Add('Broadcast SSH…', @ClusterSshClick);
+    Add('Multi-Terminal…', @MultiSshClick);
     Add('-', nil);
     Add('Import Hosts from CSV…', @ImportHostsCsvClick);
   end;
   if isConn then
   begin
     Add('Connect', @ConnectClick, True);
+    // un conteneur ou un pod n'a pas d'adresse propre: rien a pinger
+    try
+      n := FModel.GetNode(ref.Uuid);
+      try
+        if n.Protocol in [rpSsh, rpRdp, rpVnc] then
+          Add('Ping Host', @PingHostClick);
+      finally
+        n.Free;
+      end;
+    except
+      on EModelError do ;
+    end;
     Add('-', nil);
     // ssh-copy-id sans terminal, si le credential est une cle geree
     if CanCopySshId(FModel, ref.Uuid) then
@@ -2438,12 +2595,17 @@ begin
   Accept := target <> nil;
 end;
 
+// Deplace tout ce qui est selectionne, comme l'explorateur: un noeud dont un
+// ancetre est aussi selectionne suit son ancetre, on ne le bouge pas deux fois.
 procedure TfrmMain.TreeDragDrop(Sender, Source: TObject; X, Y: Integer);
 var
-  target: TTreeNode;
+  target, node, anc: TTreeNode;
   srcUuid: string;
   tgtRef: TNodeRef;
   n: TRshNode;
+  srcs: TStringList;
+  i: Integer;
+  covered: Boolean;
 begin
   if Source <> FTree then Exit;
   srcUuid := SelectedUuid;
@@ -2452,26 +2614,64 @@ begin
   if target = nil then Exit;
   tgtRef := TNodeRef(target.Data);
   if tgtRef = nil then Exit;
+  srcs := TStringList.Create;
   try
-    if (tgtRef.Uuid = '') or (tgtRef.Kind = nkGroup) then
-      FModel.MoveNode(srcUuid, tgtRef.Uuid, -1)
-    else
+    for i := 0 to FTree.SelectionCount - 1 do
     begin
-      n := FModel.GetNode(tgtRef.Uuid);
+      node := FTree.Selections[i];
+      if (node.Data = nil) or (TNodeRef(node.Data).Uuid = '') then Continue;
+      if node = target then Continue;
+      covered := False;
+      anc := node.Parent;
+      while anc <> nil do
+      begin
+        if anc.MultiSelected or (anc = FTree.Selected) then
+        begin
+          covered := True;
+          Break;
+        end;
+        anc := anc.Parent;
+      end;
+      if not covered then
+        srcs.Add(TNodeRef(node.Data).Uuid);
+    end;
+    // le noeud qui a le focus fait partie de Selections: le reinserer ici
+    // court-circuitait l'exclusion des descendants et sortait un enfant de
+    // son dossier pourtant deplace avec lui
+    if srcs.Count = 0 then Exit;
+    // tout ou rien: un refus au troisieme noeud ne laisse pas les deux
+    // premiers deplaces
+    try
+      FModel.BeginBatch;
       try
-        FModel.MoveNode(srcUuid, n.ParentUuid, n.SortOrder);
-      finally
-        n.Free;
+        for i := 0 to srcs.Count - 1 do
+          if (tgtRef.Uuid = '') or (tgtRef.Kind = nkGroup) then
+            FModel.MoveNode(srcs[i], tgtRef.Uuid, -1)
+          else
+          begin
+            n := FModel.GetNode(tgtRef.Uuid);
+            try
+              FModel.MoveNode(srcs[i], n.ParentUuid, n.SortOrder + i);
+            finally
+              n.Free;
+            end;
+          end;
+        FModel.CommitBatch;
+      except
+        FModel.RollbackBatch;
+        raise;
+      end;
+      BuildTree;
+      SelectNodeByUuid(srcUuid);
+    except
+      on E: EModelError do
+      begin
+        ShowModelError(E.Message);
+        BuildTree;
       end;
     end;
-    BuildTree;
-    SelectNodeByUuid(srcUuid);
-  except
-    on E: EModelError do
-    begin
-      ShowModelError(E.Message);
-      BuildTree;
-    end;
+  finally
+    srcs.Free;
   end;
   UpdateDocumentState;
 end;
@@ -2643,8 +2843,88 @@ begin
 end;
 
 procedure TfrmMain.ClusterSshClick(Sender: TObject);
+begin
+  ClusterFolder(cmBroadcast);
+end;
+
+procedure TfrmMain.MultiSshClick(Sender: TObject);
+begin
+  ClusterFolder(cmMulti);
+end;
+
+procedure TfrmMain.ClusterSelectedClick(Sender: TObject);
+begin
+  ClusterSelection(cmBroadcast);
+end;
+
+procedure TfrmMain.MultiSelectedClick(Sender: TObject);
+begin
+  ClusterSelection(cmMulti);
+end;
+
+procedure TfrmMain.ClusterFolder(AMode: TClusterMode);
 var
   ref: TNodeRef;
+  list: TRshQuickList;
+begin
+  ref := SelectedRef;
+  if (ref = nil) or (ref.Uuid = '') or (ref.Kind <> nkGroup) then Exit;
+  if (FModel = nil) or (FDoc = nil) then Exit;
+  list := FModel.ListSubtreeConnections(ref.Uuid);
+  try
+    StartClusterFor(list, GroupNameOf(ref.Uuid), AMode);
+  finally
+    list.Free;
+  end;
+end;
+
+// Grille sur les hotes selectionnes dans l'arbre, dossiers indifferents:
+// c'est le seul moyen de grouper des hotes qui ne partagent pas un dossier.
+procedure TfrmMain.ClusterSelection(AMode: TClusterMode);
+var
+  uuids: TStringList;
+  allSsh: Boolean;
+  list: TRshQuickList;
+  e: TRshQuickEntry;
+  n: TRshNode;
+  i: Integer;
+begin
+  if (FModel = nil) or (FDoc = nil) then Exit;
+  uuids := SelectedConnUuids(allSsh);
+  if uuids = nil then Exit;
+  list := TRshQuickList.Create(True);
+  try
+    for i := 0 to uuids.Count - 1 do
+    begin
+      try
+        n := FModel.GetNode(uuids[i]);
+      except
+        on EModelError do Continue;
+      end;
+      try
+        e := TRshQuickEntry.Create;
+        e.ConnUuid := n.Uuid;
+        e.DisplayName := n.DisplayName;
+        e.Hostname := n.Hostname;
+        e.Protocol := n.Protocol;
+        list.Add(e);
+      finally
+        n.Free;
+      end;
+    end;
+    StartClusterFor(list, 'Selection', AMode);
+  finally
+    list.Free;
+    uuids.Free;
+  end;
+end;
+
+// Ouvre la grille (Broadcast ou Multi-Terminal) pour les connexions SSH
+// d'AList, les autres protocoles sont ignores. AName nomme l'onglet.
+procedure TfrmMain.StartClusterFor(AList: TRshQuickList; const AName: string;
+  AMode: TClusterMode);
+var
+  title: string;
   list: TRshQuickList;
   displays, uuids: array of string;
   params: array of TSshConnectParams;
@@ -2662,12 +2942,10 @@ var
   bulkDecision: TSshHostKeyDecision;
   bulkAsked, bulkCancelled: Boolean;
 begin
-  ref := SelectedRef;
-  if (ref = nil) or (ref.Uuid = '') or (ref.Kind <> nkGroup) then Exit;
-  if (FModel = nil) or (FDoc = nil) then Exit;
-
-  list := FModel.ListSubtreeConnections(ref.Uuid);
-  try
+  if (FModel = nil) or (FDoc = nil) or (AList = nil) then Exit;
+  if AMode = cmMulti then title := 'Multi-Terminal' else title := 'Broadcast SSH';
+  list := AList;
+  begin
     cnt := 0;
     totalSsh := 0;
     nbPrompt := 0;
@@ -2688,14 +2966,14 @@ begin
       end;
     if totalSsh = 0 then
     begin
-      MessageDlg('Broadcast SSH', 'No SSH connection under this folder.',
+      MessageDlg(title, 'No SSH connection here.',
         mtInformation, [mbOK], 0);
       Exit;
     end;
     if cnt = 0 then
     begin
-      MessageDlg('Broadcast SSH', Format('No SSH connection under this ' +
-        'folder can be broadcast: %d ask for credentials at connect time. ' +
+      MessageDlg(title, Format('None of these SSH connections ' +
+        'can be opened here: %d ask for credentials at connect time. ' +
         'Give them a stored or inherited credential first.', [nbPrompt]),
         mtInformation, [mbOK], 0);
       Exit;
@@ -2703,7 +2981,7 @@ begin
     // Une cle de securite signe une session a la fois: N hotes = N touchers,
     // l'un apres l'autre, et le sshd des derniers peut fermer avant son tour
     // (LoginGraceTime, 120 s par defaut). L'utilisateur decide en connaissance.
-    if (nbFido > 0) and (MessageDlg('Broadcast SSH', Format(
+    if (nbFido > 0) and (MessageDlg(title, Format(
       '%d of these hosts authenticate with a FIDO2 security key: expect one ' +
       'touch per host, one after the other. Hosts left waiting too long may ' +
       'time out on the server side.' + LineEnding + LineEnding + 'Continue?',
@@ -2711,15 +2989,15 @@ begin
       Exit;
     if cnt > CLUSTER_MAX_SESSIONS then
     begin
-      MessageDlg('Broadcast SSH', Format(
-        'This folder contains %d SSH connections; the broadcast view is ' +
-        'limited to %d.', [cnt, CLUSTER_MAX_SESSIONS]), mtWarning, [mbOK], 0);
+      MessageDlg(title, Format(
+        '%d SSH connections here; this view is limited to %d.',
+        [cnt, CLUSTER_MAX_SESSIONS]), mtWarning, [mbOK], 0);
       Exit;
     end;
     // en amont: sinon la (N+1)e inscription leve en pleine grille
     if FSessions.Count + cnt > FSessions.MaxSessions then
     begin
-      MessageDlg('Broadcast SSH', Format(
+      MessageDlg(title, Format(
         'Not enough session slots: %d needed, %d available.',
         [cnt, FSessions.MaxSessions - FSessions.Count]), mtWarning, [mbOK], 0);
       Exit;
@@ -2807,10 +3085,9 @@ begin
       end;
 
       // CreateCluster PREND POSSESSION des params/tunnels, meme si elle leve
-      grpName := GroupNameOf(ref.Uuid);
       transferred := True;
       tab := TClusterSshTab.CreateCluster(FPages, FDoc, FSessions,
-        grpName, displays, uuids, params, tunnels, brokers);
+        AName, displays, uuids, params, tunnels, brokers, AMode);
       tab.OnNotice := @SessionNotice;
       tab.OnDestroyed := @SessionTabGone;
       tab.OnStatusChanged := @SessionStatusChanged;
@@ -2832,8 +3109,6 @@ begin
           brokers[i].Free;
         end;
     end;
-  finally
-    list.Free;
   end;
 end;
 
@@ -2864,7 +3139,7 @@ procedure TfrmMain.DeleteClick(Sender: TObject);
 var
   ref: TNodeRef;
   msg: string;
-  live: Integer;
+  live, jumps, conts, pods: Integer;
 begin
   ref := SelectedRef;
   if (ref = nil) or (ref.Uuid = '') then Exit;
@@ -2881,19 +3156,26 @@ begin
         'it before deleting it.', mtWarning, [mbOK], 0);
     Exit;
   end;
-  if (ref.Kind = nkConnection) and (NodeProtocol(ref.Uuid) = rpSsh) then
+  // Dependants HORS de ce qu'on supprime (dossier compris): un bastion
+  // efface ferait passer ses connexions en acces direct, en clair, au prochain
+  // Connect -- on refuse. Conteneurs et pods orphelins: on previent.
+  FModel.CountExternalDependents(ref.Uuid, jumps, conts, pods);
+  if jumps > 0 then
   begin
-    live := FModel.CountContainerDependents(ref.Uuid);
-    if live > 0 then
-      if MessageDlg(RSSH_APP_NAME, Format('This host is used by %d ' +
-        'container(s). Deleting it will leave them unusable. Delete anyway?',
-        [live]), mtWarning, [mbYes, mbCancel], 0) <> mrYes then Exit;
-    live := FModel.CountPodDependents(ref.Uuid);
-    if live > 0 then
-      if MessageDlg(RSSH_APP_NAME, Format('This host is used by %d ' +
-        'pod(s). Deleting it will leave them unusable. Delete anyway?',
-        [live]), mtWarning, [mbYes, mbCancel], 0) <> mrYes then Exit;
+    MessageDlg(RSSH_APP_NAME, Format('%d connection(s) outside use a host ' +
+      'in here as their jump host. Deleting it would silently turn them ' +
+      'into direct, unencrypted connections. Point them elsewhere first.',
+      [jumps]), mtWarning, [mbOK], 0);
+    Exit;
   end;
+  if conts > 0 then
+    if MessageDlg(RSSH_APP_NAME, Format('%d container(s) outside use a ' +
+      'host in here. Deleting it will leave them unusable. Delete anyway?',
+      [conts]), mtWarning, [mbYes, mbCancel], 0) <> mrYes then Exit;
+  if pods > 0 then
+    if MessageDlg(RSSH_APP_NAME, Format('%d pod(s) outside use a host in ' +
+      'here. Deleting it will leave them unusable. Delete anyway?',
+      [pods]), mtWarning, [mbYes, mbCancel], 0) <> mrYes then Exit;
   if ref.Kind = nkGroup then
     msg := 'Delete this folder and everything in it?'
   else if NodeProtocol(ref.Uuid) = rpContainer then
@@ -3179,6 +3461,70 @@ begin
   end;
   UpdateSessionUi;
   tab.FocusContent;
+end;
+
+// Un onglet par hote (uuid de connexion), PING_MAX_TABS au plus. Un hote
+// joint par un bastion n'est pas pingable d'ici: on le dit plutot que
+// d'afficher des pertes qui n'en sont pas.
+procedure TfrmMain.PingHostClick(Sender: TObject);
+var
+  ref: TNodeRef;
+  n: TRshNode;
+  i, count: Integer;
+  tab: TPingTab;
+  host, dispName: string;
+begin
+  ref := SelectedRef;
+  if (ref = nil) or (ref.Uuid = '') or (ref.Kind <> nkConnection) then Exit;
+  if (FModel = nil) or (FPages = nil) then Exit;
+  count := 0;
+  for i := 0 to FPages.PageCount - 1 do
+    if FPages.Pages[i] is TPingTab then
+    begin
+      if TPingTab(FPages.Pages[i]).PingConnUuid = ref.Uuid then
+      begin
+        FPages.ActivePage := FPages.Pages[i];
+        UpdateSessionUi;
+        Exit;
+      end;
+      Inc(count);
+    end;
+  if count >= PING_MAX_TABS then
+  begin
+    MessageDlg('Ping Host', Format('At most %d ping tabs can run at the ' +
+      'same time. Close one first.', [PING_MAX_TABS]), mtInformation,
+      [mbOK], 0);
+    Exit;
+  end;
+  try
+    n := FModel.GetNode(ref.Uuid);
+  except
+    on E: EModelError do
+    begin
+      ShowModelError(E.Message);
+      Exit;
+    end;
+  end;
+  try
+    host := n.Hostname;
+    dispName := n.DisplayName;
+  finally
+    n.Free;
+  end;
+  if host = '' then Exit;
+  if FModel.GetJumpVia(ref.Uuid) <> '' then
+  begin
+    MessageDlg('Ping Host', Format('%s is reached through a jump host: it ' +
+      'cannot be pinged from this machine.', [dispName]), mtInformation,
+      [mbOK], 0);
+    Exit;
+  end;
+  tab := TPingTab.CreateTab(FPages, ref.Uuid, dispName, host);
+  tab.OnDestroyed := @SessionTabGone;
+  tab.OnStatusChanged := @SessionStatusChanged;
+  FPages.ActivePage := tab;
+  tab.Start;
+  UpdateSessionUi;
 end;
 
 procedure TfrmMain.CredentialManagerClick(Sender: TObject);
