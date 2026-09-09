@@ -75,8 +75,21 @@ cp "$root/scripts/build-libvnc.sh" "$root/scripts/gen-vnc-offsets.c" "$srcdir/"
 rw="$here/build/rw.dmg"
 rm -f "$rw"
 mb=$(( $(du -sm "$stage" | cut -f1) + 60 ))
-hdiutil create -volname "$vol" -srcfolder "$stage" -ov -format UDRW \
-	-size "${mb}m" "$rw" >/dev/null
+# « hdiutil: create failed - Resource busy » : diskimages-helper tient encore
+# le fichier quelques instants apres une operation precedente, surtout sur les
+# runners CI. Ce n'est pas une erreur de notre part, on reessaie un peu.
+created=0
+for attempt in 1 2 3 4 5; do
+	if hdiutil create -volname "$vol" -srcfolder "$stage" -ov -format UDRW \
+		-size "${mb}m" "$rw" >/dev/null; then
+		created=1
+		break
+	fi
+	echo "hdiutil create: echec (tentative $attempt/5), nouvel essai dans 5 s" >&2
+	rm -f "$rw"
+	sleep 5
+done
+[ "$created" -eq 1 ] || { echo "hdiutil create: abandon" >&2; exit 1; }
 
 att="$(hdiutil attach -readwrite -noverify -noautoopen "$rw")"
 dev="$(printf '%s\n' "$att" | grep '^/dev/' | head -1 | awk '{print $1}')"
@@ -132,7 +145,19 @@ trap - EXIT
 
 dmg="$here/build/RottenSSHrimp-${ver}.dmg"
 rm -f "$dmg"
-hdiutil convert "$rw" -format UDZO -imagekey zlib-level=9 -ov -o "$dmg" >/dev/null
+# meme humeur possible du cote de la conversion, juste apres le detach
+converted=0
+for attempt in 1 2 3 4 5; do
+	if hdiutil convert "$rw" -format UDZO -imagekey zlib-level=9 -ov \
+		-o "$dmg" >/dev/null; then
+		converted=1
+		break
+	fi
+	echo "hdiutil convert: echec (tentative $attempt/5), nouvel essai dans 5 s" >&2
+	rm -f "$dmg"
+	sleep 5
+done
+[ "$converted" -eq 1 ] || { echo "hdiutil convert: abandon" >&2; exit 1; }
 rm -f "$rw"
 rm -rf "$stage"
 
