@@ -50,10 +50,38 @@ mistake made on all of them simultaneously. There is a local shell tab too
 (PowerShell or ConPTY on Windows, your login shell elsewhere) for when the
 thing you need to run is on this side of the network.
 
+Pick the hosts the way you pick files, Ctrl and Shift, up to sixteen, then
+connect or broadcast to exactly that set. Folders are welcome in the selection
+and expand to what they contain. The tree reflects how you filed things in
+March; the incident has its own ideas about which six machines belong together
+tonight.
+
+Multi-Terminal is that same grid with the broadcast bar removed: every session
+visible, one of them listening, Ctrl+Alt+arrows (Cmd+Option on macOS) to move
+the focus around the tiles. For the far more common case where you need to
+watch sixteen machines and type at precisely one of them.
+
 **A tree that scales past forty hosts.** Folders, custom icons, search, and
 per-folder credential inheritance. Plus a dashboard that answers "which of
 these are actually up" before the meeting where you were going to claim they
 all were.
+
+**Ping.** Right-click a host, *Ping Host*, and get a tab that answers one
+question without editorialising: is it coming back, and since when. Sent,
+received, lost as a count and a percentage, round-trip min/avg/max/mdev, the
+current run of consecutive losses, and a bar chart of the recent probes where
+the gaps are the part you were looking for.
+
+ICMP straight from the application, with no elevation, no root and no
+capability to hand out, on all three platforms. It says *no reply*, never
+*down*, because a great many entirely healthy machines have been silently
+discarding ICMP since a hardening review in 2018 and it would be impolite to
+accuse them of anything.
+
+Mostly you will use it for the ninety seconds after a reboot you started
+yourself, during which the honest option is to watch a graph, and the
+alternative is to retry the connection every four seconds while calling it
+diagnostics.
 
 **Jump hosts.** Any SSH host in the tree can serve as a bastion for any other
 connection, and that includes RDP and VNC, not just SSH. The session is
@@ -71,12 +99,32 @@ application generates, rotates, and pushes with a built-in `ssh-copy-id`.
 Private keys go to libssh2 in memory and never touch the disk in plaintext,
 which is the absolute floor of decency and yet remains a differentiator.
 
-Or no private key at all: a FIDO2 security key (a YubiKey, say) can hold it.
-The document keeps only a handle, the secret never leaves the token, and every
-connection asks for a touch. Same key, same document, any of the three
-operating systems; a stolen file plus a stolen master password still open
-nothing without the key in the port. Needs OpenSSH 8.2 or later on the server
-and libfido2 on the client, which the packages bring along.
+**Security keys.** Or no private key at all: a FIDO2 token, a YubiKey for
+instance, can hold it instead of the document. What is stored here is a
+handle. The secret is generated on the token, never leaves it, and every
+connection asks for a touch. Copy SSH ID and key rotation behave exactly as
+they do for a software key, with one more finger involved.
+
+Same token, same document, on any of the three operating systems. Windows goes
+through Windows Hello, so the PIN prompt is the system's own and nothing asks
+for administrator rights. Needs OpenSSH 8.2 or later on the server and
+libfido2 on the client, which the packages bring along.
+
+It covers the one case the rest of the model cannot. Somebody has your
+document and your master password, from a backup, a stolen laptop, or ten
+minutes at your desk during the meeting you were both in. What they get is an
+excellent inventory of your infrastructure and no way whatsoever into the
+hosts that authenticate with the token, which is in your pocket.
+
+Which is also, of course, the failure mode. Days go rotten in ways no threat
+model bothers to enumerate: the token goes through a wash cycle, stays behind
+in a hotel room in Lyon, or lives in the front USB port of a machine that is
+now four hundred kilometres away in a building you need a badge and an
+appointment to enter. A key nobody can copy is a key *you* cannot copy either,
+and the property you were so pleased about turns around and works against you
+at exactly the same strength. Enrol a second token, or keep one credential
+that still opens the door the old way, and do it on an afternoon when nothing
+is broken. There will not be a convenient moment later.
 
 **Containers and pods.** Docker and Podman containers, Kubernetes pods, opened
 as terminal tabs like anything else. Because eventually the incident is inside
