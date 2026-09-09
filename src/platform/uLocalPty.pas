@@ -66,6 +66,12 @@ type
     {$ENDIF}
     procedure DrainData;
     procedure NotifyExit;
+    // Thread lecteur seulement. Attend une place dans la file de lecture;
+    // False = arret demande pendant l'attente.
+    function WaitReadRoom(AReader: TThread): Boolean;
+    // Thread lecteur seulement. Empile et ne reveille l'interface que si
+    // rien n'attendait deja: un drainage vide TOUTE la file d'un coup.
+    procedure PushData(AReader: TThread; const ABuf; ACount: Integer);
     // Thread ecrivain seulement. False = tube ferme ou arret demande.
     function WriteBlocking(const AData: RawByteString): Boolean;
     procedure StartWriter;
@@ -88,6 +94,10 @@ const
   // File d'ecriture au plus: un collage de 300 Mo dans un shell sourd ne doit
   // ni grossir la memoire ni bloquer; l'excedent est perdu, jamais l'interface.
   PTY_WRITE_QUEUE_MAX = 4 * 1024 * 1024;
+  // File de LECTURE au plus: au-dela, le lecteur attend que l'interface ait
+  // draine, et le fils bloque sur son ecriture comme devant un vrai terminal
+  // qu'on ne lit pas. Un « yes » lance dans un onglet cache ne grossit plus.
+  PTY_READ_QUEUE_MAX = 4 * 1024 * 1024;
 
 constructor TPtyReaderThread.Create(AOwner: TLocalPty);
 begin
@@ -203,16 +213,10 @@ begin
       Break;
     end;
     if sel = 0 then Continue;
+    if not FOwner.WaitReadRoom(Self) then Break;
     n := FpRead(mfd, buf, SizeOf(buf));
     if n <= 0 then Break;
-    EnterCriticalSection(FOwner.FLock);
-    try
-      SetLength(FOwner.FPending, Length(FOwner.FPending) + n);
-      Move(buf, FOwner.FPending[Length(FOwner.FPending) - n + 1], n);
-    finally
-      LeaveCriticalSection(FOwner.FLock);
-    end;
-    Queue(@FOwner.DrainData);
+    FOwner.PushData(Self, buf, n);
   end;
   // Jamais de waitpid bloquant: un fils qui ferme son terminal, reste vivant
   // et ignore SIGHUP y retenait ce thread, et Stop attendait ce thread. On
@@ -319,16 +323,10 @@ begin
     if avail > SizeOf(buf) then
       avail := SizeOf(buf);
     got := 0;
+    if not FOwner.WaitReadRoom(Self) then Break;
     if (not ReadFile(FOwner.FOutRead, buf, avail, got, nil)) or (got = 0) then
       Break;
-    EnterCriticalSection(FOwner.FLock);
-    try
-      SetLength(FOwner.FPending, Length(FOwner.FPending) + got);
-      Move(buf, FOwner.FPending[Length(FOwner.FPending) - got + 1], got);
-    finally
-      LeaveCriticalSection(FOwner.FLock);
-    end;
-    Queue(@FOwner.DrainData);
+    FOwner.PushData(Self, buf, got);
   end;
   code := 127;
   if not FOwner.FStopping then
@@ -373,6 +371,40 @@ begin
   RTLEventDestroy(FWriteEvent);
   DoneCriticalSection(FLock);
   inherited Destroy;
+end;
+
+function TLocalPty.WaitReadRoom(AReader: TThread): Boolean;
+var
+  full: Boolean;
+begin
+  Result := True;
+  repeat
+    if AReader.CheckTerminated or FStopping then Exit(False);
+    EnterCriticalSection(FLock);
+    try
+      full := Length(FPending) >= PTY_READ_QUEUE_MAX;
+    finally
+      LeaveCriticalSection(FLock);
+    end;
+    if full then Sleep(5);
+  until not full;
+end;
+
+procedure TLocalPty.PushData(AReader: TThread; const ABuf; ACount: Integer);
+var
+  wasEmpty: Boolean;
+begin
+  if ACount <= 0 then Exit;
+  EnterCriticalSection(FLock);
+  try
+    wasEmpty := FPending = '';
+    SetLength(FPending, Length(FPending) + ACount);
+    Move(ABuf, FPending[Length(FPending) - ACount + 1], ACount);
+  finally
+    LeaveCriticalSection(FLock);
+  end;
+  if wasEmpty then
+    TThread.Queue(AReader, @DrainData);
 end;
 
 procedure TLocalPty.DrainData;

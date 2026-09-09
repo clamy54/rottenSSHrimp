@@ -63,6 +63,7 @@ type
 
     procedure AsyncState(Data: PtrInt);
     procedure AsyncClipboard(Data: PtrInt);
+    function WriteLocalClipboard(const AText: string): Boolean;
     procedure AsyncResize(Data: PtrInt);
     procedure AsyncReconnect(Data: PtrInt);
 
@@ -454,9 +455,18 @@ begin
     FClipLock.Release;
   end;
   if txt = '' then Exit;
-  // Memoriser AVANT d'ecrire, sinon le sondage local le renvoie: boucle d'echo.
-  FClipBridge.NoteRemote(txt);
-  Clipboard.AsText := txt;
+  // Le pont note la provenance autour de l'ecriture et l'oublie si elle rate.
+  FClipBridge.NoteRemote(txt, @WriteLocalClipboard);
+end;
+
+function TVncSessionTab.WriteLocalClipboard(const AText: string): Boolean;
+begin
+  Result := False;
+  try
+    Clipboard.AsText := AText;
+    Result := True;
+  except
+  end;
 end;
 
 procedure TVncSessionTab.AsyncResize(Data: PtrInt);

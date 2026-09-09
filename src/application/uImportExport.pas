@@ -51,8 +51,11 @@ const
   MAX_JSON_DEPTH = 256;
   JSON_FORMAT_NAME = 'rottensshrimp-export';
   // v2: id par noeud, description, timeout_s, inherit_credential, jump_via,
-  // rdp_gateway, container, pod. Un fichier v1 se relit tel quel.
-  JSON_FORMAT_VERSION = 2;
+  // rdp_gateway, container, pod. v3: jump_inherit et folder_jump. Les
+  // fichiers v1 et v2 se relisent tels quels; la version monte parce qu'un
+  // import v2 qui ignorerait jump_inherit rendrait l'hote DIRECT, ce qui
+  // n'est pas la meme chose que ce qui a ete exporte.
+  JSON_FORMAT_VERSION = 3;
 
 function NewImportReport: TImportReport;
 begin
@@ -100,8 +103,13 @@ end;
 // Ce qui lie une connexion a une autre (bastion, hote d'un conteneur ou d'un
 // pod) est exporte par l'uuid du noeud vise: l'import le retrouve par la cle
 // « id » de ce noeud, s'il fait partie du meme export.
+// ARoot: le noeud est la racine de l'export. Un hote qui herite d'un
+// bastion pose sur un dossier HORS de l'export perdrait ce bastion sans un
+// mot: a la racine on exporte donc ce qui s'applique reellement, et l'import
+// dira si cette cible manque. Plus bas dans l'arbre, le dossier exporte qui
+// porte le reglage (ou la racine, epinglee dans NodeToJson) suffit.
 procedure AddConnectionLinks(AModel: TRshModel; ANode: TRshNode;
-  AObj: TJSONObject);
+  AObj: TJSONObject; ARoot: Boolean);
 var
   o: TJSONObject;
   jump: string;
@@ -114,7 +122,21 @@ begin
       begin
         jump := AModel.GetJumpVia(ANode.Uuid);
         if jump <> '' then
-          AObj.Add('jump_via', jump);
+          AObj.Add('jump_via', jump)
+        else if AModel.GetJumpInherit(ANode.Uuid) then
+        begin
+          // A la racine: ce qu'un dossier a tranche pour lui, bastion (cible
+          // exportee, l'import dira si elle manque) ou « direct » explicite
+          // (rien: l'hote arrive en direct). Personne n'a tranche: il
+          // continue d'heriter, du dossier d'accueil cette fois.
+          if ARoot and AModel.FindFolderJump(ANode.ParentUuid, jump) then
+          begin
+            if jump <> '' then
+              AObj.Add('jump_via', jump);
+          end
+          else
+            AObj.Add('jump_inherit', True);
+        end;
         if ANode.Protocol = rpRdp then
         begin
           gw := AModel.GetRdpGateway(ANode.Uuid);
@@ -161,7 +183,7 @@ var
   kids: TJSONArray;
   n, child: TRshNode;
   cred: TRshCredential;
-  credUuid: string;
+  credUuid, folderJump: string;
 begin
   Result := TJSONObject.Create;
   if ADepth > MAX_TREE_DEPTH then
@@ -189,7 +211,18 @@ begin
       Result.Add('description', n.Description);
     // credentials de dossier par reference: l'import les ignore
     if n.Kind = nkGroup then
+    begin
       AddFolderCredentialRefs(AModel, n.Uuid, Result);
+      // bastion du dossier: '' = « direct » explicite, absent = on remonte.
+      // A la racine de l'export, un dossier sans reglage propre epingle ce
+      // qu'un ancetre a tranche, bastion OU « direct » explicite, sinon les
+      // hotes qui heritent changent de chemin en silence a l'import. Si
+      // personne n'a rien dit, on n'epingle rien: heriter du dossier
+      // d'accueil est alors exactement ce qui etait exporte.
+      if AModel.GetFolderJump(n.Uuid, folderJump) or
+         ((ADepth = 0) and AModel.FindFolderJump(n.Uuid, folderJump)) then
+        Result.Add('folder_jump', folderJump);
+    end;
     if n.Kind = nkConnection then
     begin
       Result.Add('protocol', PROTOCOL_NAMES[n.Protocol]);
@@ -203,7 +236,7 @@ begin
         Result.Add('timeout_s', n.ConnectTimeoutS);
       if n.InheritCredential then
         Result.Add('inherit_credential', True);
-      AddConnectionLinks(AModel, n, Result);
+      AddConnectionLinks(AModel, n, Result, ADepth = 0);
       credUuid := n.CredentialUuid;
       if credUuid <> '' then
       try
@@ -481,6 +514,8 @@ end;
 type
   TJumpLink = record
     Conn, OldTarget, Name: string;
+    // dossier: OldTarget peut etre vide, ce qui vaut « direct » explicite
+    IsFolder, Inherit: Boolean;
   end;
 
   // Etat d'un import: la table id d'export -> uuid cree, les conteneurs/pods
@@ -580,12 +615,14 @@ begin
     end;
   end;
   jump := ANode.Get('jump_via', '');
-  if jump <> '' then
+  if (jump <> '') or ANode.Get('jump_inherit', False) then
   begin
     SetLength(ACtx.Jumps, Length(ACtx.Jumps) + 1);
     ACtx.Jumps[High(ACtx.Jumps)].Conn := AUuid;
     ACtx.Jumps[High(ACtx.Jumps)].OldTarget := jump;
     ACtx.Jumps[High(ACtx.Jumps)].Name := AName;
+    ACtx.Jumps[High(ACtx.Jumps)].IsFolder := False;
+    ACtx.Jumps[High(ACtx.Jumps)].Inherit := ANode.Get('jump_inherit', False);
   end;
 end;
 
@@ -691,6 +728,16 @@ begin
   end;
   ACtx.Register(ANode, newParent);
   ApplyDescription(AModel, newParent, name, ANode, AReport);
+  // bastion du dossier: differe aussi, sa cible peut arriver plus loin
+  if ANode.Find('folder_jump', jtString) <> nil then
+  begin
+    SetLength(ACtx.Jumps, Length(ACtx.Jumps) + 1);
+    ACtx.Jumps[High(ACtx.Jumps)].Conn := newParent;
+    ACtx.Jumps[High(ACtx.Jumps)].OldTarget := ANode.Get('folder_jump', '');
+    ACtx.Jumps[High(ACtx.Jumps)].Name := name;
+    ACtx.Jumps[High(ACtx.Jumps)].IsFolder := True;
+    ACtx.Jumps[High(ACtx.Jumps)].Inherit := False;
+  end;
 
   if ANode.Find('children', jtArray) <> nil then
   begin
@@ -771,15 +818,30 @@ var
 begin
   for i := 0 to High(ACtx.Jumps) do
   begin
-    target := ACtx.Lookup(ACtx.Jumps[i].OldTarget);
-    if target = '' then
-    begin
-      AReport.Messages.Add(Format('"%s": jump host not part of this export, ' +
-        'connection imported without it', [ACtx.Jumps[i].Name]));
-      Continue;
-    end;
     try
-      AModel.SetJumpVia(ACtx.Jumps[i].Conn, target);
+      // « heriter du dossier »: aucune cible a retrouver
+      if ACtx.Jumps[i].Inherit then
+      begin
+        AModel.SetJumpInherit(ACtx.Jumps[i].Conn, True);
+        Continue;
+      end;
+      // dossier en « direct » explicite: pas de cible non plus
+      if ACtx.Jumps[i].IsFolder and (ACtx.Jumps[i].OldTarget = '') then
+      begin
+        AModel.SetFolderJump(ACtx.Jumps[i].Conn, True, '');
+        Continue;
+      end;
+      target := ACtx.Lookup(ACtx.Jumps[i].OldTarget);
+      if target = '' then
+      begin
+        AReport.Messages.Add(Format('"%s": jump host not part of this ' +
+          'export, imported without it', [ACtx.Jumps[i].Name]));
+        Continue;
+      end;
+      if ACtx.Jumps[i].IsFolder then
+        AModel.SetFolderJump(ACtx.Jumps[i].Conn, True, target)
+      else
+        AModel.SetJumpVia(ACtx.Jumps[i].Conn, target);
     except
       on E: EModelError do
         AReport.Messages.Add(Format('"%s": jump host not imported: %s',
@@ -1034,7 +1096,7 @@ var
   existNames, existHosts: TStringList;
   idxName, idxIp, idxType, idxPort, i: Integer;
   oversized, blank, unterminated: Boolean;
-  name, ip, typeStr, portStr, keyN, keyH: string;
+  name, ip, typeStr, portStr, keyN, keyH, newUuid: string;
   proto: TRshProtocol;
   port: Integer;
   nodes: TRshNodeList;
@@ -1211,11 +1273,20 @@ begin
           Continue;
         end;
 
+        // « Connect via » et credentials herites du dossier d'accueil: un CSV
+        // ne dit rien du chemin ni des secrets, et c'est le dossier qui sait
+        // par ou l'on joint ces machines. A la racine il n'y a rien a heriter.
         if TryCreateConnection(AModel, AParentUuid, name, proto, ip, port, rep,
-          True) then
+          newUuid, AParentUuid <> '') then
         begin
           existNames.Add(keyN);
           existHosts.Add(keyH);
+          if (AParentUuid <> '') and AModel.JumpInheritAvailable then
+          try
+            AModel.SetJumpInherit(newUuid, True);
+          except
+            on EModelError do ;   // hote deja bastion: il reste en direct
+          end;
         end;
       end;
       AModel.CommitBatch;

@@ -167,7 +167,7 @@ begin
       Exit;
     end;
 
-    jumpUuid := AModel.GetJumpVia(AConnUuid);
+    jumpUuid := AModel.ResolveJumpVia(AConnUuid);
     if jumpUuid <> '' then
     begin
       // Gateway ET rebond: le certificat de la passerelle serait reindexe sous

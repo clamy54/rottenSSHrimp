@@ -73,6 +73,7 @@ type
     procedure ClipboardFromRemote(const AText: UnicodeString);
     procedure ClipPoll(Sender: TObject);
     function TryReadLocalClipboard(out AText: string): Boolean;
+    function WriteLocalClipboard(const AText: string): Boolean;
     procedure SendClipToServer(const AText: string);
     function ClipForeground: Boolean;
     procedure TransportReconnect(const AStatus: string; AActive: Boolean);
@@ -500,10 +501,16 @@ begin
   if AText = '' then
     Exit;
   u := UTF8Encode(AText);
-  // Noter AVANT d'ecrire, sinon le sondage local le renvoie: boucle d'echo.
-  FClipBridge.NoteRemote(u);
+  // Le pont note la provenance autour de l'ecriture et l'oublie si elle rate.
+  FClipBridge.NoteRemote(u, @WriteLocalClipboard);
+end;
+
+function TRdpSessionTab.WriteLocalClipboard(const AText: string): Boolean;
+begin
+  Result := False;
   try
-    Clipboard.AsText := u;
+    Clipboard.AsText := AText;
+    Result := True;
   except
   end;
 end;

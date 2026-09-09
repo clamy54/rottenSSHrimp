@@ -3030,7 +3030,7 @@ begin
         // un tunnel par cellule, la cellule en prend possession
         tun := nil;
         broker := nil;
-        jumpUuid := FModel.GetJumpVia(list[i].ConnUuid);
+        jumpUuid := FModel.ResolveJumpVia(list[i].ConnUuid);
         if jumpUuid <> '' then
         begin
           if not EstablishJumpTunnel(FDoc, FModel, jumpUuid, p.Host, p.Port,
@@ -3512,7 +3512,7 @@ begin
     n.Free;
   end;
   if host = '' then Exit;
-  if FModel.GetJumpVia(ref.Uuid) <> '' then
+  if FModel.ResolveJumpVia(ref.Uuid) <> '' then
   begin
     MessageDlg('Ping Host', Format('%s is reached through a jump host: it ' +
       'cannot be pinged from this machine.', [dispName]), mtInformation,

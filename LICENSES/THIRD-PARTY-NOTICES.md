@@ -27,7 +27,7 @@ library into `Contents/Frameworks/`. Everything it ships, it also
 |---|---|---|---|---|
 | libvncclient (LibVNCServer) | 0.9.15 | GPL-2.0-**or-later** | GPL-3.0-or-later.txt (see below) | yes (built by us) |
 | libssh2 | 1.11.1 | BSD-3-Clause | libssh2-BSD-3-Clause.txt | yes |
-| FreeRDP / WinPR | 3.30.0 | Apache-2.0 | FreeRDP-Apache-2.0.txt | yes |
+| FreeRDP / WinPR | 3.31.1 | Apache-2.0 | FreeRDP-Apache-2.0.txt | yes |
 | libsodium | 1.0.22 | ISC | libsodium-ISC.txt | yes |
 | SQLite | system | Public domain | - | no on macOS (system `/usr/lib`); **yes on Windows** |
 

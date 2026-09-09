@@ -48,6 +48,9 @@ type
     Proto: TRshProtocol;
     Combo: TComboBox;
     Tags: array of string;
+    // entree existante du Credential Manager, en plus des secrets saisis ici
+    MgrCombo: TComboBox;
+    MgrUuids: TStringList;
     UserLbl, DomainLbl, PassLbl, KeyLbl, PhraseLbl: TLabel;
     UserEdit, DomainEdit, PassEdit, KeyEdit, PhraseEdit: TEdit;
     KeyBrowse: TButton;
@@ -191,6 +194,7 @@ begin
   begin
     Wipe(FSections[i].PassEdit);
     Wipe(FSections[i].PhraseEdit);
+    FSections[i].MgrUuids.Free;
   end;
   FCredUuids.Free;
   FManagedUuids.Free;
@@ -303,6 +307,17 @@ begin
   UpdateAuthRows;
 end;
 
+function IndexOfTag(const ASec: TFolderCredSection;
+  const ATag: string): Integer;
+var
+  i: Integer;
+begin
+  Result := -1;
+  for i := 0 to High(ASec.Tags) do
+    if ASec.Tags[i] = ATag then
+      Exit(i);
+end;
+
 function TNodeDialog.SectionTag(const ASec: TFolderCredSection): string;
 begin
   if (ASec.Combo.ItemIndex >= 0) and
@@ -324,6 +339,8 @@ begin
     wantPass := mode = TAG_PASSWORD;
     wantKey := mode = TAG_KEY;
     wantUser := (wantPass or wantKey) and (FSections[i].Proto <> rpVnc);
+    if FSections[i].MgrCombo <> nil then
+      FSections[i].MgrCombo.Visible := mode = TAG_MANAGED;
     if FSections[i].UserLbl <> nil then
     begin
       FSections[i].UserLbl.Visible := wantUser;
@@ -373,6 +390,39 @@ begin
     end;
 end;
 
+// Liste les entrees du Credential Manager utilisables pour ce protocole.
+function FillSectionMgrCombo(AModel: TRshModel;
+  var ASec: TFolderCredSection): Boolean;
+var
+  list: TRshCredentialList;
+  i: Integer;
+begin
+  ASec.MgrCombo.Items.Clear;
+  ASec.MgrUuids.Clear;
+  list := AModel.ListManagedCredentials;
+  try
+    for i := 0 to list.Count - 1 do
+    begin
+      // une cle SSH est refusee au connect par RDP/VNC: ne pas la proposer
+      if (ASec.Proto <> rpSsh) and
+         (list[i].AuthType in [atManagedKey, atSshKey, atFidoKey]) then
+        Continue;
+      ASec.MgrCombo.Items.Add(list[i].DisplayName);
+      ASec.MgrUuids.Add(list[i].Uuid);
+    end;
+  finally
+    list.Free;
+  end;
+  Result := ASec.MgrUuids.Count > 0;
+  if Result then
+  begin
+    ASec.MgrCombo.ItemIndex := 0;
+    ASec.Combo.Items.Add('Credential Manager');
+    SetLength(ASec.Tags, Length(ASec.Tags) + 1);
+    ASec.Tags[High(ASec.Tags)] := TAG_MANAGED;
+  end;
+end;
+
 procedure TNodeDialog.AddFolderSection(AProto: TRshProtocol);
 var
   sec: TFolderCredSection;
@@ -380,6 +430,7 @@ var
 begin
   sec := Default(TFolderCredSection);
   sec.Proto := AProto;
+  sec.MgrUuids := TStringList.Create;
 
   AddRow(UpperCase(PROTOCOL_NAMES[AProto]) + ' credentials:');
   sec.Combo := TComboBox.Create(Self);
@@ -402,6 +453,14 @@ begin
     sec.Tags[2] := TAG_KEY;
   end;
   sec.Combo.ItemIndex := 0;
+  Inc(FY, 34);
+
+  // meme ligne pour toutes les sections: visible seulement en mode gestionnaire
+  sec.MgrCombo := TComboBox.Create(Self);
+  sec.MgrCombo.Parent := Self;
+  sec.MgrCombo.Style := csDropDownList;
+  sec.MgrCombo.SetBounds(EDIT_X, FY, EDIT_W, 26);
+  sec.MgrCombo.Visible := False;
   Inc(FY, 34);
 
   if AProto <> rpVnc then
@@ -635,14 +694,20 @@ begin
   end;
 end;
 
+// ACanInherit: l'hote est DANS un dossier. A la racine du document il n'y a
+// aucun dossier au-dessus, l'entree n'aurait jamais de valeur a resoudre.
 procedure FillCredCombo(ADlg: TNodeDialog; AModel: TRshModel;
-  const ASelectedUuid: string; AProto: TRshProtocol; AInherit: Boolean);
+  const ASelectedUuid: string; AProto: TRshProtocol; AInherit: Boolean;
+  ACanInherit: Boolean);
 var
   cur: TRshCredential;
 begin
   ADlg.FCredCombo.Style := csDropDownList;
-  ADlg.FCredCombo.Items.Add('Inherit from parent folder');
-  ADlg.FCredUuids.Add(TAG_INHERIT);
+  if ACanInherit then
+  begin
+    ADlg.FCredCombo.Items.Add('Inherit from parent folder');
+    ADlg.FCredUuids.Add(TAG_INHERIT);
+  end;
   ADlg.FCredCombo.Items.Add('Ask at connect');
   ADlg.FCredUuids.Add(TAG_ASK);
   if AProto = rpVnc then
@@ -661,7 +726,9 @@ begin
   ADlg.FCredCombo.ItemIndex := ADlg.FCredUuids.IndexOf(TAG_ASK);
   if ASelectedUuid = '' then
   begin
-    if AInherit then
+    // heritage pose sur un hote de racine (import CSV d'avant): l'entree
+    // n'existe pas ici, on retombe sur « demander au connect »
+    if AInherit and (ADlg.FCredUuids.IndexOf(TAG_INHERIT) >= 0) then
       ADlg.FCredCombo.ItemIndex := ADlg.FCredUuids.IndexOf(TAG_INHERIT);
     Exit;
   end;
@@ -701,9 +768,13 @@ begin
     ADlg.FCredCombo.ItemIndex := ADlg.FCredUuids.IndexOf(TAG_ASK);
 end;
 
-// Filtre les hotes qui rebondissent deja: un seul saut est supporte.
+{ Filtre les hotes qui rebondissent deja: un seul saut est supporte.
+  AWantInherit ajoute l'entree « heriter du dossier », selectionnee quand
+  AInherit; ASelfUuid vide et AWantInherit = dialogue de DOSSIER, ou l'entree
+  designe le dossier parent. }
 procedure FillJumpCombo(ADlg: TNodeDialog; AModel: TRshModel;
-  const ASelfUuid, ACurrentJump: string);
+  const ASelfUuid, ACurrentJump: string; AWantInherit: Boolean = False;
+  AInherit: Boolean = False);
 var
   nodes: TRshNodeList;
   offers: TStringList;
@@ -713,9 +784,16 @@ begin
   ADlg.FJumpCombo.Style := csDropDownList;
   ADlg.FJumpCombo.Items.Clear;
   ADlg.FJumpUuids.Clear;
+  if AWantInherit then
+  begin
+    ADlg.FJumpCombo.Items.Add('Inherit from parent folder');
+    ADlg.FJumpUuids.Add(TAG_INHERIT);
+  end;
   ADlg.FJumpCombo.Items.Add('(direct — no jump host)');
   ADlg.FJumpUuids.Add('');
-  sel := 0;
+  sel := ADlg.FJumpUuids.IndexOf('');
+  if AWantInherit and AInherit then
+    sel := 0;
   offers := TStringList.Create;
   try
     offers.Sorted := True;
@@ -727,7 +805,8 @@ begin
     for i := 0 to nodes.Count - 1 do
       if (nodes[i].Kind = nkConnection) and (nodes[i].Protocol = rpSsh)
          and (nodes[i].Uuid <> ASelfUuid)
-         and (AModel.GetJumpVia(nodes[i].Uuid) = '')
+         and (AModel.ResolveJumpVia(nodes[i].Uuid) = '')
+         and (not AModel.GetJumpInherit(nodes[i].Uuid))
          // le rebond configure reste visible: sinon un aller-retour le supprime
          and ((not filtering) or (nodes[i].Uuid = ACurrentJump)
               or (offers.IndexOf(nodes[i].Uuid) >= 0)) then
@@ -753,6 +832,30 @@ begin
   if (ADlg.FJumpCombo <> nil) and (ADlg.FJumpCombo.ItemIndex >= 0)
      and (ADlg.FJumpCombo.ItemIndex < ADlg.FJumpUuids.Count) then
     Result := ADlg.FJumpUuids[ADlg.FJumpCombo.ItemIndex];
+  if Result = TAG_INHERIT then
+    Result := '';
+end;
+
+function JumpIsInherit(ADlg: TNodeDialog): Boolean;
+begin
+  Result := (ADlg.FJumpCombo <> nil) and (ADlg.FJumpCombo.ItemIndex >= 0)
+    and (ADlg.FJumpCombo.ItemIndex < ADlg.FJumpUuids.Count)
+    and (ADlg.FJumpUuids[ADlg.FJumpCombo.ItemIndex] = TAG_INHERIT);
+end;
+
+// Les deux etats sont exclusifs cote modele: on pose celui qui est choisi et
+// on efface l'autre, dans cet ordre pour ne jamais laisser les deux poses.
+procedure ApplyJumpChoice(AModel: TRshModel; ADlg: TNodeDialog;
+  const AConnUuid: string);
+begin
+  if JumpIsInherit(ADlg) then
+    AModel.SetJumpInherit(AConnUuid, True)
+  else
+  begin
+    AModel.SetJumpVia(AConnUuid, SelectedJump(ADlg));
+    if AModel.JumpInheritAvailable then
+      AModel.SetJumpInherit(AConnUuid, False);
+  end;
 end;
 
 function BuildConnectionDialog(AModel: TRshModel; const ATitle: string;
@@ -760,7 +863,8 @@ function BuildConnectionDialog(AModel: TRshModel; const ATitle: string;
   const ACredUuid, ADesc: string; AProto: TRshProtocol;
   const AParentUuid: string; AInherit: Boolean;
   const AGwHost: string = ''; AGwPort: Integer = 0;
-  const AConnUuid: string = ''; const AJumpUuid: string = ''): TNodeDialog;
+  const AConnUuid: string = ''; const AJumpUuid: string = '';
+  AJumpInherit: Boolean = False): TNodeDialog;
 var
   resolvedCred, srcFolder: string;
   cred: TRshCredential;
@@ -801,7 +905,9 @@ begin
   Result.FJumpCombo.Parent := Result;
   Result.FJumpCombo.SetBounds(EDIT_X, Result.FY, EDIT_W, 26);
   Inc(Result.FY, 34);
-  FillJumpCombo(Result, AModel, AConnUuid, AJumpUuid);
+  // pas d'heritage a la racine: aucun dossier au-dessus pour porter un bastion
+  FillJumpCombo(Result, AModel, AConnUuid, AJumpUuid,
+    AModel.JumpInheritAvailable and (AParentUuid <> ''), AJumpInherit);
 
   if AProto = rpSsh then
   begin
@@ -884,7 +990,8 @@ begin
   Result.FHintLbl.Font.Color := clGrayText;
   Inc(Result.FY, 38);
 
-  FillCredCombo(Result, AModel, ACredUuid, AProto, AInherit);
+  FillCredCombo(Result, AModel, ACredUuid, AProto, AInherit,
+    AParentUuid <> '');
   Result.UpdateAuthRows;
 
   if AProto = rpRdp then
@@ -1082,8 +1189,8 @@ begin
           credUuid, tmo, inheritCred);
         if dlg.FDescEdit.Text <> '' then
           AModel.UpdateNodeDescription(Result, dlg.FDescEdit.Text);
-        if SelectedJump(dlg) <> '' then
-          AModel.SetJumpVia(Result, SelectedJump(dlg));
+        if (SelectedJump(dlg) <> '') or JumpIsInherit(dlg) then
+          ApplyJumpChoice(AModel, dlg, Result);
         if (dlg.FJumpOfferChk <> nil) and dlg.FJumpOfferChk.Checked
            and AModel.JumpHostOffersAvailable then
           AModel.SetJumpHostOffered(Result, True);
@@ -1133,7 +1240,8 @@ begin
       'Properties — ' + n.DisplayName, n.DisplayName, n.Hostname,
       n.Port, n.ConnectTimeoutS, oldCred, n.Description, n.Protocol,
       n.ParentUuid, n.InheritCredential,
-      gw.Hostname, gw.Port, AUuid, AModel.GetJumpVia(AUuid));
+      gw.Hostname, gw.Port, AUuid, AModel.GetJumpVia(AUuid),
+      AModel.GetJumpInherit(AUuid));
   finally
     n.Free;
   end;
@@ -1181,7 +1289,7 @@ begin
         AModel.UpdateConnection(AUuid, dlg.FHostEdit.Text, port,
           credUuid, tmo, inheritCred);
         AModel.UpdateNodeDescription(AUuid, dlg.FDescEdit.Text);
-        AModel.SetJumpVia(AUuid, SelectedJump(dlg));
+        ApplyJumpChoice(AModel, dlg, AUuid);
         if (dlg.FJumpOfferChk <> nil) and AModel.JumpHostOffersAvailable then
           AModel.SetJumpHostOffered(AUuid, dlg.FJumpOfferChk.Checked);
         if isRdp then
@@ -1226,6 +1334,26 @@ begin
     if sec^.CurCred <> '' then
     begin
       AModel.SetFolderCredential(AFolderUuid, sec^.Proto, '');
+      AChanged := True;
+    end;
+    Exit(True);
+  end;
+
+  // Entree du Credential Manager: on la REFERENCE, on ne la recopie pas. Les
+  // secrets saisis dans cette section ne sont alors pas lus.
+  if mode = TAG_MANAGED then
+  begin
+    if (sec^.MgrCombo = nil) or (sec^.MgrCombo.ItemIndex < 0) or
+       (sec^.MgrCombo.ItemIndex >= sec^.MgrUuids.Count) then
+    begin
+      AErr := Format('%s: pick a credential.',
+        [UpperCase(PROTOCOL_NAMES[sec^.Proto])]);
+      Exit;
+    end;
+    newCred := sec^.MgrUuids[sec^.MgrCombo.ItemIndex];
+    if newCred <> sec^.CurCred then
+    begin
+      AModel.SetFolderCredential(AFolderUuid, sec^.Proto, newCred);
       AChanged := True;
     end;
     Exit(True);
@@ -1306,9 +1434,11 @@ var
   n: TRshNode;
   p: TRshProtocol;
   i: Integer;
-  cur, err: string;
+  cur, err, folderJump: string;
   cred: TRshCredential;
   changed, anyChanged, ok: Boolean;
+  lbl: TLabel;
+  mgrIdx, tagIdx: Integer;
 begin
   Result := False;
   n := AModel.GetNode(AUuid);
@@ -1325,13 +1455,46 @@ begin
     n.Free;
   end;
   try
+    // Bastion du dossier: il ne s'applique qu'aux hotes regles sur « heriter ».
+    // Un dossier repond direct ou un bastion, jamais « heriter »: on presente
+    // d'emblee ce qui s'applique DEJA, herite d'un dossier au-dessus le cas
+    // echeant, pour qu'un simple Save ne change rien au chemin des sessions.
+    if AModel.JumpInheritAvailable then
+    begin
+      dlg.AddRow('Connect via:');
+      dlg.FJumpCombo := TComboBox.Create(dlg);
+      dlg.FJumpCombo.Parent := dlg;
+      dlg.FJumpCombo.SetBounds(EDIT_X, dlg.FY, EDIT_W, 26);
+      Inc(dlg.FY, 34);
+      folderJump := AModel.ResolveFolderJump(AUuid);
+      FillJumpCombo(dlg, AModel, '', folderJump);
+      lbl := dlg.AddRow('');
+      lbl.SetBounds(EDIT_X, dlg.FY, EDIT_W, 32);
+      lbl.WordWrap := True;
+      lbl.Caption := 'Applies to hosts in this folder whose Connect via is ' +
+        'set to inherit. Others keep their own setting.';
+      Inc(dlg.FY, 36);
+    end;
     for p := rpSsh to rpVnc do   // folder_credentials n'accepte pas rpContainer
       dlg.AddFolderSection(p);
     for i := 0 to High(dlg.FSections) do
     begin
+      FillSectionMgrCombo(AModel, dlg.FSections[i]);
       cur := AModel.GetFolderCredential(AUuid, dlg.FSections[i].Proto);
       if cur = '' then Continue;
       dlg.FSections[i].CurCred := cur;
+      // deja une entree du gestionnaire: la reselectionner telle quelle
+      if AModel.IsManagedCredential(cur) then
+      begin
+        mgrIdx := dlg.FSections[i].MgrUuids.IndexOf(cur);
+        tagIdx := IndexOfTag(dlg.FSections[i], TAG_MANAGED);
+        if (mgrIdx >= 0) and (tagIdx >= 0) then
+        begin
+          dlg.FSections[i].Combo.ItemIndex := tagIdx;
+          dlg.FSections[i].MgrCombo.ItemIndex := mgrIdx;
+        end;
+        Continue;
+      end;
       try
         cred := AModel.GetCredential(cur);
       except
@@ -1345,8 +1508,9 @@ begin
         dlg.FSections[i].HasStoredPassword := cred.HasPassword;
         dlg.FSections[i].HasStoredKey := cred.HasPrivateKey;
         if (cred.AuthType = atSshKey) and
-           (Length(dlg.FSections[i].Tags) > 2) then
-          dlg.FSections[i].Combo.ItemIndex := 2
+           (IndexOfTag(dlg.FSections[i], TAG_KEY) >= 0) then
+          dlg.FSections[i].Combo.ItemIndex :=
+            IndexOfTag(dlg.FSections[i], TAG_KEY)
         else
           dlg.FSections[i].Combo.ItemIndex := 1;
       finally
@@ -1363,6 +1527,8 @@ begin
       try
         AModel.RenameNode(AUuid, dlg.FNameEdit.Text);
         AModel.UpdateNodeDescription(AUuid, dlg.FDescEdit.Text);
+        if dlg.FJumpCombo <> nil then
+          AModel.SetFolderJump(AUuid, True, SelectedJump(dlg));
         anyChanged := False;
         ok := True;
         for i := 0 to High(dlg.FSections) do

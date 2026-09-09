@@ -207,6 +207,21 @@ const
     ' connection_uuid TEXT PRIMARY KEY REFERENCES connections(node_uuid) ON DELETE CASCADE,' +
     ' jump_via_uuid TEXT NOT NULL REFERENCES nodes(uuid) ON DELETE CASCADE )';
 
+  // v12: bastion pose sur un DOSSIER, pour les hotes qui heritent. Ligne
+  // absente = continuer a remonter; jump_via_uuid NULL = « direct » explicite,
+  // qui arrete la remontee. Un dossier sans rien laisse donc decider au-dessus.
+  DDL_FOLDER_JUMP =
+    'CREATE TABLE folder_jump (' +
+    ' folder_uuid TEXT PRIMARY KEY REFERENCES nodes(uuid) ON DELETE CASCADE,' +
+    ' jump_via_uuid TEXT REFERENCES nodes(uuid) ON DELETE CASCADE )';
+
+  // v12: presence = « Connect via » vaut « herite du dossier parent ». Exclusif
+  // avec connection_jump, le modele efface l'un en posant l'autre.
+  DDL_CONNECTION_JUMP_INHERIT =
+    'CREATE TABLE connection_jump_inherit (' +
+    ' connection_uuid TEXT PRIMARY KEY' +
+    ' REFERENCES connections(node_uuid) ON DELETE CASCADE )';
+
   // v6: presence = "proposer dans Connect via". PIEGE: connections(node_uuid)
   // porte 9 FK entrantes; une reconstruction recopie TOUT, node_uuid preserve.
   DDL_JUMP_HOST_OFFERS =
@@ -540,6 +555,21 @@ begin
   end;
 end;
 
+function SchemaObjectsV11: specialize TArray<TSchemaObj>;
+var
+  base: specialize TArray<TSchemaObj>;
+  i: Integer;
+begin
+  base := SchemaObjectsV10;
+  SetLength(Result, Length(base));
+  for i := 0 to High(base) do
+  begin
+    Result[i] := base[i];
+    if Result[i].Name = 'credentials' then
+      Result[i].Ddl := DDL_CREDENTIALS_V11;
+  end;
+end;
+
 function ExpectedSchemaFor(AVersion: Integer): specialize TArray<TSchemaObj>;
 begin
   case AVersion of
@@ -553,7 +583,8 @@ begin
     8: Result := SchemaObjectsV8;
     9: Result := SchemaObjectsV9;
     10: Result := SchemaObjectsV10;
-    11: Result := ExpectedSchema;
+    11: Result := SchemaObjectsV11;
+    12: Result := ExpectedSchema;
   else
     raise Exception.CreateFmt('unknown schema version: %d', [AVersion]);
   end;
@@ -564,14 +595,13 @@ var
   base: specialize TArray<TSchemaObj>;
   i: Integer;
 begin
-  base := SchemaObjectsV10;
-  SetLength(Result, Length(base));
+  base := SchemaObjectsV11;
+  SetLength(Result, Length(base) + 2);
   for i := 0 to High(base) do
-  begin
     Result[i] := base[i];
-    if Result[i].Name = 'credentials' then
-      Result[i].Ddl := DDL_CREDENTIALS_V11;
-  end;
+  Result[High(Result) - 1] := Obj(soTable, 'folder_jump', DDL_FOLDER_JUMP);
+  Result[High(Result)] :=
+    Obj(soTable, 'connection_jump_inherit', DDL_CONNECTION_JUMP_INHERIT);
 end;
 
 // Listes FIGEES (entrent dans le texte des migrations, couvert par checksum).
@@ -791,6 +821,14 @@ begin
     'DROP TABLE credentials_mig11;';
 end;
 
+// Les documents existants ne bougent pas: un hote sans bastion reste en
+// direct EXPLICITE, pas en « herite ». Basculer tout le parc en herite ferait
+// changer de chemin des sessions le jour ou un dossier recoit un bastion.
+function MigrationDdl12: string;
+begin
+  Result := DDL_FOLDER_JUMP + ';' + DDL_CONNECTION_JUMP_INHERIT + ';';
+end;
+
 function MigrationDdl(AVersion: Integer): string;
 var
   o: TSchemaObj;
@@ -812,6 +850,7 @@ begin
     9: Result := MigrationDdl9;
     10: Result := MigrationDdl10;
     11: Result := MigrationDdl11;
+    12: Result := MigrationDdl12;
   else
     raise Exception.CreateFmt('unknown migration: %d', [AVersion]);
   end;

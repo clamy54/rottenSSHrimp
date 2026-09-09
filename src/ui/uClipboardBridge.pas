@@ -34,6 +34,11 @@ type
   { True = cet onglet est celui que l'utilisateur regarde: le seul a envoyer. }
   TClipForegroundFunc = function: Boolean of object;
 
+  { Pose AText dans le presse-papiers systeme. False = l'ecriture a echoue
+    (presse-papiers verrouille par un autre programme): l'ancien contenu y est
+    toujours. }
+  TClipWriteFunc = function(const AText: string): Boolean of object;
+
   TClipboardBridge = class
   private
     FSig: string;
@@ -53,7 +58,13 @@ type
 
     procedure Poll;
 
-    procedure NoteRemote(const AText: string);
+    { Texte recu du serveur: memorise sa provenance PUIS l'ecrit via AWrite. La
+      provenance est posee avant l'ecriture (sinon un sondage glisse entre les
+      deux et le renvoie: boucle d'echo) et RETIREE si l'ecriture echoue. Sans
+      ce retour en arriere, le presse-papiers garde le texte du serveur A, la
+      signature globale annonce B, et le prochain sondage de l'onglet B prend
+      le texte de A pour une copie locale et le lui envoie. }
+    function NoteRemote(const AText: string; AWrite: TClipWriteFunc): Boolean;
   end;
 
 // FNV-1a borne, longueur totale comprise: un ajout en fin de texte reste vu.
@@ -157,11 +168,30 @@ begin
   FSend(cur);
 end;
 
-procedure TClipboardBridge.NoteRemote(const AText: string);
+function TClipboardBridge.NoteRemote(const AText: string;
+  AWrite: TClipWriteFunc): Boolean;
+var
+  prevSig, prevRemote: string;
+  prevPrimed: Boolean;
 begin
+  prevSig := FSig;
+  prevPrimed := FPrimed;
+  prevRemote := GRemoteSig;
   FSig := Signature(AText);
   FPrimed := True;
   GRemoteSig := ClipSignature(AText, 0);
+  Result := False;
+  try
+    Result := AWrite(AText);
+  except
+    Result := False;
+  end;
+  if not Result then
+  begin
+    FSig := prevSig;
+    FPrimed := prevPrimed;
+    GRemoteSig := prevRemote;
+  end;
 end;
 
 end.

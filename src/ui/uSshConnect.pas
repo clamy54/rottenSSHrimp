@@ -360,7 +360,7 @@ begin
     Exit;
   try
     // seule la SOCKET bouge, la cle d'hote reste celle de la cible
-    jumpUuid := AModel.GetJumpVia(AConnUuid);
+    jumpUuid := AModel.ResolveJumpVia(AConnUuid);
     if jumpUuid <> '' then
     begin
       if not EstablishJumpTunnel(ADoc, AModel, jumpUuid,

@@ -1364,7 +1364,7 @@ var
   pending: RawByteString;
   wrote: cssize_t;
   cols, rows: Integer;
-  doResize, overflow: Boolean;
+  resizeInFlight, overflow: Boolean;
   idle: Boolean;
   secondsToNext: cint;
   rc: cint;
@@ -1382,26 +1382,59 @@ begin
     // trafic SSH -- aucun pare-feu ne la filtre.
     libssh2_keepalive_config(FSession, 1, FParams.KeepaliveS);
 
+  pending := '';
+  resizeInFlight := False;
   while not Terminated do
   begin
     idle := True;
 
-    FOutLock.Acquire;
-    try
-      doResize := FResizeWanted;
-      cols := FPendingCols;
-      rows := FPendingRows;
-      FResizeWanted := False;
-    finally
-      FOutLock.Release;
+    // La demande reste posee tant que libssh2 repond EAGAIN: effacee avant
+    // l'appel, un redimensionnement tombe sur une socket pleine etait perdu.
+    // Et apres EAGAIN, libssh2 garde le paquet deja construit: l'appel
+    // suivant TERMINE ce paquet-la, quelles que soient les dimensions qu'on
+    // lui repasse. L'operation en cours garde donc ses propres dimensions
+    // jusqu'au bout; si l'utilisateur a change d'avis entre-temps, la
+    // demande reste posee et repart ensuite avec les nouvelles.
+    if not resizeInFlight then
+    begin
+      FOutLock.Acquire;
+      try
+        resizeInFlight := FResizeWanted;
+        cols := FPendingCols;
+        rows := FPendingRows;
+      finally
+        FOutLock.Release;
+      end;
     end;
-    if doResize and (cols > 0) and (rows > 0) then
-      libssh2_channel_request_pty_size_ex(FChannel, cols, rows, 0, 0);
+    if resizeInFlight then
+    begin
+      rc := 0;
+      if (cols > 0) and (rows > 0) then
+        rc := libssh2_channel_request_pty_size_ex(FChannel, cols, rows, 0, 0);
+      if rc <> LIBSSH2_ERROR_EAGAIN then
+      begin
+        // reussi, ou refus definitif: on n'insiste pas avec ces dimensions
+        resizeInFlight := False;
+        FOutLock.Acquire;
+        try
+          if (FPendingCols = cols) and (FPendingRows = rows) then
+            FResizeWanted := False;
+        finally
+          FOutLock.Release;
+        end;
+      end;
+    end;
 
+    // Contrat libssh2: apres EAGAIN, le prochain appel repasse le MEME tampon.
+    // Le tampon en cours reste donc a part; ce qui arrive entre-temps attend
+    // dans FOutBuf et n'y est pris que lorsqu'il est vide.
     FOutLock.Acquire;
     try
-      pending := FOutBuf;
-      FOutBuf := '';
+      if pending = '' then
+      begin
+        pending := FOutBuf;
+        FOutBuf := '';
+      end;
       overflow := FOutOverflow;
     finally
       FOutLock.Release;
@@ -1417,15 +1450,7 @@ begin
       wrote := libssh2_channel_write_ex(FChannel, 0,
         PAnsiChar(pending), Length(pending));
       if wrote = LIBSSH2_ERROR_EAGAIN then
-      begin
-        FOutLock.Acquire;
-        try
-          FOutBuf := pending + FOutBuf;
-        finally
-          FOutLock.Release;
-        end;
         Break;
-      end;
       if wrote < 0 then
       begin
         Fail(LastSshError('SSH write failed'));

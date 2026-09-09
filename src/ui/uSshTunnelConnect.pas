@@ -179,7 +179,7 @@ begin
   AErr := '';
 
   // Un seul saut: une chaine A -> B -> C sauterait le premier maillon en silence.
-  if AModel.GetJumpVia(AJumpUuid) <> '' then
+  if AModel.ResolveJumpVia(AJumpUuid) <> '' then
   begin
     AErr := 'Multi-hop jump chains are not supported: the jump host has ' +
       'a jump host of its own.';

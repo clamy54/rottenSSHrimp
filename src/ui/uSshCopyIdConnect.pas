@@ -287,7 +287,7 @@ begin
     params.ExecCommand := ACommand;
     params.RequestPty := False;
 
-    jumpUuid := AModel.GetJumpVia(AConnUuid);
+    jumpUuid := AModel.ResolveJumpVia(AConnUuid);
     if jumpUuid <> '' then
     begin
       if not EstablishJumpTunnel(ADoc, AModel, jumpUuid,

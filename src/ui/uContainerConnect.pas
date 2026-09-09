@@ -70,7 +70,7 @@ begin
     params.RequestPty := cfg.Shell <> csLog;   // log = flux sans PTY
 
     // rebond du PARENT: un seul saut, le conteneur n'en ajoute aucun
-    jumpUuid := AModel.GetJumpVia(cfg.ParentUuid);
+    jumpUuid := AModel.ResolveJumpVia(cfg.ParentUuid);
     if jumpUuid <> '' then
     begin
       if not EstablishJumpTunnel(ADoc, AModel, jumpUuid,

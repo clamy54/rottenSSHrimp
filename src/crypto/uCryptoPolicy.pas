@@ -17,7 +17,7 @@ const
   RSH_FORMAT_VERSION = 2;
   RSH_CRYPTO_VERSION = 1;
   RSH_APPLICATION_ID = 1381192520;  // 'RSSH' 0x52535348
-  RSH_SCHEMA_VERSION = 11;          // PRAGMA user_version (v11: cle FIDO2)
+  RSH_SCHEMA_VERSION = 12;          // PRAGMA user_version (v12: bastion herite)
 
   // Argon2id: defauts a la creation = profil libsodium MODERATE
   KDF_OPSLIMIT_DEFAULT = 3;

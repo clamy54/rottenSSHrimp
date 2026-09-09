@@ -156,6 +156,32 @@ type
       APort: Integer);
     function GetJumpVia(const AUuid: string): string;
     procedure SetJumpVia(const AUuid, AJumpUuid: string);
+    // v12. « Connect via » a trois etats: bastion explicite (connection_jump),
+    // herite du dossier parent (connection_jump_inherit), ou direct (ni l'un
+    // ni l'autre). Les deux tables sont exclusives, le modele s'en charge.
+    function JumpInheritAvailable: Boolean;
+    function GetJumpInherit(const AConnUuid: string): Boolean;
+    procedure SetJumpInherit(const AConnUuid: string; AValue: Boolean);
+    // Dossier: pas de ligne = remonter au parent; ligne a jump_via_uuid vide =
+    // « direct » explicite, qui arrete la remontee.
+    function GetFolderJump(const AFolderUuid: string;
+      out AJumpUuid: string): Boolean;
+    procedure SetFolderJump(const AFolderUuid: string; AHasRow: Boolean;
+      const AJumpUuid: string);
+    // Bastion EFFECTIF d'une connexion: l'explicite, sinon celui herite en
+    // remontant les dossiers. C'est ce que le connect doit appeler.
+    function ResolveJumpVia(const AConnUuid: string): string;
+    // Bastion effectif d'un DOSSIER: le sien, sinon celui du premier ancetre
+    // qui en porte un. '' = direct. Un dossier jamais regle laisse decider
+    // au-dessus; des qu'on ouvre ses proprietes, il repond pour lui-meme.
+    function ResolveFolderJump(const AStartFolderUuid: string): string;
+    // Meme remontee, mais distingue « un dossier a tranche » (True, AJump
+    // vide = direct explicite) de « personne n'a rien dit » (False).
+    function FindFolderJump(const AStartFolderUuid: string;
+      out AJump: string): Boolean;
+    // Sert de bastion a une connexion OU a un dossier: un tel noeud ne peut
+    // pas heriter d'un bastion a son tour, un seul saut est supporte.
+    function ServesAsJumpHost(const AConnUuid: string): Boolean;
     // False aussi quand la table manque (v5 lecture seule, non migre): dans ce
     // cas l'appelant ne filtre PAS, la liste serait vide.
     function JumpHostOffersAvailable: Boolean;
@@ -1103,16 +1129,14 @@ begin
     if GetJumpVia(AJumpUuid) <> '' then
       raise EModelError.Create('Chained jump hosts are not supported: the ' +
         'jump node itself has a jump host.');
-    st := Db.Prepare('SELECT 1 FROM connection_jump WHERE jump_via_uuid=? LIMIT 1;');
-    try
-      st.BindText(1, AUuid);
-      if st.Step then
-        raise EModelError.Create('This node already serves as a jump host for ' +
-          'another connection: giving it a jump host would create a chain ' +
-          '(not supported).');
-    finally
-      st.Free;
-    end;
+    if GetJumpInherit(AJumpUuid) then
+      raise EModelError.Create('Chained jump hosts are not supported: the ' +
+        'jump node inherits a jump host from its folder.');
+    // sert de bastion a une connexion OU a un dossier
+    if ServesAsJumpHost(AUuid) then
+      raise EModelError.Create('This node already serves as a jump host for ' +
+        'another connection: giving it a jump host would create a chain ' +
+        '(not supported).');
   end;
   Db.BeginImmediate;
   try
@@ -1140,6 +1164,18 @@ begin
         st.Free;
       end;
     end;
+    // explicite et herite sont exclusifs, dans les deux sens
+    if JumpInheritAvailable then
+    begin
+      st := Db.Prepare('DELETE FROM connection_jump_inherit' +
+        ' WHERE connection_uuid=?;');
+      try
+        st.BindText(1, AUuid);
+        st.Step;
+      finally
+        st.Free;
+      end;
+    end;
     st := Db.Prepare('UPDATE nodes SET updated_at_ms=? WHERE uuid=?;');
     try
       st.BindInt64(1, NowUtcMs);
@@ -1154,6 +1190,279 @@ begin
     raise;
   end;
   FDoc.MarkDirty;
+end;
+
+function TRshModel.JumpInheritAvailable: Boolean;
+var
+  st: TSqliteStmt;
+begin
+  st := Db.Prepare('SELECT 1 FROM sqlite_master WHERE type=''table''' +
+    ' AND name=''connection_jump_inherit'' LIMIT 1;');
+  try
+    Result := st.Step;
+  finally
+    st.Free;
+  end;
+end;
+
+function TRshModel.GetJumpInherit(const AConnUuid: string): Boolean;
+var
+  st: TSqliteStmt;
+begin
+  Result := False;
+  if (AConnUuid = '') or (not JumpInheritAvailable) then Exit;
+  st := Db.Prepare('SELECT 1 FROM connection_jump_inherit' +
+    ' WHERE connection_uuid=?;');
+  try
+    st.BindText(1, AConnUuid);
+    Result := st.Step;
+  finally
+    st.Free;
+  end;
+end;
+
+procedure TRshModel.SetJumpInherit(const AConnUuid: string; AValue: Boolean);
+var
+  st: TSqliteStmt;
+begin
+  if AConnUuid = '' then Exit;
+  if AValue and (not JumpInheritAvailable) then
+    raise EModelError.Create('This document is too old to inherit a jump ' +
+      'host from its folder.');
+  // Un bastion se joint TOUJOURS en direct: le laisser heriter creerait une
+  // chaine des que son dossier recoit un bastion, et un seul saut est gere.
+  if AValue and ServesAsJumpHost(AConnUuid) then
+    raise EModelError.Create('This host serves as a jump host, so it cannot ' +
+      'inherit one from its folder: chained jump hosts are not supported.');
+  Db.BeginImmediate;
+  try
+    if AValue then
+    begin
+      // exclusif avec un bastion explicite
+      st := Db.Prepare('DELETE FROM connection_jump WHERE connection_uuid=?;');
+      try
+        st.BindText(1, AConnUuid);
+        st.Step;
+      finally
+        st.Free;
+      end;
+      st := Db.Prepare('INSERT OR IGNORE INTO connection_jump_inherit' +
+        ' (connection_uuid) VALUES(?);');
+    end
+    else
+      st := Db.Prepare('DELETE FROM connection_jump_inherit' +
+        ' WHERE connection_uuid=?;');
+    try
+      st.BindText(1, AConnUuid);
+      st.Step;
+    finally
+      st.Free;
+    end;
+    st := Db.Prepare('UPDATE nodes SET updated_at_ms=? WHERE uuid=?;');
+    try
+      st.BindInt64(1, NowUtcMs);
+      st.BindText(2, AConnUuid);
+      st.Step;
+    finally
+      st.Free;
+    end;
+    Db.Commit;
+  except
+    Db.Rollback;
+    raise;
+  end;
+  FDoc.MarkDirty;
+end;
+
+function TRshModel.GetFolderJump(const AFolderUuid: string;
+  out AJumpUuid: string): Boolean;
+var
+  st: TSqliteStmt;
+begin
+  Result := False;
+  AJumpUuid := '';
+  if (AFolderUuid = '') or (not JumpInheritAvailable) then Exit;
+  st := Db.Prepare('SELECT COALESCE(jump_via_uuid, '''') FROM folder_jump' +
+    ' WHERE folder_uuid=?;');
+  try
+    st.BindText(1, AFolderUuid);
+    if st.Step then
+    begin
+      Result := True;
+      AJumpUuid := st.ColText(0);
+    end;
+  finally
+    st.Free;
+  end;
+end;
+
+procedure TRshModel.SetFolderJump(const AFolderUuid: string; AHasRow: Boolean;
+  const AJumpUuid: string);
+var
+  st: TSqliteStmt;
+  jn: TRshNode;
+begin
+  if AFolderUuid = '' then Exit;
+  if AHasRow and (not JumpInheritAvailable) then
+    raise EModelError.Create('This document is too old to carry a folder ' +
+      'jump host.');
+  if AHasRow and (AJumpUuid <> '') then
+  begin
+    jn := GetNode(AJumpUuid);
+    try
+      if jn.Kind <> nkConnection then
+        raise EModelError.Create('The jump host must be a connection, not a folder.');
+      if jn.Protocol <> rpSsh then
+        raise EModelError.Create('The jump host must be an SSH connection.');
+    finally
+      jn.Free;
+    end;
+    // le bastion du dossier ne doit pas rebondir lui-meme
+    if GetJumpVia(AJumpUuid) <> '' then
+      raise EModelError.Create('Chained jump hosts are not supported: that ' +
+        'host has a jump host of its own.');
+    if GetJumpInherit(AJumpUuid) then
+      raise EModelError.Create('Chained jump hosts are not supported: that ' +
+        'host inherits a jump host from its folder.');
+    // et aucun hote HERITANT sous ce dossier ne doit servir de bastion:
+    // il se retrouverait avec un bastion sans que rien ne l'ait demande
+    st := Db.Prepare('WITH RECURSIVE sub(uuid) AS (' +
+      ' SELECT uuid FROM nodes WHERE uuid=?' +
+      ' UNION SELECT n.uuid FROM nodes n JOIN sub s ON n.parent_uuid=s.uuid)' +
+      ' SELECT 1 FROM connection_jump_inherit i' +
+      ' WHERE i.connection_uuid IN (SELECT uuid FROM sub)' +
+      ' AND (i.connection_uuid IN (SELECT jump_via_uuid FROM connection_jump)' +
+      '  OR i.connection_uuid IN (SELECT jump_via_uuid FROM folder_jump' +
+      '   WHERE jump_via_uuid IS NOT NULL)) LIMIT 1;');
+    try
+      st.BindText(1, AFolderUuid);
+      if st.Step then
+        raise EModelError.Create('A host in this folder inherits its jump ' +
+          'host and serves as a jump host for something else. Give it an ' +
+          'explicit setting first: chained jump hosts are not supported.');
+    finally
+      st.Free;
+    end;
+  end;
+  Db.BeginImmediate;
+  try
+    if not AHasRow then
+    begin
+      st := Db.Prepare('DELETE FROM folder_jump WHERE folder_uuid=?;');
+      try
+        st.BindText(1, AFolderUuid);
+        st.Step;
+      finally
+        st.Free;
+      end;
+    end
+    else
+    begin
+      st := Db.Prepare('INSERT INTO folder_jump (folder_uuid, jump_via_uuid)' +
+        ' VALUES(?,?) ON CONFLICT(folder_uuid) DO UPDATE SET' +
+        ' jump_via_uuid=excluded.jump_via_uuid;');
+      try
+        st.BindText(1, AFolderUuid);
+        if AJumpUuid = '' then
+          st.BindNull(2)
+        else
+          st.BindText(2, AJumpUuid);
+        st.Step;
+      finally
+        st.Free;
+      end;
+    end;
+    st := Db.Prepare('UPDATE nodes SET updated_at_ms=? WHERE uuid=?;');
+    try
+      st.BindInt64(1, NowUtcMs);
+      st.BindText(2, AFolderUuid);
+      st.Step;
+    finally
+      st.Free;
+    end;
+    Db.Commit;
+  except
+    Db.Rollback;
+    raise;
+  end;
+  FDoc.MarkDirty;
+end;
+
+function TRshModel.FindFolderJump(const AStartFolderUuid: string;
+  out AJump: string): Boolean;
+var
+  st: TSqliteStmt;
+  cur: string;
+  hops: Integer;
+begin
+  Result := False;
+  AJump := '';
+  cur := AStartFolderUuid;
+  hops := 0;
+  // La premiere ligne rencontree tranche, une ligne « direct » comprise. Cap
+  // d'iterations: une chaine de parents forgee en cycle ferait boucler.
+  while (cur <> '') and (hops <= MAX_TREE_DEPTH) do
+  begin
+    Inc(hops);
+    if GetFolderJump(cur, AJump) then
+      Exit(True);
+    st := Db.Prepare('SELECT COALESCE(parent_uuid,'''') FROM nodes WHERE uuid=?;');
+    try
+      st.BindText(1, cur);
+      if not st.Step then Break;
+      cur := st.ColText(0);
+    finally
+      st.Free;
+    end;
+  end;
+  AJump := '';   // rien trouve en remontant: direct
+end;
+
+function TRshModel.ResolveFolderJump(const AStartFolderUuid: string): string;
+begin
+  FindFolderJump(AStartFolderUuid, Result);
+end;
+
+function TRshModel.ResolveJumpVia(const AConnUuid: string): string;
+var
+  st: TSqliteStmt;
+  parent: string;
+begin
+  Result := GetJumpVia(AConnUuid);
+  if Result <> '' then Exit;
+  if not GetJumpInherit(AConnUuid) then Exit;
+  st := Db.Prepare('SELECT COALESCE(parent_uuid,'''') FROM nodes WHERE uuid=?;');
+  try
+    st.BindText(1, AConnUuid);
+    if not st.Step then Exit;
+    parent := st.ColText(0);
+  finally
+    st.Free;
+  end;
+  Result := ResolveFolderJump(parent);
+end;
+
+function TRshModel.ServesAsJumpHost(const AConnUuid: string): Boolean;
+var
+  st: TSqliteStmt;
+begin
+  Result := False;
+  if AConnUuid = '' then Exit;
+  st := Db.Prepare('SELECT 1 FROM connection_jump WHERE jump_via_uuid=? LIMIT 1;');
+  try
+    st.BindText(1, AConnUuid);
+    Result := st.Step;
+  finally
+    st.Free;
+  end;
+  if Result or (not JumpInheritAvailable) then Exit;
+  st := Db.Prepare('SELECT 1 FROM folder_jump WHERE jump_via_uuid=? LIMIT 1;');
+  try
+    st.BindText(1, AConnUuid);
+    Result := st.Step;
+  finally
+    st.Free;
+  end;
 end;
 
 function TRshModel.JumpHostOffersAvailable: Boolean;
@@ -1454,10 +1763,34 @@ procedure TRshModel.CountExternalDependents(const ANodeUuid: string;
     end;
   end;
 
+  function CountFolderJumpsOutside(const AUuid: string): Integer;
+  var
+    st: TSqliteStmt;
+  begin
+    Result := 0;
+    if not TableExists('folder_jump') then Exit;
+    st := Db.Prepare('WITH RECURSIVE sub(uuid) AS (' +
+      ' SELECT uuid FROM nodes WHERE uuid=?' +
+      ' UNION SELECT n.uuid FROM nodes n JOIN sub s ON n.parent_uuid=s.uuid)' +
+      ' SELECT COUNT(*) FROM folder_jump f' +
+      ' WHERE f.jump_via_uuid IN (SELECT uuid FROM sub)' +
+      ' AND f.folder_uuid NOT IN (SELECT uuid FROM sub);');
+    try
+      st.BindText(1, AUuid);
+      if st.Step then
+        Result := st.ColInt64(0);
+    finally
+      st.Free;
+    end;
+  end;
+
 begin
   AJumps := 0; AContainers := 0; APods := 0;
   if ANodeUuid = '' then Exit;
   AJumps := CountIn('connection_jump', 'jump_via_uuid');
+  // un dossier exterieur qui pointe ici compte autant: ses hotes herites
+  // repasseraient en direct, en clair, sans que rien ne le dise
+  AJumps := AJumps + CountFolderJumpsOutside(ANodeUuid);
   AContainers := CountIn('connection_container', 'parent_uuid');
   APods := CountIn('connection_pod', 'parent_uuid');
 end;
@@ -1923,6 +2256,36 @@ var
   s1, s2, s3, s4: string;
   n1, n2: Boolean;
 begin
+  // v12, et les DOSSIERS passent aussi par ici: le bastion d'un dossier
+  // (cible remappee, NULL = « direct » explicite conserve tel quel) et le
+  // drapeau « herite du dossier ». Sans eux une copie passait en direct la
+  // ou l'original suivait son dossier.
+  if JumpInheritAvailable then
+  begin
+    st := Db.Prepare('SELECT jump_via_uuid FROM folder_jump' +
+      ' WHERE folder_uuid=?;');
+    try
+      st.BindText(1, ASrc);
+      if st.Step then
+      begin
+        n1 := st.ColIsNull(0); s1 := Remap(st.ColText(0));
+        ins := Db.Prepare('INSERT INTO folder_jump(folder_uuid,' +
+          ' jump_via_uuid) VALUES(?,?);');
+        try
+          ins.BindText(1, ADst);
+          if n1 then ins.BindNull(2) else ins.BindText(2, s1);
+          ins.Step;
+        finally
+          ins.Free;
+        end;
+      end;
+    finally
+      st.Free;
+    end;
+    CopyVerbatim('INSERT INTO connection_jump_inherit(connection_uuid)' +
+      ' SELECT ? FROM connection_jump_inherit WHERE connection_uuid=?;');
+  end;
+
   CopyVerbatim('INSERT INTO rdp_connection_settings(connection_uuid,' +
     ' profile_uuid, desktop_width, desktop_height, gateway_hostname,' +
     ' gateway_port) SELECT ?, profile_uuid, desktop_width, desktop_height,' +

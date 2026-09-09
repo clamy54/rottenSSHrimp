@@ -163,7 +163,7 @@ begin
 
     // le tunnel SSH est la seule chose qui chiffre une session VNC: RFB, lui,
     // ne chiffre rien
-    jumpUuid := AModel.GetJumpVia(AConnUuid);
+    jumpUuid := AModel.ResolveJumpVia(AConnUuid);
     if jumpUuid <> '' then
     begin
       if not EstablishJumpTunnel(ADoc, AModel, jumpUuid, host, node.Port,

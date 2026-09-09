@@ -334,6 +334,33 @@ const
     'SELECT * FROM sqlite_master WHERE 0;'
   );
 
+  // v12: deux tables de plus a sceller
+  CANONICAL_QUERIES_V12: array[0..22] of string = (
+    'SELECT * FROM document_meta WHERE key <> ''content_mac'' ORDER BY key;',
+    'SELECT * FROM nodes ORDER BY uuid;',
+    'SELECT * FROM credentials ORDER BY uuid;',
+    'SELECT * FROM encrypted_values ORDER BY uuid;',
+    'SELECT * FROM connections ORDER BY node_uuid;',
+    'SELECT * FROM folder_credentials ORDER BY folder_uuid, protocol;',
+    'SELECT * FROM ssh_profiles ORDER BY uuid;',
+    'SELECT * FROM ssh_connection_settings ORDER BY connection_uuid;',
+    'SELECT * FROM ssh_known_hosts ORDER BY uuid;',
+    'SELECT * FROM rdp_profiles ORDER BY uuid;',
+    'SELECT * FROM rdp_connection_settings ORDER BY connection_uuid;',
+    'SELECT * FROM vnc_profiles ORDER BY uuid;',
+    'SELECT * FROM vnc_connection_settings ORDER BY connection_uuid;',
+    'SELECT * FROM connection_jump ORDER BY connection_uuid;',
+    'SELECT * FROM jump_host_offers ORDER BY connection_uuid;',
+    'SELECT * FROM connection_container ORDER BY connection_uuid;',
+    'SELECT * FROM connection_pod ORDER BY connection_uuid;',
+    'SELECT * FROM document_settings ORDER BY key;',
+    'SELECT * FROM recent_sessions ORDER BY connection_uuid;',
+    'SELECT * FROM folder_jump ORDER BY folder_uuid;',
+    'SELECT * FROM connection_jump_inherit ORDER BY connection_uuid;',
+    'SELECT * FROM schema_migrations ORDER BY version;',
+    'SELECT * FROM sqlite_master WHERE 0;'
+  );
+
 function CanonicalQueriesFor(AVersion: Integer): specialize TArray<string>;
 var
   i: Integer;
@@ -382,6 +409,12 @@ begin
         SetLength(Result, Length(CANONICAL_QUERIES_V8));
         for i := 0 to High(CANONICAL_QUERIES_V8) do
           Result[i] := CANONICAL_QUERIES_V8[i];
+      end;
+    12:
+      begin
+        SetLength(Result, Length(CANONICAL_QUERIES_V12));
+        for i := 0 to High(CANONICAL_QUERIES_V12) do
+          Result[i] := CANONICAL_QUERIES_V12[i];
       end;
   else
     raise Exception.CreateFmt('unknown schema version: %d', [AVersion]);

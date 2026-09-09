@@ -18,7 +18,7 @@ Constat de revue du 2026-07-30 : 9 empreintes sur 11 étaient périmées après 
 re-provisioning que personne n'avait répercuté ici. À lancer en CI et à chaque
 re-provisioning, parce que la mémoire humaine a déjà été essayée.
 
-## Provisionnées (2026-07-21 ; FreeRDP re-provisionné 2026-07-30)
+## Provisionnées (2026-07-21 ; FreeRDP re-provisionné 2026-07-30 puis 2026-09-09)
 
 ### sqlite3.dll : SQLite 3.53.3 (x64)
 
@@ -73,11 +73,17 @@ crypto `libcrypto-3-x64.dll` (OpenSSL 3.6.3) et `z.dll` (zlib).
 Le binding charge `freerdp3.dll`, `freerdp-client3.dll`, `winpr3.dll` depuis
 exeDir (major 3). DLL à poser ensemble :
 
-- `freerdp3.dll`, `freerdp-client3.dll`, `winpr3.dll` (FreeRDP **3.30.0**,
-  re-provisioning sécurité 2026-07-30 : la 3.26.0 livrée jusque-là était
-  vulnérable à deux débordements de tas dans le client TS Gateway,
-  GHSA-9gxm-3mf5-f5cx et GHSA-7rp4-66mc-j9vx, corrigés en 3.27.0, alors que
-  le chemin passerelle est branché)
+- `freerdp3.dll`, `freerdp-client3.dll`, `winpr3.dll` (FreeRDP **3.31.1**,
+  re-provisioning sécurité 2026-09-09 : la 3.30.0 livrée jusque-là était
+  exposée, côté client, à un débordement de tas sur le jeton de redirection
+  d'une réponse de négociation (GHSA-r9pv-ffph-6gg6, un serveur qui redirige
+  choisit la taille) et à un déréférencement nul dans `gdi_surface_bits`
+  sur une commande NSCodec (GHSA-ffjr-p229-hpch), tous deux corrigés en
+  3.31.0, qui ferme en tout une vingtaine d'avis. Le 2026-07-30, la 3.26.0
+  était déjà partie pour deux débordements de tas dans le client TS Gateway,
+  GHSA-9gxm-3mf5-f5cx et GHSA-7rp4-66mc-j9vx, corrigés en 3.27.0. La
+  bibliothèque qui parle au serveur est celle qui se met à jour le plus
+  souvent ; c'est attendu.)
 - `cjson.dll` (dépendance de winpr3, 1.7.19)
 - `libssl-3-x64.dll` + `libcrypto-3-x64.dll` (OpenSSL 3.6.3, **le même
   libcrypto que libssh2**, un seul OpenSSL cohérent)
@@ -94,39 +100,43 @@ exeDir (major 3). DLL à poser ensemble :
 - `z.dll` (zlib 1.3.2, déjà livré pour libssh2)
 - `rssh_rdp_shim.dll`, **l'oracle de disposition mémoire**
   (`bindings/freerdp/shim/rssh_rdp_shim.c`, ABI 3), compilé MSVC contre les
-  en-têtes du build vcpkg 3.30.0. Ne lie PAS FreeRDP (importe uniquement
+  en-têtes du build vcpkg 3.31.1. Ne lie PAS FreeRDP (importe uniquement
   kernel32) ; le binding le charge depuis exeDir et l'écarte de lui-même si
-  sa version bâtie (3.30) ne correspond pas à la DLL chargée. À
+  sa version bâtie (3.31) ne correspond pas à la DLL chargée. À
   **reconstruire à chaque re-provisioning FreeRDP** (voir ci-dessous),
   sinon il se désactive et l'application retombe sur les offsets en dur.
 
-- Construits via **vcpkg** (2026-07-30) : `freerdp[client]:x64-windows@3.30.0`,
+- Construits via **vcpkg** (2026-09-09) : `freerdp[client]:x64-windows@3.31.1`,
   baseline `c1d80d9cb071c3f4a98c67c1196b137cc5b72918`, outil vcpkg
-  `2026-07-27`. **Piège découvert à ce re-provisioning** : le port `freerdp`
-  du registre vcpkg est resté à **3.26.0**, même à la baseline la plus
-  récente, c'est-à-dire que « prendre la dernière version de vcpkg » livrait
-  encore, ce jour-là, une bibliothèque vulnérable à deux débordements de tas
-  corrigés depuis la 3.27.0. La 3.30.0 a donc été construite via un
+  `2026-07-27`, la même recette que le 2026-07-30 : le port `freerdp` du
+  registre vcpkg est resté à **3.26.0**, même à la baseline la plus
+  récente, c'est-à-dire que « prendre la dernière version de vcpkg » livre
+  encore une bibliothèque vulnérable à deux débordements de tas corrigés
+  depuis la 3.27.0. Les versions suivantes se construisent donc via un
   **overlay port** local : copie de `ports/freerdp`, version passée à
-  3.30.0, SHA512 du tarball GitHub recalculé localement
-  (`5559616755c3050077589c1000ea451b195cfb450c74d2278c6a09e0c2bfff718293dbc0041428c0a8e8ca321131daa14c92483f70bb5bed4482bb7962f1ef92`),
+  3.31.1, SHA512 du tarball GitHub recalculé localement
+  (`f01cbcf5504fbc609d50205e772f95bbb915caea6e87ee8d7c1d9a18a0c0f477d5ff2cec489d6e57c841a8a32232ac51b6f5df24fc8f207654fd38e501c5996d` ;
+  3.30.0 : `5559616755c3050077589c1000ea451b195cfb450c74d2278c6a09e0c2bfff718293dbc0041428c0a8e8ca321131daa14c92483f70bb5bed4482bb7962f1ef92`),
   feature `client` demandée explicitement (le port n'a pas de features par
-  défaut), les 4 patches du port 3.26 s'appliquent tels quels. Le vcpkg
-  embarqué avec Visual Studio est inutilisable pour cela (base de versions
-  figée, outil trop vieux pour le registre récent) : cloner
-  `microsoft/vcpkg` et `bootstrap-vcpkg.bat`.
-- Offsets de la branche non-Darwin **revérifiés contre les en-têtes 3.30.0**
+  défaut), les 4 patches du port 3.26 s'appliquent toujours tels quels. Le
+  vcpkg embarqué avec Visual Studio est inutilisable pour cela (base de
+  versions figée, outil trop vieux pour le registre récent) : cloner
+  `microsoft/vcpkg` et `bootstrap-vcpkg.bat`. Seules les trois DLL FreeRDP
+  et le shim changent : OpenSSL, zlib et cJSON ressortent du build bit pour
+  bit identiques aux fichiers versionnés, la baseline commune fait son
+  travail.
+- Offsets de la branche non-Darwin **revérifiés contre les en-têtes 3.31.1**
   (sonde `scripts/gen-rdp-offsets.c` compilée MSVC) : les 62 offsets, dont
   `BITMAP_OFF_HDC` = 296, sont identiques à la table de `uFreeRdpApi.pas` :
-  aucun changement entre 3.26.0 et 3.30.0 sur x64 Windows.
+  aucun changement entre 3.26.0, 3.30.0 et 3.31.1 sur x64 Windows.
 - SHA-256 des DLL versionnées (même régime que libssh2 ci-dessus) :
-  - `freerdp3.dll` : `349ccc2371bbe5a3275b2dd26adb7b2d96634c42c5cc0d2e70443557f0694c0d`
-  - `freerdp-client3.dll` : `cc1137a1cfb6c39f6376f37944ebc79b44ea69406f141ccc943e1f43a8575a8e`
-  - `winpr3.dll` : `d410946ed0633b4d1f2e3eb93cf9d9c4092554b86ec110ae4959f1bdec9d6487`
+  - `freerdp3.dll` : `b5640a7d7b7a80b42447805357d38accc3cc111c2c29ed0242dc5a024a1077bd`
+  - `freerdp-client3.dll` : `7be4ff379878f50be331868390499e1c565b1e81722101954a345a401521a608`
+  - `winpr3.dll` : `75d050931a3a40b7a96de973962b95ed85e2642313f6df45cff7e50d683bc36a`
   - `cjson.dll` : `f0935a9585349819ea2b866bb7aa06d7ddee983df9b42c84098e0729d662d8ea`
   - `libssl-3-x64.dll` : `cf8ac5afe70e86caf12bbcebf53c33b433425df66aa4a9199ed770ededcc9380`
   - `legacy.dll` : `c1cc942460ff0e73fa40689b58d959e48bf8d81fbb119dce8ecf137cf213e66e`
-  - `rssh_rdp_shim.dll` : `4838b43a340c09d7d8123693bde4283e7ebd79e1340cb1ef3be75ae83d7f6520`
+  - `rssh_rdp_shim.dll` : `4bd517e4209da54335a795a2cd5c402024b8fec19d12359192197003e8dbab32`
 - Note portage : `WaitForMultipleObjects` est résolu depuis `kernel32.dll` sous
   Windows (API native), pas depuis winpr3 qui, contrairement à l'émulation
   WinPR d'Unix, ne la réexporte pas.
@@ -228,7 +238,7 @@ Tight/UltraZip, config figée zlib+JPEG, tout le reste OFF). Le binding charge
 
 Les trois protocoles s'appuient sur des builds vcpkg : baseline
 `82b6bc886d7b0f8342e34babc2e0b8943f79b0e1` (libssh2, libjpeg),
-`c1d80d9cb071c3f4a98c67c1196b137cc5b72918` (FreeRDP 3.30.0 + OpenSSL/zlib/
+`c1d80d9cb071c3f4a98c67c1196b137cc5b72918` (FreeRDP 3.31.1 + OpenSSL/zlib/
 cjson, via overlay port : voir la section FreeRDP), ou, pour libvnc, sur la
 source épinglée + patchs. Scripts de provisioning Windows versionnés à
 ajouter (pendants de `build-libvnc.sh`). **Piège** : builder

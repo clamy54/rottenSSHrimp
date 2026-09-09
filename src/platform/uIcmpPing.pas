@@ -123,13 +123,32 @@ begin
   Result := Double(c div f) * 1000 + Double(c mod f) * 1000 / Double(f);
 end;
 {$ELSE}
+// Horloge MONOTONE: les RTT et les echeances sont des durees, et l'heure
+// civile bouge (NTP, changement manuel), ce qui donnait des RTT negatifs ou
+// un timeout premature. L'identifiant differe entre Linux et macOS.
+const
+  {$IFDEF DARWIN}
+  CLOCK_MONOTONIC_ID = 6;
+  {$ELSE}
+  CLOCK_MONOTONIC_ID = 1;
+  {$ENDIF}
+
+function clock_gettime(AClock: cint; ATs: ptimespec): cint; cdecl;
+  external 'c' name 'clock_gettime';
+
 function HiResMs: Double;
 var
+  ts: timespec;
   tv: TTimeVal;
 begin
-  fpGetTimeOfDay(@tv, nil);
-  // memes transtypages: « 1000.0 » serait un Single pour FPC
-  Result := Double(tv.tv_sec) * 1000 + Double(tv.tv_usec) / 1000;
+  if clock_gettime(CLOCK_MONOTONIC_ID, @ts) = 0 then
+    // memes transtypages: « 1000.0 » serait un Single pour FPC
+    Result := Double(ts.tv_sec) * 1000 + Double(ts.tv_nsec) / 1000000
+  else
+  begin
+    fpGetTimeOfDay(@tv, nil);
+    Result := Double(tv.tv_sec) * 1000 + Double(tv.tv_usec) / 1000;
+  end;
 end;
 {$ENDIF}
 
@@ -737,7 +756,7 @@ var
   proc: TProcess;
   acc, line, v, chunkStr: string;
   chunk: array[0..4095] of Byte;
-  n, p, lastSeq, seqv, curInterval, curTimeout: Integer;
+  n, p, lastSeq, seqv, delta, curInterval, curTimeout: Integer;
   s: TPingSample;
   fmt: TFormatSettings;
 begin
@@ -846,7 +865,11 @@ begin
         if v = '' then v := FieldAfter(line, 'icmp_seq ');
         if v = '' then Continue;
         seqv := StrToIntDef(v, 0);
-        if seqv <= lastSeq then Continue;
+        // iputils numerote sur 16 bits: apres 65535 vient 0, soit 36 h a
+        // 2 s. Avance = ecart modulo 65536 dans la demi-fenetre; 0 ou un
+        // recul = doublon (« DUP! ») ou reponse tardive deja comptee.
+        delta := (seqv - lastSeq) and $FFFF;
+        if (delta = 0) or (delta > $7FFF) then Continue;
         lastSeq := seqv;
         Inc(FSeq);
         s.Seq := FSeq;
