@@ -760,6 +760,7 @@ begin
       if connected then
       begin
         SockSetNonBlocking(fd, False);
+        SockSetNoDelay(fd);   // interactif: pas de Nagle sur la socket SSH
         PublishSock(fd);
         Exit(True);
       end;

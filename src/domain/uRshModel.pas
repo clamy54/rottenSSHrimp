@@ -194,6 +194,10 @@ type
     // les laisserait sans tunnel (acces direct, en clair) ou sans hote.
     procedure CountExternalDependents(const ANodeUuid: string;
       out AJumps, AContainers, APods: Integer);
+    // Meme compte pour un ENSEMBLE de noeuds (et leurs sous-arbres): un
+    // dependant qui fait lui-meme partie du lot ne compte pas.
+    procedure CountExternalDependentsOfSet(AUuids: TStrings;
+      out AJumps, AContainers, APods: Integer);
     function CreateContainerConnection(const AParentGroupUuid: string;
       AName: string; const AParentSshUuid: string; AEngine: TContainerEngine;
       const AContainerName: string; AShell: TContainerShell): string;
@@ -1725,6 +1729,26 @@ end;
 
 procedure TRshModel.CountExternalDependents(const ANodeUuid: string;
   out AJumps, AContainers, APods: Integer);
+var
+  one: TStringList;
+begin
+  AJumps := 0; AContainers := 0; APods := 0;
+  if ANodeUuid = '' then Exit;
+  one := TStringList.Create;
+  try
+    one.Add(ANodeUuid);
+    CountExternalDependentsOfSet(one, AJumps, AContainers, APods);
+  finally
+    one.Free;
+  end;
+end;
+
+procedure TRshModel.CountExternalDependentsOfSet(AUuids: TStrings;
+  out AJumps, AContainers, APods: Integer);
+const
+  // les uuid passent par une table temporaire: un « ? » par uuid butait
+  // sur la limite de 64 variables posee a l'ouverture de la base
+  SEEDS = '(SELECT uuid FROM temp.rssh_dep_seeds)';
 
   function TableExists(const AName: string): Boolean;
   var
@@ -1749,13 +1773,12 @@ procedure TRshModel.CountExternalDependents(const ANodeUuid: string;
     Result := 0;
     if not TableExists(ATable) then Exit;
     st := Db.Prepare('WITH RECURSIVE sub(uuid) AS (' +
-      ' SELECT uuid FROM nodes WHERE uuid=?' +
+      ' SELECT uuid FROM nodes WHERE uuid IN ' + SEEDS +
       ' UNION SELECT n.uuid FROM nodes n JOIN sub s ON n.parent_uuid=s.uuid)' +
       ' SELECT COUNT(*) FROM ' + ATable + ' t' +
       ' WHERE t.' + ARefCol + ' IN (SELECT uuid FROM sub)' +
       ' AND t.connection_uuid NOT IN (SELECT uuid FROM sub);');
     try
-      st.BindText(1, ANodeUuid);
       if st.Step then
         Result := st.ColInt64(0);
     finally
@@ -1763,20 +1786,19 @@ procedure TRshModel.CountExternalDependents(const ANodeUuid: string;
     end;
   end;
 
-  function CountFolderJumpsOutside(const AUuid: string): Integer;
+  function CountFolderJumpsOutside: Integer;
   var
     st: TSqliteStmt;
   begin
     Result := 0;
     if not TableExists('folder_jump') then Exit;
     st := Db.Prepare('WITH RECURSIVE sub(uuid) AS (' +
-      ' SELECT uuid FROM nodes WHERE uuid=?' +
+      ' SELECT uuid FROM nodes WHERE uuid IN ' + SEEDS +
       ' UNION SELECT n.uuid FROM nodes n JOIN sub s ON n.parent_uuid=s.uuid)' +
       ' SELECT COUNT(*) FROM folder_jump f' +
       ' WHERE f.jump_via_uuid IN (SELECT uuid FROM sub)' +
       ' AND f.folder_uuid NOT IN (SELECT uuid FROM sub);');
     try
-      st.BindText(1, AUuid);
       if st.Step then
         Result := st.ColInt64(0);
     finally
@@ -1784,15 +1806,37 @@ procedure TRshModel.CountExternalDependents(const ANodeUuid: string;
     end;
   end;
 
+var
+  i: Integer;
+  st: TSqliteStmt;
 begin
   AJumps := 0; AContainers := 0; APods := 0;
-  if ANodeUuid = '' then Exit;
-  AJumps := CountIn('connection_jump', 'jump_via_uuid');
-  // un dossier exterieur qui pointe ici compte autant: ses hotes herites
-  // repasseraient en direct, en clair, sans que rien ne le dise
-  AJumps := AJumps + CountFolderJumpsOutside(ANodeUuid);
-  AContainers := CountIn('connection_container', 'parent_uuid');
-  APods := CountIn('connection_pod', 'parent_uuid');
+  if (AUuids = nil) or (AUuids.Count = 0) then Exit;
+  // TEMP: hors du fichier, hors du scellement, disparait avec la connexion
+  Db.ExecScript('CREATE TEMP TABLE IF NOT EXISTS rssh_dep_seeds' +
+    ' (uuid TEXT PRIMARY KEY); DELETE FROM temp.rssh_dep_seeds;');
+  try
+    st := Db.Prepare('INSERT OR IGNORE INTO temp.rssh_dep_seeds(uuid)' +
+      ' VALUES(?);');
+    try
+      for i := 0 to AUuids.Count - 1 do
+      begin
+        st.Reset;
+        st.BindText(1, AUuids[i]);
+        st.Step;
+      end;
+    finally
+      st.Free;
+    end;
+    AJumps := CountIn('connection_jump', 'jump_via_uuid');
+    // un dossier exterieur qui pointe ici compte autant: ses hotes herites
+    // repasseraient en direct, en clair, sans que rien ne le dise
+    AJumps := AJumps + CountFolderJumpsOutside;
+    AContainers := CountIn('connection_container', 'parent_uuid');
+    APods := CountIn('connection_pod', 'parent_uuid');
+  finally
+    Db.ExecScript('DROP TABLE IF EXISTS temp.rssh_dep_seeds;');
+  end;
 end;
 
 function TRshModel.CountContainerDependents(const AParentUuid: string): Integer;

@@ -9,7 +9,7 @@
 # argv[0] resterait /usr/bin/rottensshrimp.
 
 pkgname=rottensshrimp
-pkgver=1.6
+pkgver=1.7
 pkgrel=1
 pkgdesc='SSH, RDP and VNC connection manager'
 arch=('x86_64')

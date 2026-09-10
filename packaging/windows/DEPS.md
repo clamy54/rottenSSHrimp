@@ -99,7 +99,7 @@ exeDir (major 3). DLL à poser ensemble :
   l'y trouve après relocalisation des DLL.
 - `z.dll` (zlib 1.3.2, déjà livré pour libssh2)
 - `rssh_rdp_shim.dll`, **l'oracle de disposition mémoire**
-  (`bindings/freerdp/shim/rssh_rdp_shim.c`, ABI 3), compilé MSVC contre les
+  (`bindings/freerdp/shim/rssh_rdp_shim.c`, ABI 4), compilé MSVC contre les
   en-têtes du build vcpkg 3.31.1. Ne lie PAS FreeRDP (importe uniquement
   kernel32) ; le binding le charge depuis exeDir et l'écarte de lui-même si
   sa version bâtie (3.31) ne correspond pas à la DLL chargée. À
@@ -136,7 +136,7 @@ exeDir (major 3). DLL à poser ensemble :
   - `cjson.dll` : `f0935a9585349819ea2b866bb7aa06d7ddee983df9b42c84098e0729d662d8ea`
   - `libssl-3-x64.dll` : `cf8ac5afe70e86caf12bbcebf53c33b433425df66aa4a9199ed770ededcc9380`
   - `legacy.dll` : `c1cc942460ff0e73fa40689b58d959e48bf8d81fbb119dce8ecf137cf213e66e`
-  - `rssh_rdp_shim.dll` : `4bd517e4209da54335a795a2cd5c402024b8fec19d12359192197003e8dbab32`
+  - `rssh_rdp_shim.dll` : `720efd5afb8d3fb0d02a95b66bb068a5efa1c1abf618b90e3093e83ace4746a3`
 - Note portage : `WaitForMultipleObjects` est résolu depuis `kernel32.dll` sous
   Windows (API native), pas depuis winpr3 qui, contrairement à l'émulation
   WinPR d'Unix, ne la réexporte pas.

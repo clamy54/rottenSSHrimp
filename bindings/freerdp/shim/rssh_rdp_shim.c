@@ -17,6 +17,7 @@
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/client/cliprdr.h>
 #include <freerdp/client/disp.h>
+#include <freerdp/client/rdpgfx.h>
 #include <freerdp/channels/channels.h>
 
 #if defined(_WIN32)
@@ -31,8 +32,10 @@
  *   2: poseurs rssh_instance_set_* (rappels de l'instance et ContextSize).
  *   3: poseurs rssh_ep_set_client_new / _client_free -- plus aucune ecriture
  *      Pascal par decalage devine quand le shim est la.
+ *   4: emplacements rdpgfx (surfaces et cache du pipeline graphique), pour
+ *      borner ce qu'un serveur peut faire allouer.
  */
-#define RSSH_SHIM_ABI 3u
+#define RSSH_SHIM_ABI 4u
 
 RSSH_API uint32_t rssh_abi_version(void)
 {
@@ -432,4 +435,68 @@ RSSH_API void* rssh_cliprdr_call(void* c, uint32_t slot)
 		return NULL;
 	memcpy(&p, addr, sizeof(void*));
 	return p;
+}
+
+/* rdpgfx: les rappels que le binding enveloppe pour compter ce que le
+ * serveur fait allouer (surfaces, entrees de cache). Memes regles que
+ * cliprdr: emplacements nommes, NULL si inconnu. */
+
+enum rssh_gfx_slot {
+	RSSH_GFX_CREATE_SURFACE = 0,
+	RSSH_GFX_DELETE_SURFACE = 1,
+	RSSH_GFX_SURFACE_TO_CACHE = 2,
+	RSSH_GFX_EVICT_CACHE_ENTRY = 3
+};
+
+static void** rssh_gfx_slot_addr(RdpgfxClientContext* g, uint32_t slot)
+{
+	if (g == NULL)
+		return NULL;
+	switch (slot) {
+	case RSSH_GFX_CREATE_SURFACE:
+		return (void**)&g->CreateSurface;
+	case RSSH_GFX_DELETE_SURFACE:
+		return (void**)&g->DeleteSurface;
+	case RSSH_GFX_SURFACE_TO_CACHE:
+		return (void**)&g->SurfaceToCache;
+	case RSSH_GFX_EVICT_CACHE_ENTRY:
+		return (void**)&g->EvictCacheEntry;
+	default:
+		return NULL;
+	}
+}
+
+RSSH_API int rssh_gfx_set_handler(void* g, uint32_t slot, void* cb)
+{
+	void** addr = rssh_gfx_slot_addr((RdpgfxClientContext*)g, slot);
+
+	if (addr == NULL)
+		return 0;
+	memcpy(addr, &cb, sizeof(void*));
+	return 1;
+}
+
+RSSH_API void* rssh_gfx_call(void* g, uint32_t slot)
+{
+	void* p = NULL;
+	void** addr = rssh_gfx_slot_addr((RdpgfxClientContext*)g, slot);
+
+	if (addr == NULL)
+		return NULL;
+	memcpy(&p, addr, sizeof(void*));
+	return p;
+}
+
+/* gdi_graphics_pipeline_init range le rdpGdi dans gfx->custom: c'est par la
+ * que l'on retrouve le rdpContext, donc le transport, depuis un rappel. */
+RSSH_API void* rssh_gfx_rdp_context(const void* g)
+{
+	const rdpGdi* gdi;
+
+	if (g == NULL)
+		return NULL;
+	gdi = (const rdpGdi*)((const RdpgfxClientContext*)g)->custom;
+	if (gdi == NULL)
+		return NULL;
+	return gdi->context;
 }

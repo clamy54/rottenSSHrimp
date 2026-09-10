@@ -80,6 +80,18 @@ type
     FContext: Pointer;
     FInstance: Pointer;
     FDisp: Pointer;       // DispClientContext, nil avant negociation du canal
+    // Pipeline graphique: le RdpgfxClientContext relie au GDI, et ce que le
+    // serveur nous a fait allouer. Les surfaces du bureau sont plafonnees
+    // par RemoteSizeAcceptable; ici, le serveur cree autant de surfaces et
+    // d'entrees de cache qu'il veut, aux dimensions qu'il veut, et FreeRDP
+    // alloue sans compter. On compte, et l'on refuse au-dela d'un budget.
+    FGfx: Pointer;
+    FGfxGdi: Pointer;   // le rdpGdi relie au pipeline, garde pour le liberer
+                        // meme une fois FContext detache par Cleanup
+    FGfxOrig: array[0..3] of Pointer;     // rappels d'origine, par slot
+    FGfxSurfBytes: array[Word] of Cardinal;  // octets alloues par surfaceId
+    FGfxCacheBytes: array[Word] of Cardinal; // octets alloues par cacheSlot
+    FGfxSurfTotal, FGfxCacheTotal: Int64;
     FLastSentW, FLastSentH: Integer;
 
     FCliprdr: Pointer;            // CliprdrClientContext, nil tant qu'absent
@@ -168,6 +180,10 @@ type
     procedure EventLoop;
     procedure FlushGdiPaint;
     procedure BlitFullGdi(AGdi: Pointer);
+    procedure NormalizeLayout(AWidth, AHeight: Integer;
+      out ASentW, ASentH: Integer);
+    procedure GfxAttach(AGdi, AGfx: Pointer);
+    procedure GfxDetach;
     procedure SendMonitorLayout(AWidth, AHeight: Integer);
     procedure Cleanup;
   protected
@@ -263,6 +279,234 @@ function CbBeginPaint(context: PRdpContext): cint; cdecl; forward;
 function CbEndPaint(context: PRdpContext): cint; cdecl; forward;
 function CbDesktopResize(context: PRdpContext): cint; cdecl; forward;
 
+const
+  // Budgets du pipeline graphique, en OCTETS tels que FreeRDP les alloue:
+  // deux bureaux au plafond pour les surfaces, autant pour le cache. Un
+  // serveur legitime travaille avec une ou deux surfaces de la taille du
+  // bureau et un cache de tuiles bien plus petit; au-dela, c'est un serveur
+  // qui veut la memoire.
+  GFX_SURFACE_BUDGET_BYTES = Int64(2) * REMOTE_MAX_PIXELS * 4;
+  GFX_CACHE_BUDGET_BYTES = Int64(2) * REMOTE_MAX_PIXELS * 4;
+  CHANNEL_RC_NO_MEMORY = 12;
+
+// Ce que FreeRDP alloue reellement: une surface a ses deux dimensions
+// arrondies a 16, une entree de cache a sa ligne arrondie a 16 octets.
+// Compter des pixels sous-estimait: 1 x 8192 fait 32 Kio de pixels et
+// 128 Kio de lignes.
+function GfxSurfaceBytes(AW, AH: Integer): Int64;
+begin
+  Result := Int64((AW + 15) and (not 15)) * 4 * Int64((AH + 15) and (not 15));
+end;
+
+function GfxCacheBytes(AW, AH: Integer): Int64;
+begin
+  Result := Int64((AW * 4 + 15) and (not 15)) * Int64(AH);
+end;
+
+// Une surface n'est pas un bureau: pas de minimum, seulement les plafonds.
+function GfxSurfaceSizeAcceptable(AW, AH: Integer): Boolean;
+begin
+  Result := (AW > 0) and (AH > 0) and (AW <= REMOTE_MAX_WIDTH) and
+    (AH <= REMOTE_MAX_HEIGHT) and (Int64(AW) * Int64(AH) <= REMOTE_MAX_PIXELS);
+end;
+
+// Les quatre rappels rdpgfx enveloppes. Ils tournent sur le thread du canal
+// dynamique, jamais en meme temps que l'init/uninit du pipeline, qui se font
+// sur la boucle d'evenements avec le canal ferme.
+function GfxTransport(AGfx: Pointer): TRdpTransport;
+begin
+  Result := TransportOf(GfxRdpContext(AGfx));
+end;
+
+// RDPGFX_CREATE_SURFACE_PDU: surfaceId u16, width u16, height u16, format u8
+function CbGfxCreateSurface(gfx, pdu: Pointer): cuint32; cdecl;
+var
+  t: TRdpTransport;
+  orig: TGfxPduFn;
+  id, w, h: Word;
+  px, total: Int64;
+begin
+  Result := CHANNEL_RC_NO_MEMORY;
+  try
+    t := GfxTransport(gfx);
+    if (t = nil) or (pdu = nil) then Exit;
+    orig := TGfxPduFn(t.FGfxOrig[GFX_SLOT_CREATE_SURFACE]);
+    if orig = nil then Exit;
+    id := PWord(pdu)^;
+    w := PWord(PByte(pdu) + 2)^;
+    h := PWord(PByte(pdu) + 4)^;
+    px := GfxSurfaceBytes(w, h);
+    total := t.FGfxSurfTotal - t.FGfxSurfBytes[id] + px;
+    if (not GfxSurfaceSizeAcceptable(w, h)) or
+       (total > GFX_SURFACE_BUDGET_BYTES) then
+    begin
+      LogError(Format('rdp: surface %d refused (%dx%d, %d MiB already ' +
+        'allocated): graphics budget exceeded, session closed',
+        [id, w, h, t.FGfxSurfTotal shr 20]));
+      Exit;
+    end;
+    Result := orig(gfx, pdu);
+    if Result = CHANNEL_RC_OK then
+    begin
+      t.FGfxSurfTotal := total;
+      t.FGfxSurfBytes[id] := px;
+      LogDebug(Format('rdp: surface %d created (%dx%d), %d MiB of surfaces',
+        [id, w, h, total shr 20]));
+    end;
+  except
+    Result := CHANNEL_RC_NO_MEMORY;
+  end;
+end;
+
+// RDPGFX_DELETE_SURFACE_PDU: surfaceId u16
+function CbGfxDeleteSurface(gfx, pdu: Pointer): cuint32; cdecl;
+var
+  t: TRdpTransport;
+  orig: TGfxPduFn;
+  id: Word;
+begin
+  Result := CHANNEL_RC_NO_MEMORY;
+  try
+    t := GfxTransport(gfx);
+    if (t = nil) or (pdu = nil) then Exit;
+    orig := TGfxPduFn(t.FGfxOrig[GFX_SLOT_DELETE_SURFACE]);
+    if orig = nil then Exit;
+    Result := orig(gfx, pdu);
+    id := PWord(pdu)^;
+    t.FGfxSurfTotal := t.FGfxSurfTotal - t.FGfxSurfBytes[id];
+    t.FGfxSurfBytes[id] := 0;
+  except
+    Result := CHANNEL_RC_NO_MEMORY;
+  end;
+end;
+
+// RDPGFX_SURFACE_TO_CACHE_PDU: surfaceId u16, cacheKey u64 (aligne a 8),
+// cacheSlot u16, rectSrc {left, top, right, bottom} u16
+function CbGfxSurfaceToCache(gfx, pdu: Pointer): cuint32; cdecl;
+var
+  t: TRdpTransport;
+  orig: TGfxPduFn;
+  slot, l, tp, r, b: Word;
+  px, total: Int64;
+begin
+  Result := CHANNEL_RC_NO_MEMORY;
+  try
+    t := GfxTransport(gfx);
+    if (t = nil) or (pdu = nil) then Exit;
+    orig := TGfxPduFn(t.FGfxOrig[GFX_SLOT_SURFACE_TO_CACHE]);
+    if orig = nil then Exit;
+    slot := PWord(PByte(pdu) + 16)^;
+    l := PWord(PByte(pdu) + 18)^;
+    tp := PWord(PByte(pdu) + 20)^;
+    r := PWord(PByte(pdu) + 22)^;
+    b := PWord(PByte(pdu) + 24)^;
+    px := 0;
+    if (r > l) and (b > tp) then
+      px := GfxCacheBytes(r - l, b - tp);
+    total := t.FGfxCacheTotal - t.FGfxCacheBytes[slot] + px;
+    if total > GFX_CACHE_BUDGET_BYTES then
+    begin
+      LogError(Format('rdp: cache slot %d refused (%d MiB already cached): ' +
+        'graphics budget exceeded, session closed',
+        [slot, t.FGfxCacheTotal shr 20]));
+      Exit;
+    end;
+    Result := orig(gfx, pdu);
+    if Result = CHANNEL_RC_OK then
+    begin
+      t.FGfxCacheTotal := total;
+      t.FGfxCacheBytes[slot] := px;
+    end;
+  except
+    Result := CHANNEL_RC_NO_MEMORY;
+  end;
+end;
+
+// RDPGFX_EVICT_CACHE_ENTRY_PDU: cacheSlot u16
+function CbGfxEvictCacheEntry(gfx, pdu: Pointer): cuint32; cdecl;
+var
+  t: TRdpTransport;
+  orig: TGfxPduFn;
+  slot: Word;
+begin
+  Result := CHANNEL_RC_NO_MEMORY;
+  try
+    t := GfxTransport(gfx);
+    if (t = nil) or (pdu = nil) then Exit;
+    orig := TGfxPduFn(t.FGfxOrig[GFX_SLOT_EVICT_CACHE_ENTRY]);
+    if orig = nil then Exit;
+    Result := orig(gfx, pdu);
+    slot := PWord(pdu)^;
+    t.FGfxCacheTotal := t.FGfxCacheTotal - t.FGfxCacheBytes[slot];
+    t.FGfxCacheBytes[slot] := 0;
+  except
+    Result := CHANNEL_RC_NO_MEMORY;
+  end;
+end;
+
+procedure TRdpTransport.GfxAttach(AGdi, AGfx: Pointer);
+begin
+  if (AGfx = nil) or (AGdi = nil) then Exit;
+  if FGfx <> nil then GfxDetach;
+  // sans ce pont, un RDS moderne peint dans des surfaces qu'on ne lit pas.
+  // Un echec (codecs non prepares) laisse le contexte a moitie monte, verrous
+  // compris: rien a publier, rien a liberer plus tard, et la session ne peut
+  // pas continuer, le serveur va peindre dans le vide. On l'arrete net.
+  if gdi_graphics_pipeline_init(AGdi, AGfx) = 0 then
+  begin
+    Fail('Cannot initialise the RDP graphics pipeline (codecs), ' +
+      'session closed.');
+    if FContext <> nil then
+      freerdp_abort_connect_context(FContext);
+    Exit;
+  end;
+  FGfx := AGfx;
+  FGfxGdi := AGdi;
+  FillChar(FGfxSurfBytes, SizeOf(FGfxSurfBytes), 0);
+  FillChar(FGfxCacheBytes, SizeOf(FGfxCacheBytes), 0);
+  FGfxSurfTotal := 0;
+  FGfxCacheTotal := 0;
+  // les rappels du GDI restent derriere les notres, qui ne font que compter
+  FGfxOrig[GFX_SLOT_CREATE_SURFACE] :=
+    Pointer(GfxHandler(AGfx, GFX_SLOT_CREATE_SURFACE));
+  FGfxOrig[GFX_SLOT_DELETE_SURFACE] :=
+    Pointer(GfxHandler(AGfx, GFX_SLOT_DELETE_SURFACE));
+  FGfxOrig[GFX_SLOT_SURFACE_TO_CACHE] :=
+    Pointer(GfxHandler(AGfx, GFX_SLOT_SURFACE_TO_CACHE));
+  FGfxOrig[GFX_SLOT_EVICT_CACHE_ENTRY] :=
+    Pointer(GfxHandler(AGfx, GFX_SLOT_EVICT_CACHE_ENTRY));
+  if (FGfxOrig[0] = nil) or (FGfxOrig[1] = nil) or (FGfxOrig[2] = nil) or
+     (FGfxOrig[3] = nil) then
+  begin
+    // pas de rappel a envelopper: on ne saurait pas compter, on ne triche pas
+    LogError('rdp: graphics pipeline callbacks not found, no memory guard');
+    Exit;
+  end;
+  GfxSetHandler(AGfx, GFX_SLOT_CREATE_SURFACE, @CbGfxCreateSurface);
+  GfxSetHandler(AGfx, GFX_SLOT_DELETE_SURFACE, @CbGfxDeleteSurface);
+  GfxSetHandler(AGfx, GFX_SLOT_SURFACE_TO_CACHE, @CbGfxSurfaceToCache);
+  GfxSetHandler(AGfx, GFX_SLOT_EVICT_CACHE_ENTRY, @CbGfxEvictCacheEntry);
+end;
+
+// A la fermeture du canal comme a la deconnexion: gdi_free ne libere pas ce
+// que le pipeline a ouvert (codecs, surfaces, cache, verrous).
+// Sur le rdpGdi garde a l'attache, pas sur FContext: Cleanup detache
+// FContext AVANT freerdp_disconnect, qui est justement le moment ou le
+// canal se ferme et ou cette liberation doit avoir lieu.
+procedure TRdpTransport.GfxDetach;
+begin
+  if FGfx = nil then Exit;
+  LogDebug(Format('rdp: graphics pipeline closed (%d MiB of surfaces, ' +
+    '%d MiB cached at the end)', [FGfxSurfTotal shr 20,
+    FGfxCacheTotal shr 20]));
+  if FGfxGdi <> nil then
+    gdi_graphics_pipeline_uninit(FGfxGdi, FGfx);
+  FGfx := nil;
+  FGfxGdi := nil;
+  FGfxSurfTotal := 0;
+  FGfxCacheTotal := 0;
+end;
+
 procedure CbChannelConnected(context: PRdpContext; e: Pointer); cdecl;
 var
   t: TRdpTransport;
@@ -284,10 +528,32 @@ begin
     else if nm = CLIPRDR_SVC_NAME then
       t.ClipAttach(ChanEvtInterface(e))
     else if nm = RDPGFX_DVC_NAME then
-    begin
-      // sans ce pont, un RDS moderne peint dans des surfaces qu'on ne lit pas
-      gdi_graphics_pipeline_init(CtxGdi(context), ChanEvtInterface(e));
-    end;
+      t.GfxAttach(CtxGdi(context), ChanEvtInterface(e));
+  except
+  end;
+end;
+
+// ChannelDisconnectedEventArgs a la meme forme (name, pInterface).
+procedure CbChannelDisconnected(context: PRdpContext; e: Pointer); cdecl;
+var
+  t: TRdpTransport;
+  name: PAnsiChar;
+  nm: string;
+begin
+  try
+    if e = nil then
+      Exit;
+    name := ChanEvtName(e);
+    if name = nil then
+      Exit;
+    t := TransportOf(context);
+    if t = nil then
+      Exit;
+    nm := string(AnsiString(name));
+    if nm = DISP_DVC_NAME then
+      t.FDisp := nil
+    else if nm = RDPGFX_DVC_NAME then
+      t.GfxDetach;
   except
   end;
 end;
@@ -301,8 +567,12 @@ begin
     ctx := RdpContextOf(instance);
     pubSub := CtxPubSub(ctx);
     if pubSub <> nil then
+    begin
       PubSub_Subscribe(pubSub, 'ChannelConnected',
         Pointer(@CbChannelConnected));
+      PubSub_Subscribe(pubSub, 'ChannelDisconnected',
+        Pointer(@CbChannelDisconnected));
+    end;
     if Assigned(freerdp_client_load_addins) then
       freerdp_client_load_addins(CtxChannels(ctx), CtxSettings(ctx));
   except
@@ -375,11 +645,16 @@ end;
 procedure CbPostDisconnect(instance: PFreeRdp); cdecl;
 var
   ctx: Pointer;
+  t: TRdpTransport;
 begin
   try
     if instance = nil then
       Exit;
     ctx := RdpContextOf(instance);
+    // le pipeline avant le GDI: l'inverse laisserait ses codecs derriere
+    t := TransportOf(ctx);
+    if t <> nil then
+      t.GfxDetach;
     if (ctx <> nil) and (CtxGdi(ctx) <> nil) then
       gdi_free(instance);
   except
@@ -1521,6 +1796,13 @@ begin
   B(FreeRDP_DynamicResolutionUpdate, FParams.DynamicResolution);
   B(FreeRDP_SupportDisplayControl, FParams.DynamicResolution);
   B(FreeRDP_SupportDynamicChannels, True);
+  // Pipeline graphique (canal rdpgfx). FreeRDP le laisse a FALSE cote client,
+  // c'est la ligne de commande de xfreerdp qui l'allume, pas la bibliotheque.
+  // Sans lui, un Windows 11 retombe sur les mises a jour bitmap d'autrefois
+  // et les sert par rafales espacees de plusieurs secondes: une souris qui
+  // met 6 a 13 s a produire une image. Le pont vers le GDI, lui, etait deja
+  // branche a la connexion du canal (CbChannelConnected).
+  B(FreeRDP_SupportGraphicsPipeline, True);
   B(FreeRDP_FastPathInput, True);
   B(FreeRDP_FastPathOutput, True);
 
@@ -1594,7 +1876,7 @@ procedure TRdpTransport.EventLoop;
 var
   handles: array[0..MAX_EVENT_HANDLES - 1] of Pointer;
   n, rc: cuint32;
-  cols, rows, budget: Integer;
+  cols, rows, sentW, sentH, budget: Integer;
   doResize, doAdvertise: Boolean;
 begin
   while not Terminated do
@@ -1642,7 +1924,14 @@ begin
     if doResize and FParams.DynamicResolution and (cols > 0) and (rows > 0)
       and (FDisp <> nil) then
     begin
-      if (FConfirmedW = cols) and (FConfirmedH = rows) then
+      // Comparer a ce qui a ete ENVOYE, pas a ce que l'onglet a demande: le
+      // layout part arrondi et borne, et une taille hors de ces bornes ne
+      // pouvait jamais etre « confirmee ». Pas de raccourci « le serveur a
+      // repondu depuis l'envoi »: en pipeline graphique, il remet plusieurs
+      // fois l'ancienne taille au demarrage, et ce raccourci prenait ces
+      // remises a zero pour sa reponse, laissant le bureau a 1280x800.
+      NormalizeLayout(cols, rows, sentW, sentH);
+      if (FConfirmedW = sentW) and (FConfirmedH = sentH) then
       begin
         FInputLock.Acquire;
         try
@@ -1689,6 +1978,18 @@ begin
   end;
 end;
 
+// Ce que le canal display-control accepte: dimensions paires, bornees.
+procedure TRdpTransport.NormalizeLayout(AWidth, AHeight: Integer;
+  out ASentW, ASentH: Integer);
+begin
+  ASentW := AWidth and (not 1);   // RDP veut des dimensions paires
+  ASentH := AHeight and (not 1);
+  if ASentW < 200 then ASentW := 200;
+  if ASentH < 200 then ASentH := 200;
+  if ASentW > 8192 then ASentW := 8192;
+  if ASentH > 8192 then ASentH := 8192;
+end;
+
 procedure TRdpTransport.SendMonitorLayout(AWidth, AHeight: Integer);
 var
   fn: Tdisp_send_layout;
@@ -1696,12 +1997,7 @@ var
 begin
   if FDisp = nil then
     Exit;   // le serveur ne supporte pas la resolution dynamique
-  AWidth := AWidth and (not 1);   // RDP veut des dimensions paires
-  AHeight := AHeight and (not 1);
-  if AWidth < 200 then AWidth := 200;
-  if AHeight < 200 then AHeight := 200;
-  if AWidth > 8192 then AWidth := 8192;
-  if AHeight > 8192 then AHeight := 8192;
+  NormalizeLayout(AWidth, AHeight, AWidth, AHeight);
   fn := DispSendLayoutFn(FDisp);
   if fn = nil then
     Exit;

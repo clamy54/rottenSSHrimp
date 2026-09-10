@@ -278,6 +278,7 @@ begin
       if connected then
       begin
         SockSetNonBlocking(fd, False);
+        SockSetNoDelay(fd);   // interactif: pas de Nagle sur la socket SSH
         PublishSock(fd);
         Exit(True);
       end;
@@ -430,6 +431,9 @@ begin
   end;
 
   SockSetNonBlocking(ALocalSock, True);
+  // Cote boucle locale aussi: le client RDP/VNC lit de petits PDU, et Nagle
+  // plus l'acquittement differe de Windows les retenaient jusqu'a 200 ms.
+  SockSetNoDelay(ALocalSock);
   try
     while not Terminated do
     begin

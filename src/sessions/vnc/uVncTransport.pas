@@ -702,6 +702,7 @@ begin
       begin
         // Pair eteint brutalement (ni FIN ni RST): sans keepalive, un zombie.
         SockEnableKeepalive(fd, 20, 10);
+        SockSetNoDelay(fd);
         {$IFNDEF WINDOWS}
         SockSetNonBlocking(fd, False);
         {$ENDIF}

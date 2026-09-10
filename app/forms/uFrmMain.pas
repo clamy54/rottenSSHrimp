@@ -167,6 +167,10 @@ type
     procedure MultiSshClick(Sender: TObject);
     procedure ClusterSelectedClick(Sender: TObject);
     procedure MultiSelectedClick(Sender: TObject);
+    procedure DeleteSelectedClick(Sender: TObject);
+    procedure DeleteSelectedHosts(AUuids: TStrings);
+    function SelectionIsHostsOnly: Boolean;
+    function NodeDisplayName(const AUuid: string): string;
     procedure ClusterFolder(AMode: TClusterMode);
     procedure ClusterSelection(AMode: TClusterMode);
     procedure StartClusterFor(AList: TRshQuickList; const AName: string;
@@ -2416,7 +2420,8 @@ begin
   FTreePopup.Items.Clear;
   if FModel = nil then Exit;
   // Plusieurs hotes selectionnes: Connect, et Broadcast si tous sont SSH.
-  // Rien d'autre, les autres actions n'ont de sens que sur un noeud.
+  // Suppression groupee seulement si la selection ne contient QUE des hotes:
+  // un dossier dans le lot emporterait tout son contenu sans qu'on le voie.
   multi := SelectedConnUuids(allSsh);
   if multi <> nil then
   begin
@@ -2426,6 +2431,11 @@ begin
     begin
       Add('Broadcast SSH…', @ClusterSelectedClick);
       Add('Multi-Terminal…', @MultiSelectedClick);
+    end;
+    if SelectionIsHostsOnly then
+    begin
+      Add('-', nil);
+      Add('Delete Hosts…', @DeleteSelectedClick);
     end;
     {$IFNDEF DARWIN}
     ThemeMenuItems(FTreePopup.Items);
@@ -2842,6 +2852,24 @@ begin
   end;
 end;
 
+function TfrmMain.NodeDisplayName(const AUuid: string): string;
+var
+  nref: TRshNode;
+begin
+  Result := '?';
+  if (FModel = nil) or (AUuid = '') then Exit;
+  try
+    nref := FModel.GetNode(AUuid);
+  except
+    on EModelError do Exit;
+  end;
+  try
+    Result := nref.DisplayName;
+  finally
+    nref.Free;
+  end;
+end;
+
 procedure TfrmMain.ClusterSshClick(Sender: TObject);
 begin
   ClusterFolder(cmBroadcast);
@@ -2860,6 +2888,104 @@ end;
 procedure TfrmMain.MultiSelectedClick(Sender: TObject);
 begin
   ClusterSelection(cmMulti);
+end;
+
+// True si au moins deux noeuds sont selectionnes et qu'aucun n'est un dossier.
+function TfrmMain.SelectionIsHostsOnly: Boolean;
+var
+  i: Integer;
+  node: TTreeNode;
+  ref: TNodeRef;
+begin
+  Result := False;
+  if (FTree = nil) or (FTree.SelectionCount < 2) then Exit;
+  for i := 0 to FTree.SelectionCount - 1 do
+  begin
+    node := FTree.Selections[i];
+    if node.Data = nil then Exit;
+    ref := TNodeRef(node.Data);
+    if (ref.Uuid = '') or (ref.Kind <> nkConnection) then Exit;
+  end;
+  Result := True;
+end;
+
+// Memes gardes que DeleteClick, mais les dependances se jugent sur le LOT:
+// un bastion et tous ses dependants se suppriment ensemble. Puis une seule
+// confirmation, et une seule transaction: le lot part entier ou pas du tout.
+procedure TfrmMain.DeleteSelectedClick(Sender: TObject);
+var
+  uuids: TStringList;
+  allSsh: Boolean;
+begin
+  if (FModel = nil) or (not SelectionIsHostsOnly) then Exit;
+  uuids := SelectedConnUuids(allSsh);
+  if uuids = nil then Exit;
+  try
+    try
+      DeleteSelectedHosts(uuids);
+    except
+      on E: Exception do
+        ShowModelError(E.Message);
+    end;
+  finally
+    uuids.Free;
+  end;
+end;
+
+procedure TfrmMain.DeleteSelectedHosts(AUuids: TStrings);
+var
+  i, live, jumps, conts, pods: Integer;
+begin
+  begin
+    for i := 0 to AUuids.Count - 1 do
+    begin
+      live := CountLiveSessionsInNode(AUuids[i], False);
+      if live > 0 then
+      begin
+        MessageDlg(RSSH_APP_NAME, Format('"%s" is still open. Disconnect ' +
+          'it before deleting it.', [NodeDisplayName(AUuids[i])]),
+          mtWarning, [mbOK], 0);
+        Exit;
+      end;
+    end;
+    FModel.CountExternalDependentsOfSet(AUuids, jumps, conts, pods);
+    if jumps > 0 then
+    begin
+      MessageDlg(RSSH_APP_NAME, Format('%d connection(s) outside this ' +
+        'selection use one of these hosts as their jump host. Deleting it ' +
+        'would silently turn them into direct, unencrypted connections. ' +
+        'Point them elsewhere first.', [jumps]), mtWarning, [mbOK], 0);
+      Exit;
+    end;
+    if conts > 0 then
+      if MessageDlg(RSSH_APP_NAME, Format('%d container(s) outside this ' +
+        'selection use one of these hosts. Deleting it will leave them ' +
+        'unusable. Delete anyway?', [conts]), mtWarning, [mbYes, mbCancel],
+        0) <> mrYes then Exit;
+    if pods > 0 then
+      if MessageDlg(RSSH_APP_NAME, Format('%d pod(s) outside this ' +
+        'selection use one of these hosts. Deleting it will leave them ' +
+        'unusable. Delete anyway?', [pods]), mtWarning, [mbYes, mbCancel],
+        0) <> mrYes then Exit;
+    if MessageDlg(RSSH_APP_NAME, Format('Delete these %d hosts?',
+      [AUuids.Count]), mtConfirmation, [mbYes, mbCancel], 0) <> mrYes then
+      Exit;
+    try
+      FModel.BeginBatch;
+      try
+        for i := 0 to AUuids.Count - 1 do
+          FModel.DeleteNode(AUuids[i]);
+        FModel.CommitBatch;
+      except
+        FModel.RollbackBatch;
+        raise;
+      end;
+    finally
+      // meme si le lot a echoue: l'arbre doit refleter l'etat reel
+      BuildTree;
+      UpdateDocumentState;
+    end;
+  end;
 end;
 
 procedure TfrmMain.ClusterFolder(AMode: TClusterMode);

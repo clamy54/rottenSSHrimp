@@ -348,6 +348,7 @@ type
   Tgdi_init = function(instance: PFreeRdp; format: cuint32): cint; cdecl;
   Tgdi_free = procedure(instance: PFreeRdp); cdecl;
   Tgdi_graphics_pipeline_init = function(gdi: PRdpGdi; gfx: Pointer): cint; cdecl;
+  Tgdi_graphics_pipeline_uninit = procedure(gdi: PRdpGdi; gfx: Pointer); cdecl;
   Tfreerdp_get_version = procedure(major, minor, revision: pcint); cdecl;
   Tfreerdp_get_version_string = function: PAnsiChar; cdecl;
   Tfreerdp_detect_keyboard_layout_from_system_locale =
@@ -388,6 +389,7 @@ var
   gdi_resize: Tgdi_resize = nil;
   gdi_free: Tgdi_free = nil;
   gdi_graphics_pipeline_init: Tgdi_graphics_pipeline_init = nil;
+  gdi_graphics_pipeline_uninit: Tgdi_graphics_pipeline_uninit = nil;
   freerdp_reconnect: Tfreerdp_reconnect = nil;
   freerdp_client_context_new: Tfreerdp_client_context_new = nil;
   freerdp_client_context_free: Tfreerdp_client_context_free = nil;
@@ -462,6 +464,25 @@ function ChanEvtInterface(AEvt: Pointer): Pointer; inline;
 function DispSendLayoutFn(ADisp: Pointer): Tdisp_send_layout; inline;
 
 function CtxChannels(AContext: PRdpContext): Pointer; inline;
+
+// Rappels du RdpgfxClientContext que le transport enveloppe. Le shim les
+// designe par nom; sans lui, decalages du struct s_rdpgfx_client_context de
+// FreeRDP 3 (handle, custom, puis les pointeurs de fonction dans l'ordre).
+const
+  GFX_SLOT_CREATE_SURFACE = 0;
+  GFX_SLOT_DELETE_SURFACE = 1;
+  GFX_SLOT_SURFACE_TO_CACHE = 2;
+  GFX_SLOT_EVICT_CACHE_ENTRY = 3;
+
+type
+  // (context, pdu) -> UINT; tous les rappels rdpgfx ont cette forme
+  TGfxPduFn = function(AGfx, APdu: Pointer): cuint32; cdecl;
+
+procedure GfxSetHandler(AGfx: Pointer; ASlot: cuint32; ACb: Pointer); inline;
+function GfxHandler(AGfx: Pointer; ASlot: cuint32): TGfxPduFn; inline;
+// rdpContext proprietaire, via gfx->custom (le rdpGdi) puis gdi->context
+function GfxRdpContext(AGfx: Pointer): Pointer; inline;
+
 procedure CliprdrSetCustom(ACtx, AData: Pointer); inline;
 function CliprdrCustom(ACtx: Pointer): Pointer; inline;
 procedure CliprdrSetHandler(ACtx: Pointer; AOffset: Integer; ACb: Pointer); inline;
@@ -485,7 +506,8 @@ var
 const
   // Contrat binding<->shim; autre version = shim ignore, offsets en dur.
   // 2: poseurs rssh_instance_set_*. 3: poseurs rssh_ep_set_client_new/_free.
-  RSSH_SHIM_ABI = 3;
+  // 4: emplacements rdpgfx.
+  RSSH_SHIM_ABI = 4;
 
 type
   Tsh_u32 = function: cuint32; cdecl;
@@ -548,6 +570,9 @@ var
   sh_cliprdr_custom: Tsh_ptr_of_ptr = nil;
   sh_cliprdr_set_handler: Tsh_slot_set = nil;
   sh_cliprdr_call: Tsh_slot_get = nil;
+  sh_gfx_set_handler: Tsh_slot_set = nil;
+  sh_gfx_call: Tsh_slot_get = nil;
+  sh_gfx_rdp_context: Tsh_ptr_of_ptr = nil;
 
 // chemin relatif = dylibs cherchees dans le repertoire courant
 function AbsCandidateDir(const P: string): Boolean;
@@ -651,6 +676,8 @@ begin
   Pointer(gdi_init) := MustSym(GLibRdp, 'gdi_init');
   Pointer(gdi_graphics_pipeline_init) :=
     MustSym(GLibRdp, 'gdi_graphics_pipeline_init');
+  Pointer(gdi_graphics_pipeline_uninit) :=
+    MustSym(GLibRdp, 'gdi_graphics_pipeline_uninit');
   Pointer(gdi_resize) := MustSym(GLibRdp, 'gdi_resize');
   Pointer(gdi_free) := MustSym(GLibRdp, 'gdi_free');
   Pointer(freerdp_reconnect) := MustSym(GLibRdp, 'freerdp_reconnect');
@@ -869,6 +896,9 @@ begin
   Pointer(sh_cliprdr_custom) := Sym('rssh_cliprdr_custom');
   Pointer(sh_cliprdr_set_handler) := Sym('rssh_cliprdr_set_handler');
   Pointer(sh_cliprdr_call) := Sym('rssh_cliprdr_call');
+  Pointer(sh_gfx_set_handler) := Sym('rssh_gfx_set_handler');
+  Pointer(sh_gfx_call) := Sym('rssh_gfx_call');
+  Pointer(sh_gfx_rdp_context) := Sym('rssh_gfx_rdp_context');
 
   if GShimOk then
   begin
@@ -1346,6 +1376,66 @@ function CtxChannels(AContext: PRdpContext): Pointer;
 begin
   if GShimOk then Exit(sh_ctx_channels(AContext));
   Result := PPointer(PByte(AContext) + CTX_OFF_CHANNELS)^;
+end;
+
+const
+  GFX_OFF_CUSTOM = 8;
+  GFX_OFF_CREATE_SURFACE = 56;
+  GFX_OFF_DELETE_SURFACE = 64;
+  GFX_OFF_SURFACE_TO_CACHE = 88;
+  GFX_OFF_EVICT_CACHE_ENTRY = 136;
+
+function GfxSlotOffset(ASlot: cuint32; out AOffset: Integer): Boolean;
+begin
+  Result := True;
+  case ASlot of
+    GFX_SLOT_CREATE_SURFACE:    AOffset := GFX_OFF_CREATE_SURFACE;
+    GFX_SLOT_DELETE_SURFACE:    AOffset := GFX_OFF_DELETE_SURFACE;
+    GFX_SLOT_SURFACE_TO_CACHE:  AOffset := GFX_OFF_SURFACE_TO_CACHE;
+    GFX_SLOT_EVICT_CACHE_ENTRY: AOffset := GFX_OFF_EVICT_CACHE_ENTRY;
+  else
+    AOffset := 0;
+    Result := False;
+  end;
+end;
+
+procedure GfxSetHandler(AGfx: Pointer; ASlot: cuint32; ACb: Pointer);
+var
+  off: Integer;
+begin
+  if AGfx = nil then Exit;
+  if GShimOk then
+  begin
+    sh_gfx_set_handler(AGfx, ASlot, ACb);
+    Exit;
+  end;
+  if GfxSlotOffset(ASlot, off) then
+    PPointer(PByte(AGfx) + off)^ := ACb;
+end;
+
+function GfxHandler(AGfx: Pointer; ASlot: cuint32): TGfxPduFn;
+var
+  off: Integer;
+begin
+  Result := nil;
+  if AGfx = nil then Exit;
+  if GShimOk then
+    Exit(TGfxPduFn(sh_gfx_call(AGfx, ASlot)));
+  if GfxSlotOffset(ASlot, off) then
+    Result := TGfxPduFn(PPointer(PByte(AGfx) + off)^);
+end;
+
+function GfxRdpContext(AGfx: Pointer): Pointer;
+var
+  gdi: Pointer;
+begin
+  Result := nil;
+  if AGfx = nil then Exit;
+  if GShimOk then
+    Exit(sh_gfx_rdp_context(AGfx));
+  gdi := PPointer(PByte(AGfx) + GFX_OFF_CUSTOM)^;
+  if gdi = nil then Exit;
+  Result := PPointer(PByte(gdi) + GDI_OFF_CONTEXT)^;
 end;
 
 // decalage -> slot nomme du shim (enum rssh_cliprdr_slot); False hors table

@@ -47,6 +47,15 @@ procedure SockClose(AFd: cint);
 // Detecte le pair MORT SANS FIN/RST: sinon select() attend un zombie sans fin.
 procedure SockEnableKeepalive(AFd: cint; AIdleS, AIntervalS: Integer);
 
+// Coupe l'algorithme de Nagle. Tout ce qui passe ici est interactif (SSH,
+// tunnels, VNC): une frappe, un deplacement de souris, un acquittement d'image
+// sont de petits paquets qui doivent partir TOUT DE SUITE. Avec Nagle, un
+// petit envoi attend l'acquittement du precedent, et l'acquittement differe
+// de l'autre bout peut le retenir 200 ms: sur un flux RDP tunnele, ou chaque
+// image donne lieu a un acquittement, c'est une session qui avance par
+// a-coups. OpenSSH le fait sur sa propre socket; libssh2 laisse faire.
+procedure SockSetNoDelay(AFd: cint);
+
 implementation
 
 const
@@ -144,6 +153,16 @@ end;
 procedure SockClose(AFd: cint);
 begin
   closesocket(TSocket(AFd));
+end;
+
+procedure SockSetNoDelay(AFd: cint);
+const
+  TCP_NODELAY_OPT = 1;   // ws2tcpip.h
+var
+  v: cint;
+begin
+  v := 1;
+  fpSetSockOpt(AFd, IPPROTO_TCP, TCP_NODELAY_OPT, @v, SizeOf(v));
 end;
 
 procedure SockEnableKeepalive(AFd: cint; AIdleS, AIntervalS: Integer);
@@ -247,6 +266,16 @@ end;
 procedure SockClose(AFd: cint);
 begin
   FpClose(AFd);
+end;
+
+procedure SockSetNoDelay(AFd: cint);
+const
+  TCP_NODELAY_OPT = 1;   // netinet/tcp.h, meme valeur sous Linux et macOS
+var
+  v: cint;
+begin
+  v := 1;
+  fpSetSockOpt(AFd, IPPROTO_TCP, TCP_NODELAY_OPT, @v, SizeOf(v));
 end;
 
 procedure SockEnableKeepalive(AFd: cint; AIdleS, AIntervalS: Integer);

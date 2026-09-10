@@ -12,6 +12,7 @@
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/client/cliprdr.h>
 #include <freerdp/client/disp.h>
+#include <freerdp/client/rdpgfx.h>
 #include <freerdp/channels/channels.h>
 
 #define OFF(name, type, field) \
@@ -31,6 +32,12 @@ int main(void)
 	OFF(CTX_OFF_SETTINGS, rdpContext, settings);
 
 	/* ---- rdpGdi ---- */
+	OFF(GFX_OFF_CUSTOM, RdpgfxClientContext, custom);
+	OFF(GFX_OFF_CREATE_SURFACE, RdpgfxClientContext, CreateSurface);
+	OFF(GFX_OFF_DELETE_SURFACE, RdpgfxClientContext, DeleteSurface);
+	OFF(GFX_OFF_SURFACE_TO_CACHE, RdpgfxClientContext, SurfaceToCache);
+	OFF(GFX_OFF_EVICT_CACHE_ENTRY, RdpgfxClientContext, EvictCacheEntry);
+
 	OFF(GDI_OFF_CONTEXT, rdpGdi, context);
 	OFF(GDI_OFF_WIDTH, rdpGdi, width);
 	OFF(GDI_OFF_HEIGHT, rdpGdi, height);
