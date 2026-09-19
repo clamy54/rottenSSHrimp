@@ -192,6 +192,11 @@ const
   PTR_XFLAGS_DOWN = $8000;
 
   KBD_FLAGS_EXTENDED = $0100;
+  // TS_SYNC_EVENT: etat des verrous du clavier LOCAL
+  KBD_SYNC_SCROLL_LOCK = $01;
+  KBD_SYNC_NUM_LOCK = $02;
+  KBD_SYNC_CAPS_LOCK = $04;
+
   KBD_FLAGS_DOWN = $4000;
   KBD_FLAGS_RELEASE = $8000;
 
@@ -338,6 +343,8 @@ type
     id: cint): cuint32; cdecl;
   Tfreerdp_input_send_keyboard_event = function(input: PRdpInput;
     flags: cuint16; code: cuint8): cint; cdecl;
+  Tfreerdp_input_send_synchronize_event = function(input: PRdpInput;
+    flags: cuint32): cint; cdecl;
   Tfreerdp_input_send_unicode_keyboard_event = function(input: PRdpInput;
     flags: cuint16; code: cuint16): cint; cdecl;
   Tfreerdp_input_send_mouse_event = function(input: PRdpInput; flags: cuint16;
@@ -382,6 +389,8 @@ var
   freerdp_detect_keyboard_layout_from_system_locale:
     Tfreerdp_detect_keyboard_layout_from_system_locale = nil;
   freerdp_input_send_keyboard_event: Tfreerdp_input_send_keyboard_event = nil;
+  freerdp_input_send_synchronize_event:
+    Tfreerdp_input_send_synchronize_event = nil;
   freerdp_input_send_unicode_keyboard_event: Tfreerdp_input_send_unicode_keyboard_event = nil;
   freerdp_input_send_mouse_event: Tfreerdp_input_send_mouse_event = nil;
   freerdp_input_send_extended_mouse_event: Tfreerdp_input_send_extended_mouse_event = nil;
@@ -667,6 +676,8 @@ begin
     GetProcAddress(GLibRdp, 'freerdp_detect_keyboard_layout_from_system_locale');
   Pointer(freerdp_input_send_keyboard_event) :=
     MustSym(GLibRdp, 'freerdp_input_send_keyboard_event');
+  Pointer(freerdp_input_send_synchronize_event) :=
+    MustSym(GLibRdp, 'freerdp_input_send_synchronize_event');
   Pointer(freerdp_input_send_unicode_keyboard_event) :=
     MustSym(GLibRdp, 'freerdp_input_send_unicode_keyboard_event');
   Pointer(freerdp_input_send_mouse_event) :=

@@ -57,6 +57,7 @@ type
     FFailLabel: TLabel;
 
     procedure ViewMouse(AFlags: Integer; AX, AY: Integer);
+    procedure ViewSyncLocks(Sender: TObject);
     procedure ViewExtMouse(AFlags: Integer; AX, AY: Integer);
     procedure ViewKey(AFlags: Integer; ACode: Integer);
     procedure ViewEscapeCapture(Sender: TObject);
@@ -188,6 +189,7 @@ begin
   FView.OnExtMouseEvent := @ViewExtMouse;
   FView.OnKeyEvent := @ViewKey;
   FView.OnEscapeCapture := @ViewEscapeCapture;
+  FView.OnSyncLocks := @ViewSyncLocks;
 
   FTransport := TRdpTransport.Create(AParams, FSurface);
   FTransport.OnStateChanged := @TransportState;
@@ -307,6 +309,12 @@ begin
     FTransport.SendScancode(AFlags, ACode);
 end;
 
+procedure TRdpSessionTab.ViewSyncLocks(Sender: TObject);
+begin
+  if (FTransport <> nil) and (FState = rssConnected) then
+    FTransport.SendSynchronize(FView.LockFlags);
+end;
+
 procedure TRdpSessionTab.ViewEscapeCapture(Sender: TObject);
 begin
   if (Parent <> nil) and (Parent is TWinControl) then
@@ -412,6 +420,8 @@ begin
     FLastReqW := 0;
     FLastReqH := 0;
     RequestRemoteSize;
+    // le focus a pu arriver AVANT l'etat connecte: on le dit ici aussi
+    ViewSyncLocks(nil);
     if (FTransport <> nil) and FTransport.ClipboardTextEnabled then
     begin
       // Ligne de base, PAS un renvoi: le premier sondage expedierait au serveur
@@ -490,6 +500,7 @@ begin
     FReconnectMsg := '';
     if (FTransport <> nil) and FTransport.ClipboardTextEnabled then
       FClipTimer.Enabled := True;
+    ViewSyncLocks(nil);   // session rebatie: le serveur a oublie les verrous
   end;
   UpdateCaption;
 end;

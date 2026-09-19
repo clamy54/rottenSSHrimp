@@ -28,6 +28,7 @@ type
     FOnExtMouse: TRdpMouseEvent;
     FOnKey: TRdpKeyEvent;
     FOnEscapeCapture: TNotifyEvent;
+    FOnSyncLocks: TNotifyEvent;
     {$IF defined(LCLGtk2) or defined(LCLCocoa)}
     FHwKeycode: Integer;   // vide = -1, PAS 0: 0 est un keycode Cocoa reel
     {$ENDIF}
@@ -80,6 +81,10 @@ type
     property OnKeyEvent: TRdpKeyEvent read FOnKey write FOnKey;
     property OnEscapeCapture: TNotifyEvent read FOnEscapeCapture
       write FOnEscapeCapture;
+    // Le controle reprend le clavier: les verrous ont pu changer ailleurs
+    property OnSyncLocks: TNotifyEvent read FOnSyncLocks write FOnSyncLocks;
+    // KBD_SYNC_* selon l'etat des verrous du clavier local
+    function LockFlags: Cardinal;
   end;
 
 implementation
@@ -209,6 +214,24 @@ procedure TRottenRdpControl.DoEnter;
 begin
   inherited DoEnter;
   Invalidate;
+  if Assigned(FOnSyncLocks) then
+    FOnSyncLocks(Self);
+end;
+
+function TRottenRdpControl.LockFlags: Cardinal;
+begin
+  Result := 0;
+  {$IFDEF DARWIN}
+  // Un clavier Mac n'a pas de NumLock: son pave donne toujours des chiffres
+  Result := Result or KBD_SYNC_NUM_LOCK;
+  {$ELSE}
+  if (GetKeyState(VK_NUMLOCK) and 1) <> 0 then
+    Result := Result or KBD_SYNC_NUM_LOCK;
+  if (GetKeyState(VK_SCROLL) and 1) <> 0 then
+    Result := Result or KBD_SYNC_SCROLL_LOCK;
+  {$ENDIF}
+  if (GetKeyState(VK_CAPITAL) and 1) <> 0 then
+    Result := Result or KBD_SYNC_CAPS_LOCK;
 end;
 
 procedure TRottenRdpControl.DoExit;

@@ -198,6 +198,10 @@ type
     procedure SendScancode(AFlags: Integer; ACode: Integer);
     procedure SendUnicode(AFlags: Integer; ACode: Integer);
     procedure SendCtrlAltDel;
+    // Etat des verrous (KBD_SYNC_*) du clavier local. Le serveur demarre
+    // NumLock eteint et n'apprend rien tout seul: sans cet evenement, le pave
+    // numerique envoie Insert, Fin et des fleches, verrou allume ou non.
+    procedure SendSynchronize(AFlags: Cardinal);
     procedure RequestResize(AWidth, AHeight: Integer);
     procedure AnnounceLocalClipboard(const AText: UnicodeString);
     procedure Shutdown;
@@ -1619,6 +1623,18 @@ begin
   if not BeginInput(inp) then Exit;
   try
     freerdp_input_send_unicode_keyboard_event(inp, AFlags, ACode);
+  finally
+    EndInput;
+  end;
+end;
+
+procedure TRdpTransport.SendSynchronize(AFlags: Cardinal);
+var
+  inp: Pointer;
+begin
+  if not BeginInput(inp) then Exit;
+  try
+    freerdp_input_send_synchronize_event(inp, AFlags);
   finally
     EndInput;
   end;
