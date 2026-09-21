@@ -91,7 +91,35 @@ implementation
 
 uses
   uFreeRdpApi, uRdpScancodes, uTheme
-  {$IFDEF LCLCocoa}, uMacKbdLayout{$ENDIF};
+  {$IFDEF LCLCocoa}, uMacKbdLayout{$ENDIF}
+  {$IFDEF LCLGtk2}, x, xlib, xkblib{$ENDIF};
+
+{$IFDEF LCLGtk2}
+var
+  XLockDisp: PDisplay = nil;
+  XLockDispTried: Boolean = False;
+
+// GetKeyState GTK2 = cache des touches VUES par l'appli: un verrou deja pose au
+// lancement, ou bascule pendant un Alt+Tab, n'y est pas. XKB donne le voyant.
+// nil = pas de X (Wayland pur, DISPLAY absent): repli sur GetKeyState.
+function X11LockOn(const AName: string; AVk: Integer): Boolean;
+var
+  ndx: SmallInt;
+  st: Boolean;
+begin
+  if not XLockDispTried then
+  begin
+    XLockDispTried := True;
+    XLockDisp := XOpenDisplay(nil);
+  end;
+  st := False;
+  if (XLockDisp <> nil) and
+     XkbGetNamedIndicator(XLockDisp, XInternAtom(XLockDisp, PChar(AName), 0),
+       @ndx, @st, nil, nil) then
+    Exit(st);
+  Result := (GetKeyState(AVk) and 1) <> 0;
+end;
+{$ENDIF}
 
 const
   REFRESH_MS = 33;
@@ -221,16 +249,25 @@ end;
 function TRottenRdpControl.LockFlags: Cardinal;
 begin
   Result := 0;
-  {$IFDEF DARWIN}
+  {$IF defined(DARWIN)}
   // Un clavier Mac n'a pas de NumLock: son pave donne toujours des chiffres
   Result := Result or KBD_SYNC_NUM_LOCK;
+  {$ELSEIF defined(LCLGtk2)}
+  if X11LockOn('Num Lock', VK_NUMLOCK) then
+    Result := Result or KBD_SYNC_NUM_LOCK;
+  if X11LockOn('Scroll Lock', VK_SCROLL) then
+    Result := Result or KBD_SYNC_SCROLL_LOCK;
   {$ELSE}
   if (GetKeyState(VK_NUMLOCK) and 1) <> 0 then
     Result := Result or KBD_SYNC_NUM_LOCK;
   if (GetKeyState(VK_SCROLL) and 1) <> 0 then
     Result := Result or KBD_SYNC_SCROLL_LOCK;
   {$ENDIF}
+  {$IFDEF LCLGtk2}
+  if X11LockOn('Caps Lock', VK_CAPITAL) then
+  {$ELSE}
   if (GetKeyState(VK_CAPITAL) and 1) <> 0 then
+  {$ENDIF}
     Result := Result or KBD_SYNC_CAPS_LOCK;
 end;
 

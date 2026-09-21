@@ -58,6 +58,7 @@ type
 
     procedure ViewMouse(AFlags: Integer; AX, AY: Integer);
     procedure ViewSyncLocks(Sender: TObject);
+    procedure AppActivated(Sender: TObject);
     procedure ViewExtMouse(AFlags: Integer; AX, AY: Integer);
     procedure ViewKey(AFlags: Integer; ACode: Integer);
     procedure ViewEscapeCapture(Sender: TObject);
@@ -190,6 +191,7 @@ begin
   FView.OnKeyEvent := @ViewKey;
   FView.OnEscapeCapture := @ViewEscapeCapture;
   FView.OnSyncLocks := @ViewSyncLocks;
+  Application.AddOnActivateHandler(@AppActivated);
 
   FTransport := TRdpTransport.Create(AParams, FSurface);
   FTransport.OnStateChanged := @TransportState;
@@ -214,6 +216,7 @@ var
   cb: TNotifyEvent;
 begin
   FClosing := True;
+  Application.RemoveOnActivateHandler(@AppActivated);
   if (FManager <> nil) and (FHandle <> nil) then
     FManager.UnregisterSession(FHandle);
   if FTransport <> nil then
@@ -313,6 +316,15 @@ procedure TRdpSessionTab.ViewSyncLocks(Sender: TObject);
 begin
   if (FTransport <> nil) and (FState = rssConnected) then
     FTransport.SendSynchronize(FView.LockFlags);
+end;
+
+// retour d'Alt+Tab: le focus revient sur la vue SANS DoEnter, un verrou
+// bascule pendant l'absence resterait faux cote serveur
+procedure TRdpSessionTab.AppActivated(Sender: TObject);
+begin
+  if FClosing or (FView = nil) then Exit;
+  if FView.Focused or (Screen.ActiveControl = FView) then
+    ViewSyncLocks(nil);
 end;
 
 procedure TRdpSessionTab.ViewEscapeCapture(Sender: TObject);
