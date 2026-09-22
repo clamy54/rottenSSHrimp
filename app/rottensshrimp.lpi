@@ -1666,6 +1666,10 @@
         <IsPartOfProject Value="True"/>
       </Unit>
       <Unit>
+        <Filename Value="../src/ui/uThemedSplitter.pas"/>
+        <IsPartOfProject Value="True"/>
+      </Unit>
+      <Unit>
         <Filename Value="../src/ui/uScpIcons.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit>

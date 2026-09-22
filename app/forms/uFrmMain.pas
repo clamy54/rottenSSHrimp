@@ -12,8 +12,8 @@ uses
   Graphics, LCLType, LMessages, uRshDocument, uRshModel, uSessionManager,
   uSessionState, uSessionTabBase, uSshSessionTab, uSshTransport,
   uRdpSessionTab, uVncSessionTab, uVncConnect, uClusterSshTab, uCrashRecovery,
-  uSessionTabBar, uSearchBox, uTreeScrollBar, uImportExport, uGroupDashboard,
-  uTabSweep, uRecent, uOpenArg
+  uSessionTabBar, uSearchBox, uTreeScrollBar, uThemedSplitter, uImportExport,
+  uGroupDashboard, uTabSweep, uRecent, uOpenArg
   {$IFNDEF DARWIN}, uMenuBar{$ENDIF};
 
 type
@@ -34,7 +34,7 @@ type
     FSearchBox: TRottenSearchBox;
     FTree: TScrollTreeView;
     FTreeScroll: TTreeScrollBar;
-    FSplitter: TSplitter;
+    FSplitter: TThemedSplitter;
     FSessionPanel: TPanel;
     FTabBar: TSessionTabBar;
     FPages: TPageControl;
@@ -633,7 +633,7 @@ begin
   FLockPanel.Visible := False;
   BuildLockPanel;
 
-  FSplitter := TSplitter.Create(Self);
+  FSplitter := TThemedSplitter.Create(Self);
   FSplitter.Parent := Self;
   FSplitter.Align := alLeft;
   FSplitter.Left := FLeftPanel.Width + 1;
@@ -3745,6 +3745,9 @@ begin
     FTreeScroll.ApplyTheme(clSideBg,
       BlendColor(clSideText, clSideBg, 22),
       BlendColor(clSideText, clSideBg, 42));
+  // Le separateur relit les couleurs a son dessin: un Invalidate suffit.
+  if FSplitter <> nil then
+    FSplitter.Invalidate;
   if FSearchBox <> nil then
     FSearchBox.ApplyTheme(
       clSideBg,

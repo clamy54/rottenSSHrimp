@@ -24,20 +24,9 @@ uses
   uSshTransport, uSshKnownHosts, uSshTunnel, uSshTunnelConnect, uSecureBytes,
   uScpBackend, uScpErrors, uScpPaths, uTransferQueue, uSftpTransport,
   uLocalFileSystem, uLocalFsWorker, uFilePanel, uTransferQueueView, uTheme,
-  uScpIcons;
+  uThemedSplitter, uScpIcons;
 
 type
-  // Separateur qui repeint TOUT DE SUITE ce qu'il vient de redimensionner.
-  // Les panneaux suivent la souris, mais pendant un glissement les WM_PAINT
-  // passent APRES les messages de souris: chaque largeur intermediaire reste
-  // a l'ecran et les panneaux se couvrent de trainees. Repeindre de force a
-  // chaque pas ne laisse rien derriere, au prix d'un repeint par mouvement --
-  // deux listes dessinees a la main, cela ne se sent pas.
-  TScpSplitter = class(TSplitter)
-  public
-    procedure MoveSplitter(AOffset: Integer); override;
-  end;
-
   TScpTab = class;
 
   TScpSessionHandle = class(TManagedSession)
@@ -93,8 +82,8 @@ type
     FHeaderInfo: TLabel;
     FBtnReconnect: TButton;
     FBtnClose: TButton;
-    FSplit: TScpSplitter;
-    FQueueSplit: TScpSplitter;
+    FSplit: TThemedSplitter;
+    FQueueSplit: TThemedSplitter;
     FLocalPanel: TFilePanel;
     FRemotePanel: TFilePanel;
     FMiddle: TPanel;
@@ -134,7 +123,6 @@ type
 
     procedure ReconnectClick(Sender: TObject);
     procedure CloseClick(Sender: TObject);
-    procedure SplitterPaint(Sender: TObject);
     // ADestDir vide = le dossier affiche en face. Un depot sur un dossier le
     // designe, et il devient la racine de confinement du lot.
     procedure StartTransfer(ASide: TFilePanelSide; const ADestDir: string);
@@ -206,31 +194,6 @@ const
   // Delai laisse au transport pour retirer ses temporaires: un aller-retour
   // SFTP, pas de quoi figer une fermeture.
   PARTIAL_CLEANUP_GRACE_MS = 5000;
-  // Assez epais pour se voir et s'attraper a la souris sans etre une
-  // bordure: c'est une poignee, pas une decoration.
-  SPLITTER_THICKNESS = 7;
-
-// Invalide ET repeint, en descendant: Update ne vaut que pour la fenetre a
-// laquelle il s'adresse, les filles ont la leur.
-procedure RepaintNow(AControl: TWinControl);
-var
-  i: Integer;
-begin
-  if (AControl = nil) or (not AControl.HandleAllocated) then Exit;
-  AControl.Invalidate;
-  AControl.Update;
-  for i := 0 to AControl.ControlCount - 1 do
-    if AControl.Controls[i] is TWinControl then
-      RepaintNow(TWinControl(AControl.Controls[i]));
-end;
-
-{ TScpSplitter }
-
-procedure TScpSplitter.MoveSplitter(AOffset: Integer);
-begin
-  inherited MoveSplitter(AOffset);
-  RepaintNow(Parent);
-end;
 
 { TScpSessionHandle }
 
@@ -493,13 +456,10 @@ begin
   FQueueView.Height := 160;
   FQueueView.OnCommand := @QueueCommand;
 
-  FQueueSplit := TScpSplitter.Create(Self);
+  FQueueSplit := TThemedSplitter.Create(Self);
   FQueueSplit.Parent := Self;
   FQueueSplit.Align := alBottom;
-  FQueueSplit.Height := SPLITTER_THICKNESS;
   FQueueSplit.MinSize := 60;
-  FQueueSplit.ResizeStyle := rsUpdate;
-  FQueueSplit.OnPaint := @SplitterPaint;
 
   FMiddle := TPanel.Create(Self);
   FMiddle.Parent := Self;
@@ -517,20 +477,13 @@ begin
   FLocalPanel.OnDrop := @PanelDrop;
   FLocalPanel.List.OnAction := @LocalAction;
 
-  // Separateur des deux panneaux: peint par nous, donc visible et aux
-  // couleurs du theme. Sans OnPaint la LCL y met le motif du systeme, qui
-  // reste clair en theme sombre et ne se voit pas. TScpSplitter pour le
-  // repeint immediat pendant le glissement.
-  FSplit := TScpSplitter.Create(Self);
+  FSplit := TThemedSplitter.Create(Self);
   FSplit.Parent := FMiddle;
   FSplit.Align := alLeft;
   // Left explicite: a egalite, la LCL range les alLeft dans l'ordre inverse de
   // leur creation, et le separateur se collait au bord gauche.
   FSplit.Left := FLocalPanel.Left + FLocalPanel.Width;
-  FSplit.Width := SPLITTER_THICKNESS;
   FSplit.MinSize := 220;
-  FSplit.ResizeStyle := rsUpdate;
-  FSplit.OnPaint := @SplitterPaint;
 
   FRemotePanel := TFilePanel.CreateSide(Self, fpsRemote);
   FRemotePanel.Parent := FMiddle;
@@ -1063,36 +1016,6 @@ begin
     end;
   end;
   StartTransfer(ASourceSide, dest);
-end;
-
-// Le separateur est peint a la main pour rester lisible en theme sombre: une
-// barre pleine, et trois points au milieu qui disent qu'elle se prend.
-procedure TScpTab.SplitterPaint(Sender: TObject);
-var
-  sp: TSplitter;
-  cv: TCanvas;
-  r: TRect;
-  i, cx, cy: Integer;
-  vertical: Boolean;
-begin
-  if not (Sender is TSplitter) then Exit;
-  sp := TSplitter(Sender);
-  cv := sp.Canvas;
-  r := sp.ClientRect;
-  cv.Brush.Color := BlendColor(clAppFg, clAppBg, 30);
-  cv.Brush.Style := bsSolid;
-  cv.FillRect(r);
-
-  vertical := sp.Align in [alLeft, alRight];
-  cx := (r.Left + r.Right) div 2;
-  cy := (r.Top + r.Bottom) div 2;
-  cv.Brush.Color := BlendColor(clAppFg, clAppBg, 70);
-  for i := -1 to 1 do
-    if vertical then
-      cv.FillRect(Rect(cx - 1, cy + i * 8 - 1, cx + 1, cy + i * 8 + 1))
-    else
-      cv.FillRect(Rect(cx + i * 8 - 1, cy - 1, cx + i * 8 + 1, cy + 1));
-  cv.Brush.Style := bsClear;
 end;
 
 procedure TScpTab.QueueCommand(ACommand: TQueueCommand);
