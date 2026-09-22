@@ -16,8 +16,8 @@ interface
 
 uses
   Classes, SysUtils, Types, Controls, Graphics, Forms, StdCtrls, ExtCtrls,
-  LCLType, LCLIntf, uScpBackend, uScpErrors, uScpPaths, uTheme, uScpIcons,
-  uTreeScrollBar;
+  Menus, LCLType, LCLIntf, uScpBackend, uScpErrors, uScpPaths, uTheme,
+  uScpIcons, uTreeScrollBar, uMenuBar;
 
 type
   TFileSortColumn = (fscName, fscSize, fscModified, fscMode, fscOwner);
@@ -35,6 +35,7 @@ type
     fpaRename,
     fpaDelete,
     fpaTransfer,      // F5, bouton, ou glisser-deposer: envoyer en face
+    fpaDuplicate,     // copie sur place, sous un nom libre
     fpaCopyPath,
     fpaFocusOther);
 
@@ -61,6 +62,11 @@ type
     FBannerText: TLabel;
     FBannerRetry: TButton;
     FBusy: TLabel;
+    FMenu: TPopupMenu;
+    FMiTransfer: TMenuItem;
+    FMiRename: TMenuItem;
+    FMiDuplicate: TMenuItem;
+    FMiDelete: TMenuItem;
     FOnAction: TFilePanelActionEvent;
     FOnNavigate: TFilePathEvent;
     FOnDrop: TFileDropEvent;
@@ -81,12 +87,18 @@ type
     procedure VolumeSelected(Sender: TObject);
     procedure RetryClick(Sender: TObject);
     procedure ListActivate(Sender: TObject);
+    procedure MenuPopup(Sender: TObject);
+    procedure MenuTransfer(Sender: TObject);
+    procedure MenuRename(Sender: TObject);
+    procedure MenuDuplicate(Sender: TObject);
+    procedure MenuDelete(Sender: TObject);
     function ButtonAt(X: Integer): Integer;
     function ButtonCount: Integer;
     function ButtonIcon(AIndex: Integer): TScpIcon;
     function ButtonHint(AIndex: Integer): string;
     function ButtonAction(AIndex: Integer): TFilePanelAction;
     function ButtonSize: Integer;
+    procedure BuildMenu;
     procedure SetOnDrop(AValue: TFileDropEvent);
   public
     constructor CreateSide(AOwner: TComponent; ASide: TFilePanelSide);
@@ -96,7 +108,7 @@ type
     procedure SetPathText(const APath: string);
     function PathText: string;
     procedure SetEntries(const APath: string;
-      const AEntries: TScpEntryArray);
+      const AEntries: TScpEntryArray; AHasParent: Boolean);
     procedure ShowError(const AError: TScpError);
     procedure ClearError;
     procedure SetBusy(AActive: Boolean; const AText: string);
@@ -137,9 +149,14 @@ type
     FDragOrigin: TPoint;
     FDragOver: Boolean;          // un lot venant d'en face survole la liste
     FDropIndex: Integer;         // ligne visee, -1 = le dossier affiche
+    // Ligne « .. » synthetique, dans FEntries pour que tri, defilement et clic
+    // marchent sans cas particulier. FParentIndex la designe partout ou elle doit
+    // etre EXCLUE. -1 = a la racine, pas de ligne.
+    FParentIndex: Integer;
 
     function VisibleCount: Integer;
     function RowAt(AY: Integer): Integer;
+    function IsParentRow(AViewIndex: Integer): Boolean;
     procedure EnsureVisible(AIndex: Integer);
     procedure Reorder;
     procedure DrawRow(AIndex, AY: Integer);
@@ -175,13 +192,17 @@ type
       var Accept: Boolean); override;
     procedure DragDrop(Source: TObject; X, Y: Integer); override;
 
-    procedure SetEntries(const AEntries: TScpEntryArray);
+    // AHasParent ajoute « .. » en tete: l'appelant seul sait s'il y a un parent.
+    procedure SetEntries(const AEntries: TScpEntryArray; AHasParent: Boolean);
     procedure SelectAll;
     procedure ClearSelection;
     // Noms selectionnes, y compris les entrees non transferables: c'est le moteur
     // qui tranche, avec un motif. Les cacher ici les ferait disparaitre sans un mot.
     function SelectedNames: TStringArray;
     function FocusedEntry(out AEntry: TScpEntry): Boolean;
+    // La ligne sous le curseur est-elle « .. »? Renommer, supprimer ou copier le
+    // chemin doivent le savoir: ce n'est pas un element.
+    function FocusedIsParent: Boolean;
     function SelectionCount: Integer;
     procedure CaptureView(out ASelected: TStringArray; out AFocused: string;
       out ATop: Integer);
@@ -242,6 +263,7 @@ begin
   FSortCol := fscName;
   FHoverHeader := -1;
   FDropIndex := -1;
+  FParentIndex := -1;
   DoubleBuffered := True;
   RecomputeMetrics;
 end;
@@ -315,6 +337,9 @@ var
     ea, eb: TScpEntry;
     r: Integer;
   begin
+    // « .. » reste en tete quel que soit le tri: c'est la sortie, pas un element.
+    if A = FParentIndex then Exit(True);
+    if B = FParentIndex then Exit(False);
     ea := FEntries[A];
     eb := FEntries[B];
     if ea.IsDir <> eb.IsDir then Exit(ea.IsDir);
@@ -353,9 +378,25 @@ begin
   end;
 end;
 
-procedure TFileListView.SetEntries(const AEntries: TScpEntryArray);
+function TFileListView.IsParentRow(AViewIndex: Integer): Boolean;
 begin
-  FEntries := AEntries;
+  Result := (FParentIndex >= 0) and (AViewIndex >= 0) and
+    (AViewIndex < Length(FOrder)) and (FOrder[AViewIndex] = FParentIndex);
+end;
+
+procedure TFileListView.SetEntries(const AEntries: TScpEntryArray;
+  AHasParent: Boolean);
+begin
+  FEntries := Copy(AEntries, 0, Length(AEntries));
+  FParentIndex := -1;
+  if AHasParent then
+  begin
+    SetLength(FEntries, Length(FEntries) + 1);
+    FParentIndex := High(FEntries);
+    FEntries[FParentIndex] := Default(TScpEntry);
+    FEntries[FParentIndex].Name := '..';
+    FEntries[FParentIndex].IsDir := True;
+  end;
   SetLength(FSelected, Length(FEntries));
   // FSelected[0] sur un tableau vide dereference nil, et un dossier vide est
   // un cas courant.
@@ -420,7 +461,7 @@ procedure TFileListView.SelectAll;
 var
   i: Integer;
 begin
-  for i := 0 to High(FSelected) do FSelected[i] := True;
+  for i := 0 to High(FSelected) do FSelected[i] := (i <> FParentIndex);
   Invalidate;
 end;
 
@@ -448,19 +489,25 @@ begin
   Result := nil;
   n := 0;
   for i := 0 to High(FOrder) do
-    if FSelected[FOrder[i]] then
+    if FSelected[FOrder[i]] and (not IsParentRow(i)) then
     begin
       SetLength(Result, n + 1);
       Result[n] := FEntries[FOrder[i]].Name;
       Inc(n);
     end;
-  // Rien de coche: l'element sous le curseur fait office de selection, comme
-  // dans tout gestionnaire de fichiers.
-  if (n = 0) and (FFocusIndex >= 0) and (FFocusIndex < Length(FOrder)) then
+  // Rien de coche: l'element sous le curseur fait office de selection. « .. »
+  // ne compte pas, elle n'est ni a envoyer ni a supprimer.
+  if (n = 0) and (FFocusIndex >= 0) and (FFocusIndex < Length(FOrder)) and
+     (not IsParentRow(FFocusIndex)) then
   begin
     SetLength(Result, 1);
     Result[0] := FEntries[FOrder[FFocusIndex]].Name;
   end;
+end;
+
+function TFileListView.FocusedIsParent: Boolean;
+begin
+  Result := IsParentRow(FFocusIndex);
 end;
 
 function TFileListView.FocusedEntry(out AEntry: TScpEntry): Boolean;
@@ -477,7 +524,8 @@ var
   i: Integer;
 begin
   for i := 0 to High(FSelected) do FSelected[i] := False;
-  if (AIndex >= 0) and (AIndex < Length(FOrder)) then
+  if (AIndex >= 0) and (AIndex < Length(FOrder)) and
+     (not IsParentRow(AIndex)) then
     FSelected[FOrder[AIndex]] := True;
   FAnchor := AIndex;
 end;
@@ -490,7 +538,8 @@ begin
   a := Min(AFrom, ATo);
   b := Max(AFrom, ATo);
   for i := Max(a, 0) to Min(b, High(FOrder)) do
-    FSelected[FOrder[i]] := True;
+    if not IsParentRow(i) then
+      FSelected[FOrder[i]] := True;
 end;
 
 procedure TFileListView.SetFocusIndex(AValue: Integer);
@@ -608,7 +657,7 @@ var
   fg: TColor;
   s: string;
   r: TRect;
-  drop: Boolean;
+  drop, parentRow: Boolean;
 
   procedure Cell(ACol: TFileSortColumn; const AText: string;
     ARightAlign: Boolean; AColor: TColor);
@@ -631,7 +680,8 @@ var
 
 begin
   e := FEntries[FOrder[AIndex]];
-  sel := FSelected[FOrder[AIndex]];
+  parentRow := IsParentRow(AIndex);
+  sel := FSelected[FOrder[AIndex]] and (not parentRow);
   drop := FDragOver and (AIndex = FDropIndex);
   r := Rect(0, AY, ClientWidth, AY + FRowHeight);
 
@@ -661,12 +711,18 @@ begin
     Canvas.Rectangle(0, AY, ClientWidth, AY + FRowHeight);
   end;
 
-  if sel or drop then fg := clSelText else fg := EntryColor(e);
+  if sel or drop then fg := clSelText
+  else if parentRow then fg := clTextSecondary
+  else fg := EntryColor(e);
 
   textTop := AY + (FRowHeight - Canvas.TextHeight('Wg')) div 2;
   iconBox := FRowHeight - 4;
-  DrawScpIcon(Canvas, Rect(PANEL_PAD, AY + 2, PANEL_PAD + iconBox,
-    AY + 2 + iconBox), EntryIcon(e), fg);
+  if parentRow then
+    DrawScpIcon(Canvas, Rect(PANEL_PAD, AY + 2, PANEL_PAD + iconBox,
+      AY + 2 + iconBox), siParent, fg)
+  else
+    DrawScpIcon(Canvas, Rect(PANEL_PAD, AY + 2, PANEL_PAD + iconBox,
+      AY + 2 + iconBox), EntryIcon(e), fg);
 
   x := 0;
   w := FColWidths[fscName];
@@ -678,31 +734,36 @@ begin
     AY + FRowHeight), PANEL_PAD * 2 + iconBox, textTop, s);
   Inc(x, w);
 
-  if e.IsDir then
-    s := ''
-  else if e.Size < 0 then
-    s := '--'
-  else
-    s := FormatBytes(e.Size);
-  if sel then Cell(fscSize, s, True, fg)
-  else Cell(fscSize, s, True, clTextSecondary);
-
-  if FSide = fpsRemote then
+  // « .. » n'a ni taille, ni date, ni mode a montrer: ceux du parent comme ceux
+  // du dossier courant seraient faux. Le cadre de focus, lui, se dessine.
+  if not parentRow then
   begin
-    if sel then
-      Cell(fscMode, FormatUnixMode(e.Mode), False, fg)
+    if e.IsDir then
+      s := ''
+    else if e.Size < 0 then
+      s := '--'
     else
-      Cell(fscMode, FormatUnixMode(e.Mode), False, clTextSecondary);
-    if sel then
-      Cell(fscOwner, e.Owner, False, fg)
-    else
-      Cell(fscOwner, e.Owner, False, clTextSecondary);
-  end;
+      s := FormatBytes(e.Size);
+    if sel then Cell(fscSize, s, True, fg)
+    else Cell(fscSize, s, True, clTextSecondary);
 
-  if sel then
-    Cell(fscModified, FormatStamp(e.MTimeUtc), False, fg)
-  else
-    Cell(fscModified, FormatStamp(e.MTimeUtc), False, clTextSecondary);
+    if FSide = fpsRemote then
+    begin
+      if sel then
+        Cell(fscMode, FormatUnixMode(e.Mode), False, fg)
+      else
+        Cell(fscMode, FormatUnixMode(e.Mode), False, clTextSecondary);
+      if sel then
+        Cell(fscOwner, e.Owner, False, fg)
+      else
+        Cell(fscOwner, e.Owner, False, clTextSecondary);
+    end;
+
+    if sel then
+      Cell(fscModified, FormatStamp(e.MTimeUtc), False, fg)
+    else
+      Cell(fscModified, FormatStamp(e.MTimeUtc), False, clTextSecondary);
+  end;
 
   if (AIndex = FFocusIndex) and FPanelActive and Focused then
   begin
@@ -775,7 +836,8 @@ begin
     VK_END: newIndex := High(FOrder);
     VK_SPACE:
       begin
-        if (FFocusIndex >= 0) and (FFocusIndex < Length(FOrder)) then
+        if (FFocusIndex >= 0) and (FFocusIndex < Length(FOrder)) and
+           (not IsParentRow(FFocusIndex)) then
           FSelected[FOrder[FFocusIndex]] :=
             not FSelected[FOrder[FFocusIndex]];
         Invalidate;
@@ -906,6 +968,15 @@ begin
 
   idx := RowAt(Y);
   if idx < 0 then Exit;
+  // Clic droit DANS la selection: on la garde, sinon un menu contextuel sur dix
+  // fichiers n'en laisserait qu'un.
+  if (Button = mbRight) and (not IsParentRow(idx)) and
+     FSelected[FOrder[idx]] then
+  begin
+    SetFocusIndex(idx);
+    Invalidate;
+    Exit;
+  end;
   if ssShift in Shift then
   begin
     if FAnchor < 0 then FAnchor := FFocusIndex;
@@ -913,7 +984,8 @@ begin
   end
   else if (ssCtrl in Shift) or (ssMeta in Shift) then
   begin
-    FSelected[FOrder[idx]] := not FSelected[FOrder[idx]];
+    if not IsParentRow(idx) then
+      FSelected[FOrder[idx]] := not FSelected[FOrder[idx]];
     FAnchor := idx;
   end
   else
@@ -1005,7 +1077,7 @@ begin
   // Un lien n'est pas une destination: ecrire au travers sortirait du panneau.
   newDrop := -1;
   idx := RowAt(Y);
-  if (idx >= 0) and (idx < Length(FOrder)) then
+  if (idx >= 0) and (idx < Length(FOrder)) and (not IsParentRow(idx)) then
     if FEntries[FOrder[idx]].IsDir and (not FEntries[FOrder[idx]].IsLink) then
       newDrop := idx;
   if (not FDragOver) or (newDrop <> FDropIndex) then
@@ -1236,7 +1308,83 @@ begin
   FList.OnDrop := FOnDrop;
   FScroll.Bind(FList);
 
+  BuildMenu;
+
   ApplyTheme;
+end;
+
+// Menu contextuel: exactement ce que font F5, F2, Suppr et la duplication.
+// Des chemins que le clavier n'a pas seraient un second jeu de regles.
+procedure TFilePanel.BuildMenu;
+
+  function AddItem(const ACaption: string; AHandler: TNotifyEvent): TMenuItem;
+  begin
+    Result := TMenuItem.Create(Self);
+    Result.Caption := ACaption;
+    Result.OnClick := AHandler;
+    FMenu.Items.Add(Result);
+  end;
+
+  procedure AddSeparator;
+  var
+    sep: TMenuItem;
+  begin
+    sep := TMenuItem.Create(Self);
+    sep.Caption := '-';
+    FMenu.Items.Add(sep);
+  end;
+
+begin
+  FMenu := TPopupMenu.Create(Self);
+  FMenu.OnPopup := @MenuPopup;
+  if FSide = fpsLocal then
+    FMiTransfer := AddItem('Upload', @MenuTransfer)
+  else
+    FMiTransfer := AddItem('Download', @MenuTransfer);
+  AddSeparator;
+  FMiRename := AddItem('Rename...', @MenuRename);
+  FMiDuplicate := AddItem('Duplicate', @MenuDuplicate);
+  AddSeparator;
+  FMiDelete := AddItem('Delete', @MenuDelete);
+  FList.PopupMenu := FMenu;
+  {$IFNDEF DARWIN}
+  ThemePopupMenu(FMenu);
+  {$ENDIF}
+end;
+
+// GRISE, pas absent: un menu dont les entrees vont et viennent ne s'apprend
+// pas.
+procedure TFilePanel.MenuPopup(Sender: TObject);
+var
+  n: Integer;
+begin
+  n := FList.SelectionCount;
+  if (n = 0) and (not FList.FocusedIsParent) then
+    n := Ord(FList.EntryCount > 0);
+  FMiTransfer.Enabled := n > 0;
+  FMiDuplicate.Enabled := n > 0;
+  FMiDelete.Enabled := n > 0;
+  FMiRename.Enabled := (FList.EntryCount > 0) and (not FList.FocusedIsParent);
+end;
+
+procedure TFilePanel.MenuTransfer(Sender: TObject);
+begin
+  if Assigned(FOnAction) then FOnAction(fpaTransfer);
+end;
+
+procedure TFilePanel.MenuRename(Sender: TObject);
+begin
+  if Assigned(FOnAction) then FOnAction(fpaRename);
+end;
+
+procedure TFilePanel.MenuDuplicate(Sender: TObject);
+begin
+  if Assigned(FOnAction) then FOnAction(fpaDuplicate);
+end;
+
+procedure TFilePanel.MenuDelete(Sender: TObject);
+begin
+  if Assigned(FOnAction) then FOnAction(fpaDelete);
 end;
 
 procedure TFilePanel.SetOnDrop(AValue: TFileDropEvent);
@@ -1274,6 +1422,9 @@ begin
     FList.RecomputeMetrics;
     FList.Invalidate;
   end;
+  {$IFNDEF DARWIN}
+  if FMenu <> nil then ThemeMenuItems(FMenu.Items);
+  {$ENDIF}
   if FScroll <> nil then
     FScroll.ApplyTheme(clPanelBg,
       BlendColor(clAppFg, clPanelBg, 22),
@@ -1479,10 +1630,10 @@ begin
 end;
 
 procedure TFilePanel.SetEntries(const APath: string;
-  const AEntries: TScpEntryArray);
+  const AEntries: TScpEntryArray; AHasParent: Boolean);
 begin
   SetPathText(APath);
-  FList.SetEntries(AEntries);
+  FList.SetEntries(AEntries, AHasParent);
 end;
 
 procedure TFilePanel.ShowError(const AError: TScpError);

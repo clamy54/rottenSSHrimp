@@ -187,12 +187,17 @@ begin
   x := PAD;
 
   // Sens du transfert, puis etat: deux icones, jamais de texte redondant.
-  if it.Direction = tdUpload then
-    DrawScpIcon(Canvas, Rect(x, AY + 3, x + iconBox, AY + 3 + iconBox),
-      siUpload, clAccent)
+  case it.Direction of
+    tdUpload:
+      DrawScpIcon(Canvas, Rect(x, AY + 3, x + iconBox, AY + 3 + iconBox),
+        siUpload, clAccent);
+    tdDuplicate:
+      DrawScpIcon(Canvas, Rect(x, AY + 3, x + iconBox, AY + 3 + iconBox),
+        siCopy, clAccent);
   else
     DrawScpIcon(Canvas, Rect(x, AY + 3, x + iconBox, AY + 3 + iconBox),
       siDownload, clAccent);
+  end;
   Inc(x, iconBox + PAD);
 
   fg := clAppFg;

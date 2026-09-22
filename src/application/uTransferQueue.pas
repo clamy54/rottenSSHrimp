@@ -17,7 +17,10 @@ uses
   SysUtils, Classes, uScpErrors;
 
 type
-  TTransferDirection = (tdUpload, tdDownload);
+  // tdDuplicate: la source et la destination sont le MEME systeme de
+  // fichiers, le meme dossier meme. Ce n'est ni un envoi ni une reception, et
+  // l'annoncer comme tel dans la file serait mentir sur ce qui circule.
+  TTransferDirection = (tdUpload, tdDownload, tdDuplicate);
 
   // tikMakeDir precede ses enfants: c'est l'ordre d'insertion qui le garantit.
   TTransferItemKind = (tikFile, tikMakeDir);

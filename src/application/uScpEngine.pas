@@ -106,13 +106,15 @@ type
     constructor Create(AQueue: TTransferQueue);
     destructor Destroy; override;
 
-    // Parcourt ASourcePath et remplit la file. Les dossiers sont ajoutes AVANT
-    // leur contenu. Rend False seulement si le parcours lui-meme a echoue; un
-    // enfant refuse produit une note et un element ignore.
+    // Parcourt ASourcePath et remplit la file, dossiers AVANT leur contenu. False
+    // seulement si le parcours a echoue; un enfant refuse donne un element ignore.
+    // ATargetName renomme la RACINE du lot et elle seule, ce qui permet de
+    // dupliquer sur place. Vide = le nom de la source.
     function EnumerateInto(ASrcFs, ADstFs: TScpFileSystem;
       ADirection: TTransferDirection;
       const ASourcePath, ATargetParent, ATargetRoot: string;
-      AMaxDepth: Integer; out AErr: TScpError): Boolean;
+      AMaxDepth: Integer; out AErr: TScpError;
+      const ATargetName: string = ''): Boolean;
 
     // Traite UN element. True s'il s'est termine normalement (Completed ou
     // Skipped); False s'il a echoue ou ete interrompu, son etat dit lequel.
@@ -280,7 +282,8 @@ end;
 function TScpTransferEngine.EnumerateInto(ASrcFs, ADstFs: TScpFileSystem;
   ADirection: TTransferDirection;
   const ASourcePath, ATargetParent, ATargetRoot: string;
-  AMaxDepth: Integer; out AErr: TScpError): Boolean;
+  AMaxDepth: Integer; out AErr: TScpError;
+  const ATargetName: string): Boolean;
 var
   srcEntry: TScpEntry;
   srcName: string;
@@ -439,7 +442,8 @@ var
 
 var
   rootItem: TTransferItem;
-  targetPath, why: string;
+  targetPath, targetName, why: string;
+  v: TNameVerdict;
 begin
   Result := False;
   AErr := NoScpError;
@@ -454,7 +458,22 @@ begin
       DisplaySafeName(srcName), why);
     Exit;
   end;
-  targetPath := ADstFs.Join(ATargetParent, srcName);
+  targetName := srcName;
+  if ATargetName <> '' then
+  begin
+    // Le nom impose passe par les regles de la DESTINATION comme un autre: il
+    // vient d'un calcul, pas d'une garantie.
+    v := ADstFs.CheckName(ATargetName);
+    if v <> nvOk then
+    begin
+      AErr := MakeScpError(sekInvalidName, 'Copying',
+        DisplaySafeName(ATargetName),
+        NameVerdictText(v, DisplaySafeName(ATargetName)));
+      Exit;
+    end;
+    targetName := ATargetName;
+  end;
+  targetPath := ADstFs.Join(ATargetParent, targetName);
   if not ADstFs.IsUnder(ATargetRoot, targetPath) then
   begin
     AErr := MakeScpError(sekOutsideRoot, 'Copying',
@@ -485,13 +504,13 @@ begin
   if srcEntry.IsDir then
   begin
     rootItem := FQueue.Add(ADirection, tikMakeDir, ASourcePath, targetPath,
-      DisplaySafeName(srcName));
+      DisplaySafeName(targetName));
     rootItem.TargetRoot := ATargetRoot;
     rootItem.SourceMode := srcEntry.Mode;
     Exit(Walk(ASourcePath, targetPath, 1));
   end;
   rootItem := FQueue.Add(ADirection, tikFile, ASourcePath, targetPath,
-    DisplaySafeName(srcName));
+    DisplaySafeName(targetName));
   rootItem.TargetRoot := ATargetRoot;
   rootItem.TotalBytes := srcEntry.Size;
   rootItem.SourceTimeUtc := srcEntry.MTimeUtc;

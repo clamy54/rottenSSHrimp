@@ -27,6 +27,17 @@ uses
   uScpIcons;
 
 type
+  // Separateur qui repeint TOUT DE SUITE ce qu'il vient de redimensionner.
+  // Les panneaux suivent la souris, mais pendant un glissement les WM_PAINT
+  // passent APRES les messages de souris: chaque largeur intermediaire reste
+  // a l'ecran et les panneaux se couvrent de trainees. Repeindre de force a
+  // chaque pas ne laisse rien derriere, au prix d'un repeint par mouvement --
+  // deux listes dessinees a la main, cela ne se sent pas.
+  TScpSplitter = class(TSplitter)
+  public
+    procedure MoveSplitter(AOffset: Integer); override;
+  end;
+
   TScpTab = class;
 
   TScpSessionHandle = class(TManagedSession)
@@ -82,8 +93,8 @@ type
     FHeaderInfo: TLabel;
     FBtnReconnect: TButton;
     FBtnClose: TButton;
-    FSplit: TSplitter;
-    FQueueSplit: TSplitter;
+    FSplit: TScpSplitter;
+    FQueueSplit: TScpSplitter;
     FLocalPanel: TFilePanel;
     FRemotePanel: TFilePanel;
     FMiddle: TPanel;
@@ -127,6 +138,7 @@ type
     // ADestDir vide = le dossier affiche en face. Un depot sur un dossier le
     // designe, et il devient la racine de confinement du lot.
     procedure StartTransfer(ASide: TFilePanelSide; const ADestDir: string);
+    procedure StartDuplicate(ASide: TFilePanelSide);
     procedure PanelDrop(ASourceSide: TFilePanelSide; const ASubFolder: string);
     procedure QueueCommand(ACommand: TQueueCommand);
     procedure RefreshTick(Sender: TObject);
@@ -197,6 +209,28 @@ const
   // Assez epais pour se voir et s'attraper a la souris sans etre une
   // bordure: c'est une poignee, pas une decoration.
   SPLITTER_THICKNESS = 7;
+
+// Invalide ET repeint, en descendant: Update ne vaut que pour la fenetre a
+// laquelle il s'adresse, les filles ont la leur.
+procedure RepaintNow(AControl: TWinControl);
+var
+  i: Integer;
+begin
+  if (AControl = nil) or (not AControl.HandleAllocated) then Exit;
+  AControl.Invalidate;
+  AControl.Update;
+  for i := 0 to AControl.ControlCount - 1 do
+    if AControl.Controls[i] is TWinControl then
+      RepaintNow(TWinControl(AControl.Controls[i]));
+end;
+
+{ TScpSplitter }
+
+procedure TScpSplitter.MoveSplitter(AOffset: Integer);
+begin
+  inherited MoveSplitter(AOffset);
+  RepaintNow(Parent);
+end;
 
 { TScpSessionHandle }
 
@@ -459,7 +493,7 @@ begin
   FQueueView.Height := 160;
   FQueueView.OnCommand := @QueueCommand;
 
-  FQueueSplit := TSplitter.Create(Self);
+  FQueueSplit := TScpSplitter.Create(Self);
   FQueueSplit.Parent := Self;
   FQueueSplit.Align := alBottom;
   FQueueSplit.Height := SPLITTER_THICKNESS;
@@ -485,8 +519,9 @@ begin
 
   // Separateur des deux panneaux: peint par nous, donc visible et aux
   // couleurs du theme. Sans OnPaint la LCL y met le motif du systeme, qui
-  // reste clair en theme sombre et ne se voit pas.
-  FSplit := TSplitter.Create(Self);
+  // reste clair en theme sombre et ne se voit pas. TScpSplitter pour le
+  // repeint immediat pendant le glissement.
+  FSplit := TScpSplitter.Create(Self);
   FSplit.Parent := FMiddle;
   FSplit.Align := alLeft;
   // Left explicite: a egalite, la LCL range les alLeft dans l'ordre inverse de
@@ -740,6 +775,15 @@ begin
   case AAction of
     fpaNavigate:
       begin
+        // « .. » remonte. Son nom ne passerait aucune verification, et c'est voulu.
+        if panel.List.FocusedIsParent then
+        begin
+          if ASide = fpsLocal then
+            NavigateTo(ASide, LocalParent(cur), True)
+          else
+            NavigateTo(ASide, RemoteParent(cur), True);
+          Exit;
+        end;
         if not panel.List.FocusedEntry(entry) then Exit;
         // Un lien n'est jamais SUIVI en recursion; y entrer a la main est un choix.
         if not (entry.IsDir or (entry.IsLink and entry.TargetIsDir)) then
@@ -798,6 +842,7 @@ begin
       end;
     fpaRename:
       begin
+        if panel.List.FocusedIsParent then Exit;
         if not panel.List.FocusedEntry(entry) then Exit;
         newName := entry.Name;
         if not InputQuery('Rename',
@@ -849,9 +894,12 @@ begin
       end;
     fpaTransfer:
       StartTransfer(ASide, '');
+    fpaDuplicate:
+      StartDuplicate(ASide);
     fpaCopyPath:
       begin
-        if panel.List.FocusedEntry(entry) then
+        if (not panel.List.FocusedIsParent) and
+           panel.List.FocusedEntry(entry) then
         begin
           if ASide = fpsLocal then
             target := LocalJoin(cur, entry.Name)
@@ -933,6 +981,56 @@ begin
     FTransport.RequestDownload(sources, dest, dest);
   end;
   // « Apply to all » ne vaut que pour son propre lot.
+  FQueue.ClearConflictPolicy;
+  FQueue.ClearSkipKinds;
+  FQueueView.Refresh;
+end;
+
+// Duplication sur place. Le nom libre n'est PAS choisi ici: le dossier peut
+// changer avant l'ecriture, et c'est au fil qui copie de trancher.
+procedure TScpTab.StartDuplicate(ASide: TFilePanelSide);
+var
+  names, sources: TStringArray;
+  cur: string;
+  i, n: Integer;
+begin
+  if FClosing or (FTransport = nil) then Exit;
+  // Meme en local, la copie passe par le fil de la session: il porte le moteur,
+  // la file et les conflits.
+  if FState <> rssConnected then
+  begin
+    Note('Not connected: reconnect before duplicating.');
+    Exit;
+  end;
+  if ASide = fpsLocal then
+  begin
+    names := FLocalPanel.List.SelectedNames;
+    cur := FLocalPath;
+  end
+  else
+  begin
+    names := FRemotePanel.List.SelectedNames;
+    cur := FRemotePath;
+  end;
+  if Length(names) = 0 then
+  begin
+    Note('Select what you want to duplicate first.');
+    Exit;
+  end;
+  n := 0;
+  SetLength(sources, Length(names));
+  for i := 0 to High(names) do
+  begin
+    if CheckRemoteChildName(names[i]) <> nvOk then Continue;
+    if ASide = fpsLocal then
+      sources[n] := LocalJoin(cur, names[i])
+    else
+      sources[n] := RemoteJoin(cur, names[i]);
+    Inc(n);
+  end;
+  SetLength(sources, n);
+  if n = 0 then Exit;
+  FTransport.RequestDuplicate(sources, cur, ASide = fpsRemote);
   FQueue.ClearConflictPolicy;
   FQueue.ClearSkipKinds;
   FQueueView.Refresh;
@@ -1059,7 +1157,8 @@ begin
     Exit;
   end;
   FLocalPanel.ClearError;
-  FLocalPanel.SetEntries(APath, AEntries);
+  FLocalPanel.SetEntries(APath, AEntries,
+    LocalParent(APath) <> LocalNormalize(APath));
   FLocalPanel.List.RestoreView(FLocalSavedSel, FLocalSavedFocus,
     FLocalSavedTop);
 end;
@@ -1105,7 +1204,8 @@ begin
     Exit;
   end;
   FRemotePanel.ClearError;
-  FRemotePanel.SetEntries(APath, AEntries);
+  FRemotePanel.SetEntries(APath, AEntries,
+    RemoteParent(APath) <> RemoteNormalize(APath));
   FRemotePanel.List.RestoreView(FRemoteSavedSel, FRemoteSavedFocus,
     FRemoteSavedTop);
 end;

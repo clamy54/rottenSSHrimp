@@ -96,6 +96,7 @@ type
     sckRemoteDelete,      // fichier ou dossier, recursif si dossier
     sckEnqueueUpload,
     sckEnqueueDownload,
+    sckEnqueueDuplicate,  // copie dans le MEME dossier, sous un autre nom
     sckRunQueue,
     sckRetryFailed,
     sckCleanupPartials,
@@ -111,6 +112,7 @@ type
     Sources: TStringArray;
     TargetDir: string;
     TargetRoot: string;
+    OnRemote: Boolean;    // duplication: de quel cote elle se fait
     Serial: Int64;   // rapproche une reponse de sa demande
   end;
 
@@ -230,6 +232,10 @@ type
       const ARemoteDir, ARemoteRoot: string);
     procedure RequestDownload(const ASources: TStringArray;
       const ALocalDir, ALocalRoot: string);
+    // Duplique dans ADir. Le nom libre est cherche par le thread qui copie: le
+    // calculer ici donnerait une reponse perimee avant l'ecriture.
+    procedure RequestDuplicate(const ASources: TStringArray;
+      const ADir: string; AOnRemote: Boolean);
     procedure RequestRunQueue;
     procedure RequestRetryFailed;
     procedure RequestCleanupPartials;
@@ -1575,6 +1581,20 @@ begin
   PostCommand(c);
 end;
 
+procedure TSftpTransport.RequestDuplicate(const ASources: TStringArray;
+  const ADir: string; AOnRemote: Boolean);
+var
+  c: TSftpCommand;
+begin
+  c := TSftpCommand.Create;
+  c.Kind := sckEnqueueDuplicate;
+  c.Sources := Copy(ASources, 0, Length(ASources));
+  c.TargetDir := ADir;
+  c.TargetRoot := ADir;
+  c.OnRemote := AOnRemote;
+  PostCommand(c);
+end;
+
 procedure TSftpTransport.RequestRunQueue;
 var
   c: TSftpCommand;
@@ -1763,11 +1783,30 @@ begin
     Queue(@PublishQueueChanged);
 end;
 
+// Premier nom de copie libre dans ADir, '' si tous sont pris. La reponse
+// vieillit aussitot: c'est la creation exclusive qui rattrape une collision.
+function FreeCopyName(AFs: TScpFileSystem; const ADir, AName: string): string;
+var
+  i: Integer;
+  candidate: string;
+  found: Boolean;
+  err: TScpError;
+begin
+  Result := '';
+  for i := 1 to 99 do
+  begin
+    candidate := KeepBothCandidate(AName, i);
+    if AFs.CheckName(candidate) <> nvOk then Continue;
+    if not AFs.Exists(AFs.Join(ADir, candidate), found, err) then Exit;
+    if not found then Exit(candidate);
+  end;
+end;
+
 procedure TSftpTransport.RunCommand(ACmd: TSftpCommand);
 var
   entries: TScpEntryArray;
   err: TScpError;
-  path: string;
+  path, copyName: string;
   i: Integer;
   srcFs, dstFs: TScpFileSystem;
   dir: TTransferDirection;
@@ -1865,6 +1904,30 @@ begin
           if Terminated then Break;
           if not FEngine.EnumerateInto(srcFs, dstFs, dir, ACmd.Sources[i],
              ACmd.TargetDir, ACmd.TargetRoot, SCP_MAX_DEPTH, err) then
+            EngineNote(ScpErrorText(err));
+        end;
+        if Assigned(FOnQueueChanged) then
+          Queue(@PublishQueueChanged);
+        DoRunQueue;
+      end;
+    sckEnqueueDuplicate:
+      begin
+        if ACmd.OnRemote then srcFs := FRemote else srcFs := FLocal;
+        for i := 0 to High(ACmd.Sources) do
+        begin
+          if Terminated then Break;
+          copyName := FreeCopyName(srcFs, ACmd.TargetDir,
+            srcFs.BaseName(ACmd.Sources[i]));
+          if copyName = '' then
+          begin
+            EngineNote(Format('No free name left to duplicate %s.',
+              [DisplaySafeName(srcFs.BaseName(ACmd.Sources[i]))]));
+            Continue;
+          end;
+          // Meme systeme des deux cotes: la racine est le dossier de la source.
+          if not FEngine.EnumerateInto(srcFs, srcFs, tdDuplicate,
+             ACmd.Sources[i], ACmd.TargetDir, ACmd.TargetRoot,
+             SCP_MAX_DEPTH, err, copyName) then
             EngineNote(ScpErrorText(err));
         end;
         if Assigned(FOnQueueChanged) then

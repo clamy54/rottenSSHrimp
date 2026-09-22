@@ -103,7 +103,7 @@ scripts/run-tests.sh          # or: powershell -File scripts\run-tests.ps1
 document, its password and a reachable host:
 
 ```sh
-fpc -Mobjfpc -Sh -O1 -Fusrc/util -Fusrc/application -Fusrc/platform     -Fusrc/sessions/ssh -Fusrc/sessions/common -Fusrc/crypto     -Fusrc/storage -Fusrc/domain -Fubindings/libsodium     -Fubindings/libssh2 -Fubindings/libfido2 -Fubindings/sqlite     -Futests -FE. tests/rsshsftpit.lpr
+fpc -Mobjfpc -Sh -O1 -Fusrc/util -Fusrc/application -Fusrc/platform -Fusrc/sessions/ssh -Fusrc/sessions/common -Fusrc/crypto -Fusrc/storage -Fusrc/domain -Fubindings/libsodium -Fubindings/libssh2 -Fubindings/libfido2 -Fubindings/sqlite -Futests -Fu<lazarus>/components/lazutils/lib/$(TargetCPU)-$(TargetOS) -FE. tests/rsshsftpit.lpr
 
 ./rsshsftpit <document.rsh> <password> <host-name-in-the-tree> [--big]
 ```
@@ -111,8 +111,12 @@ fpc -Mobjfpc -Sh -O1 -Fusrc/util -Fusrc/application -Fusrc/platform     -Fusrc/s
 It drives the *same* transport and the *same* engine the Scp tab uses, minus
 the LCL, against a real server: connect, list, round-trip empty, small and
 large files, names with spaces, quotes, accents and a leading dash, a recursive
-tree, the three conflict resolutions, rename, and recursive delete. Every
-downloaded file is compared byte for byte with what was sent.
+tree, duplication in place on both sides, the three conflict resolutions,
+rename, and recursive delete. Every downloaded file is compared byte for byte
+with what was sent.
+
+`uScpPaths` uses `LazUTF8`, so the LazUtils unit path has to be on the command
+line even though nothing here touches the LCL.
 
 It works in a directory it creates in the remote home and removes afterwards.
 `--cleanup` instead of `--big` removes what an interrupted run left behind.
