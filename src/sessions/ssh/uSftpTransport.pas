@@ -1756,15 +1756,14 @@ begin
     if FPaused then Break;
     item := FQueue.NextRunnable;
     if item = nil then Break;
-    if item.Direction = tdUpload then
-    begin
-      srcFs := FLocal;
-      dstFs := FRemote;
-    end
+    // Le sens de l'element, pose a la mise en file, designe les deux systemes de
+    // fichiers: les deduire du chemin laisserait un nom decider ou on ecrit.
+    case item.Direction of
+      tdUpload: begin srcFs := FLocal; dstFs := FRemote; end;
+      tdDownload: begin srcFs := FRemote; dstFs := FLocal; end;
+      tdDuplicateLocal: begin srcFs := FLocal; dstFs := FLocal; end;
     else
-    begin
-      srcFs := FRemote;
-      dstFs := FLocal;
+      begin srcFs := FRemote; dstFs := FRemote; end;
     end;
     // La racine de confinement est posee a la mise en file et ne bouge plus: la
     // rededuire ici donnerait une garantie differente selon la profondeur.
@@ -1912,7 +1911,16 @@ begin
       end;
     sckEnqueueDuplicate:
       begin
-        if ACmd.OnRemote then srcFs := FRemote else srcFs := FLocal;
+        if ACmd.OnRemote then
+        begin
+          srcFs := FRemote;
+          dir := tdDuplicateRemote;
+        end
+        else
+        begin
+          srcFs := FLocal;
+          dir := tdDuplicateLocal;
+        end;
         for i := 0 to High(ACmd.Sources) do
         begin
           if Terminated then Break;
@@ -1925,7 +1933,7 @@ begin
             Continue;
           end;
           // Meme systeme des deux cotes: la racine est le dossier de la source.
-          if not FEngine.EnumerateInto(srcFs, srcFs, tdDuplicate,
+          if not FEngine.EnumerateInto(srcFs, srcFs, dir,
              ACmd.Sources[i], ACmd.TargetDir, ACmd.TargetRoot,
              SCP_MAX_DEPTH, err, copyName) then
             EngineNote(ScpErrorText(err));

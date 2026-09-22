@@ -17,10 +17,11 @@ uses
   SysUtils, Classes, uScpErrors;
 
 type
-  // tdDuplicate: la source et la destination sont le MEME systeme de
-  // fichiers, le meme dossier meme. Ce n'est ni un envoi ni une reception, et
-  // l'annoncer comme tel dans la file serait mentir sur ce qui circule.
-  TTransferDirection = (tdUpload, tdDownload, tdDuplicate);
+  // Le sens designe aussi les deux systemes de fichiers, et rien d'autre ne les
+  // choisit. Une duplication a le meme des deux cotes, d'ou DEUX valeurs:
+  // « ni envoi ni reception » ne dirait pas lequel.
+  TTransferDirection = (tdUpload, tdDownload,
+    tdDuplicateLocal, tdDuplicateRemote);
 
   // tikMakeDir precede ses enfants: c'est l'ordre d'insertion qui le garantit.
   TTransferItemKind = (tikFile, tikMakeDir);

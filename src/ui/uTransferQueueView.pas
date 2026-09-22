@@ -191,7 +191,7 @@ begin
     tdUpload:
       DrawScpIcon(Canvas, Rect(x, AY + 3, x + iconBox, AY + 3 + iconBox),
         siUpload, clAccent);
-    tdDuplicate:
+    tdDuplicateLocal, tdDuplicateRemote:
       DrawScpIcon(Canvas, Rect(x, AY + 3, x + iconBox, AY + 3 + iconBox),
         siCopy, clAccent);
   else
