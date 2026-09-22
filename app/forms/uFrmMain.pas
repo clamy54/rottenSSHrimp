@@ -202,10 +202,12 @@ type
     procedure CredentialManagerClick(Sender: TObject);
     procedure CopySshIdClick(Sender: TObject);
     procedure PingHostClick(Sender: TObject);
+    procedure ScpClick(Sender: TObject);
     procedure TerminalFontClick(Sender: TObject);
     procedure TakeScreenshotClick(Sender: TObject);
     procedure ThemeClick(Sender: TObject);
     procedure ApplyThemeToUi;
+    procedure RefreshScpTabsTheme;
     procedure RebuildTreeImages;
     function SearchFilter: string;
     procedure LogEnabledClick(Sender: TObject);
@@ -269,7 +271,8 @@ uses
   uCrashRecoveryDialog, uThemeLoad, uTermControl, uRdpControl, uVncControl,
   uSshKnownHosts, uHostKeyDialog, uContainerConnect, uContainerDialog,
   uPodConnect, uPodDialog, uSshTunnel, uSshTunnelConnect, uAppPaths,
-  uCredManagerWindow, uSshCopyIdConnect, uSecretClipGuard, LazUTF8;
+  uCredManagerWindow, uSshCopyIdConnect, uSecretClipGuard, uScpConnect,
+  uScpTab, LazUTF8;
 
 function PlatformShortCut(AKey: Word; AShift: Boolean = False): TShortCut;
 var
@@ -2482,6 +2485,9 @@ begin
     except
       on EModelError do ;
     end;
+    // SFTP over SSH, sous le libelle « Scp » qu'attend l'utilisateur.
+    if CanOpenScp(FModel, ref.Uuid) then
+      Add('Scp', @ScpClick);
     Add('-', nil);
     // ssh-copy-id sans terminal, si le credential est une cle geree
     if CanCopySshId(FModel, ref.Uuid) then
@@ -3589,6 +3595,50 @@ begin
   tab.FocusContent;
 end;
 
+// Gestionnaire de fichiers SFTP. Un seul onglet par connexion: le second
+// clic RAMENE le premier plutot que d'ouvrir une deuxieme session vers le
+// meme hote, avec sa deuxieme invite FIDO2 et son deuxieme mot de passe.
+procedure TfrmMain.ScpClick(Sender: TObject);
+var
+  ref: TNodeRef;
+  tab: TScpTab;
+  err: string;
+begin
+  ref := SelectedRef;
+  if (ref = nil) or (ref.Uuid = '') or (ref.Kind <> nkConnection) then Exit;
+  if (FModel = nil) or (FPages = nil) then Exit;
+  if DocCommandsBusy then Exit;
+  if (FDoc <> nil) and FDoc.Locked then Exit;
+
+  tab := ExistingScpTab(FPages, ref.Uuid);
+  if tab <> nil then
+  begin
+    FPages.ActivePage := tab;
+    tab.FocusContent;
+    UpdateSessionUi;
+    Exit;
+  end;
+
+  err := '';
+  // Le tunnel de rebond pompe la boucle de messages: sans ce drapeau, un
+  // second clic repartirait sur un etat a moitie bati.
+  FConnecting := True;
+  try
+    tab := StartScpSession(FPages, FDoc, FModel, FSessions, ref.Uuid,
+      @SessionNotice, err);
+  finally
+    FConnecting := False;
+  end;
+  if tab <> nil then
+  begin
+    tab.OnDestroyed := @SessionTabGone;
+    tab.OnStatusChanged := @SessionStatusChanged;
+  end;
+  if err <> '' then
+    MessageDlg(RSSH_APP_NAME, err, mtError, [mbOK], 0);
+  UpdateSessionUi;
+end;
+
 // Un onglet par hote (uuid de connexion), PING_MAX_TABS au plus. Un hote
 // joint par un bastion n'est pas pingable d'ici: on le dit plutot que
 // d'afficher des pertes qui n'en sont pas.
@@ -3723,7 +3773,22 @@ begin
   if FMenuBar <> nil then
     FMenuBar.RefreshTheme;
   {$ENDIF}
+  // Les onglets Scp sont entierement dessines a la main: ils ne se
+  // recolorent pas tout seuls, et un Invalidate global ne suffit pas a leur
+  // faire relire les polices et les metriques de ligne.
+  RefreshScpTabsTheme;
   Invalidate;
+end;
+
+// Sans perdre l'etat: ni la selection, ni le defilement, ni la file en cours.
+procedure TfrmMain.RefreshScpTabsTheme;
+var
+  i: Integer;
+begin
+  if FPages = nil then Exit;
+  for i := 0 to FPages.PageCount - 1 do
+    if FPages.Pages[i] is TScpTab then
+      TScpTab(FPages.Pages[i]).RefreshTheme;
 end;
 
 procedure TfrmMain.RebuildTreeImages;

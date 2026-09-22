@@ -55,6 +55,24 @@ var
   clTermBg: TColor;
   clTermFg: TColor;
 
+  // Jetons de l'onglet Scp: listes de fichiers, en-tetes, file de transferts.
+  // Un theme externe qui ne les cite pas garde ces defauts, qui sont construits
+  // pour rester lisibles sur les fonds du theme « rotten ».
+  clPanelBg: TColor;
+  clPanelAltRow: TColor;     // ligne alternee, tres proche du fond
+  clPanelHeader: TColor;
+  clPanelHeaderText: TColor;
+  clPanelGrid: TColor;       // filets de separation des colonnes
+  clTextSecondary: TColor;   // taille, date, proprietaire
+  clSelActive: TColor;       // selection dans le panneau qui a le focus
+  clSelInactive: TColor;     // selection dans l'autre panneau
+  clSelText: TColor;
+  clScpOk: TColor;
+  clScpWarn: TColor;
+  clScpErr: TColor;
+  clProgressBar: TColor;
+  clProgressTrack: TColor;
+
 // a appeler apres LoadEmbeddedFonts, avant la creation des fenetres
 procedure ApplyDefaultFonts;
 
@@ -154,5 +172,19 @@ initialization
   clTabDead        := RgbHexToColor($F14C4C);
   clTermBg         := RgbHexToColor($1E1E1E);
   clTermFg         := RgbHexToColor($D4D4D4);
+  clPanelBg        := RgbHexToColor($1E1E1E);
+  clPanelAltRow    := RgbHexToColor($232323);
+  clPanelHeader    := RgbHexToColor($2D2D30);
+  clPanelHeaderText := RgbHexToColor($C8C8C8);
+  clPanelGrid      := RgbHexToColor($333336);
+  clTextSecondary  := RgbHexToColor($9D9D9D);
+  clSelActive      := RgbHexToColor($37414F);
+  clSelInactive    := RgbHexToColor($2E3238);
+  clSelText        := RgbHexToColor($FFFFFF);
+  clScpOk          := RgbHexToColor($8FB84E);
+  clScpWarn        := RgbHexToColor($D7A03A);
+  clScpErr         := RgbHexToColor($F14C4C);
+  clProgressBar    := RgbHexToColor($FB9E6B);
+  clProgressTrack  := RgbHexToColor($3A3A3D);
 
 end.

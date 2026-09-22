@@ -87,6 +87,20 @@ begin
   Reg('tabIconHi', @clTabIconHi);
   Reg('termBg', @clTermBg);
   Reg('termFg', @clTermFg);
+  Reg('panelBg', @clPanelBg);
+  Reg('panelAltRow', @clPanelAltRow);
+  Reg('panelHeader', @clPanelHeader);
+  Reg('panelHeaderText', @clPanelHeaderText);
+  Reg('panelGrid', @clPanelGrid);
+  Reg('textSecondary', @clTextSecondary);
+  Reg('selActive', @clSelActive);
+  Reg('selInactive', @clSelInactive);
+  Reg('selText', @clSelText);
+  Reg('scpOk', @clScpOk);
+  Reg('scpWarn', @clScpWarn);
+  Reg('scpErr', @clScpErr);
+  Reg('progressBar', @clProgressBar);
+  Reg('progressTrack', @clProgressTrack);
 end;
 
 function P(const AKey: string; ARgb: Cardinal): TPair;
@@ -136,7 +150,13 @@ begin
     P('tabStrip', $E4E4E4), P('tabActive', $FFFFFF), P('tabInactive', $DADADA),
     P('tabHover', $EDEDED), P('tabActiveText', $1E1E1E),
     P('tabInactiveText', $6A6A6A), P('tabIcon', $4E8A3A), P('tabIconHi', $3D7A2D),
-    P('termBg', $FBFBFB), P('termFg', $2B2B2B)]);
+    P('termBg', $FBFBFB), P('termFg', $2B2B2B),
+    P('panelBg', $FFFFFF), P('panelAltRow', $F5F5F5),
+    P('panelHeader', $E8E8E8), P('panelHeaderText', $2B2B2B),
+    P('panelGrid', $D8D8D8), P('textSecondary', $6A6A6A),
+    P('selActive', $CFE3FA), P('selInactive', $E2E6EB), P('selText', $101010),
+    P('scpOk', $1F7A1F), P('scpWarn', $9A6A00), P('scpErr', $C42B1C),
+    P('progressBar', $C05A1E), P('progressTrack', $D8D8D8)]);
 
   AddTheme('Nord', '', [
     P('appBg', $2E3440), P('appFg', $D8DEE9), P('accent', $88C0D0),
@@ -149,7 +169,13 @@ begin
     P('tabStrip', $2B303B), P('tabActive', $3B4252), P('tabInactive', $2E3440),
     P('tabHover', $353B49), P('tabActiveText', $ECEFF4),
     P('tabInactiveText', $8893A5), P('tabIcon', $A3BE8C), P('tabIconHi', $B7CE9F),
-    P('termBg', $2E3440), P('termFg', $D8DEE9)]);
+    P('termBg', $2E3440), P('termFg', $D8DEE9),
+    P('panelBg', $2E3440), P('panelAltRow', $333B49),
+    P('panelHeader', $3B4252), P('panelHeaderText', $E5E9F0),
+    P('panelGrid', $434C5E), P('textSecondary', $A6B0C0),
+    P('selActive', $434C5E), P('selInactive', $3A4051), P('selText', $ECEFF4),
+    P('scpOk', $A3BE8C), P('scpWarn', $EBCB8B), P('scpErr', $BF616A),
+    P('progressBar', $88C0D0), P('progressTrack', $3B4252)]);
 end;
 
 function ThemesDir: string;

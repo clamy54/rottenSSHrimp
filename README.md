@@ -94,6 +94,45 @@ Or the firewall whose new rule you tested thoroughly, from the wrong side. Or
 the one remaining machine in that subnet still answering, which you are now
 going to use as a raft.
 
+**Scp.** Right-click an SSH host, *Scp*, and get a two-panel file manager in a
+tab: local on the left, remote on the right, multi-select with Ctrl and Shift,
+recursive upload and download, and a transfer queue that says what it is doing.
+
+The menu says `Scp` because that is the word everyone reaches for. What goes
+over the wire is **SFTP over SSH**, which the tab header states in as many
+words, and there is no silent fallback to the historical SCP protocol. That
+protocol can send a file and receive a file; it cannot list a directory without
+someone parsing the output of `ls` and guessing about locales, spaces and
+quoting, and it has no honest way to cancel a transfer halfway. SFTP runs on
+the same connection, with the same credentials, the same host-key store, the
+same jump host and the same security key, and it can actually answer the
+questions a file manager needs to ask.
+
+The part worth knowing about: **a complete file is never replaced by an
+incomplete one.** Every transfer lands in a temporary file inside the
+destination folder, gets flushed and closed, and only then is renamed over the
+target in one atomic step. Pull the network cable during a 4 GB download and
+the old file is still there, whole, with the partial one sitting next to it
+under a name that says what it is. If the server cannot do an atomic rename --
+some SFTP servers do not offer the OpenSSH extension that makes it possible --
+it says so, explains what the fallback costs, and waits for an answer instead
+of deciding on your behalf.
+
+It also declines to guess in the other direction. A symbolic link is never
+followed during a recursive copy, so a link pointing at `/` cannot turn one
+folder into a copy of the whole disk. Sockets, pipes and devices are refused
+rather than read as files. A remote filename containing a slash, a `..`, an
+ANSI escape sequence or a Windows reserved device name is refused with the
+reason, never quietly renamed into something that would land outside the
+folder you picked. `%2F` stays four characters, because decoding it is how
+that particular hole gets reopened.
+
+And when something does go wrong, it says which thing. Out of space is not
+"access denied", a name collision is not "access denied", and a timestamp that
+could not be restored is a warning on a file that transferred perfectly, not a
+failure that makes you send it again. A batch where six files were skipped
+reports six files skipped; it does not say *Completed*.
+
 **Credentials.** Passwords, private keys, agent auth, and managed keys the
 application generates, rotates, and pushes with a built-in `ssh-copy-id`.
 Private keys go to libssh2 in memory and never touch the disk in plaintext,

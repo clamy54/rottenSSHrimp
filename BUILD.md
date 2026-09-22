@@ -46,6 +46,57 @@ from the FCL, which accumulates into the destination `Word`: a filter with
 negative lobes underflows there, wraps around, and turns every bit of ringing
 into an opaque white pixel. Ask how that was discovered.
 
+### Tests
+
+Two of them, and they answer different questions.
+
+**Unit tests.** No network, no server, no LCL. They cover the layers of the
+Scp tab that can be reasoned about in isolation: path joining, normalisation
+and containment on both platforms, the rules that decide which filenames from a
+server are acceptable to act on, the transfer queue's state machine, and the
+transfer engine driven against fake filesystems that inject access denied,
+disk full, short reads, short writes, premature EOF, lost connections and
+servers with no atomic rename.
+
+```sh
+lazbuild tests/rsshtests.lpi && ./rsshtests
+```
+
+It builds to the repository *root* on purpose: the last suite loads the real
+`libssh2` and checks that every SFTP symbol resolves and that
+`LIBSSH2_SFTP_ATTRIBUTES` has the layout the binding assumes. That record
+starts with an `unsigned long`, which is four bytes on Windows x64 and eight
+everywhere else, followed by a 64-bit integer that has to be aligned. Getting
+it wrong produces no error and no crash: it produces files of several petabytes
+dated 1970. The check runs on whichever platform you are on, which is the only
+place it can mean anything.
+
+Exit code is non-zero if anything fails, so it drops into CI unchanged.
+
+**An SFTP integration scenario.** Not part of any build, because it needs a
+document, its password and a reachable host:
+
+```sh
+fpc -Mobjfpc -Sh -O1 -Fusrc/util -Fusrc/application -Fusrc/platform     -Fusrc/sessions/ssh -Fusrc/sessions/common -Fusrc/crypto     -Fusrc/storage -Fusrc/domain -Fubindings/libsodium     -Fubindings/libssh2 -Fubindings/libfido2 -Fubindings/sqlite     -Futests -FE. tests/rsshsftpit.lpr
+
+./rsshsftpit <document.rsh> <password> <host-name-in-the-tree> [--big]
+```
+
+It drives the *same* transport and the *same* engine the Scp tab uses, minus
+the LCL, against a real server: connect, list, round-trip empty, small and
+large files, names with spaces, quotes, accents and a leading dash, a recursive
+tree, the three conflict resolutions, rename, and recursive delete. Every
+downloaded file is compared byte for byte with what was sent.
+
+It works in a directory it creates in the remote home and removes afterwards.
+`--cleanup` instead of `--big` removes what an interrupted run left behind.
+
+`--big` adds a file of just over 4 GiB, which is the size at which a 32-bit
+counter overflows in silence. It asks the server how much room it has first,
+via `statvfs@openssh.com`, and skips rather than proceed if the answer is not
+comfortable or not available: filling somebody else's disk is not a test
+result. No password or key ever reaches the output or a temporary file.
+
 ---
 
 ## Windows
