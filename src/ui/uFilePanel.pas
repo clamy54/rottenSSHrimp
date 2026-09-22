@@ -34,13 +34,17 @@ type
     fpaNewFolder,
     fpaRename,
     fpaDelete,
-    fpaTransfer,      // F5 ou bouton: envoyer vers l'autre panneau
+    fpaTransfer,      // F5, bouton, ou glisser-deposer: envoyer en face
     fpaCopyPath,
-    fpaReveal,
     fpaFocusOther);
 
   TFilePanelActionEvent = procedure(AAction: TFilePanelAction) of object;
   TFilePathEvent = procedure(const APath: string) of object;
+
+  // Depot venant de l'AUTRE panneau. ASubFolder vide = le dossier affiche;
+  // sinon le dossier survole, qui devient la racine de confinement.
+  TFileDropEvent = procedure(ASourceSide: TFilePanelSide;
+    const ASubFolder: string) of object;
 
   TFileListView = class;
 
@@ -59,6 +63,7 @@ type
     FBusy: TLabel;
     FOnAction: TFilePanelActionEvent;
     FOnNavigate: TFilePathEvent;
+    FOnDrop: TFileDropEvent;
     FVolumePaths: TStringList;
     FHoverButton: Integer;
     FPressedButton: Integer;
@@ -82,6 +87,7 @@ type
     function ButtonHint(AIndex: Integer): string;
     function ButtonAction(AIndex: Integer): TFilePanelAction;
     function ButtonSize: Integer;
+    procedure SetOnDrop(AValue: TFileDropEvent);
   public
     constructor CreateSide(AOwner: TComponent; ASide: TFilePanelSide);
     destructor Destroy; override;
@@ -94,7 +100,6 @@ type
     procedure ShowError(const AError: TScpError);
     procedure ClearError;
     procedure SetBusy(AActive: Boolean; const AText: string);
-    function SelectionCount: Integer;
     procedure SetVolumes(const ACaptions, APaths: array of string);
     procedure SelectVolumeFor(const APath: string);
     procedure FocusList;
@@ -103,6 +108,7 @@ type
     property Side: TFilePanelSide read FSide;
     property OnAction: TFilePanelActionEvent read FOnAction write FOnAction;
     property OnNavigate: TFilePathEvent read FOnNavigate write FOnNavigate;
+    property OnDrop: TFileDropEvent read FOnDrop write SetOnDrop;
   end;
 
   TFileListView = class(TCustomControl, IThemedScrollTarget)
@@ -123,7 +129,14 @@ type
     FOnViewChanged: TNotifyEvent;
     FOnActivate: TNotifyEvent;
     FOnAction: TFilePanelActionEvent;
+    FOnDrop: TFileDropEvent;
     FHoverHeader: Integer;
+    // Le glissement demarre au premier deplacement FRANC, pas au clic: sinon un
+    // clic de selection partirait en glissement.
+    FDragArmed: Boolean;
+    FDragOrigin: TPoint;
+    FDragOver: Boolean;          // un lot venant d'en face survole la liste
+    FDropIndex: Integer;         // ligne visee, -1 = le dossier affiche
 
     function VisibleCount: Integer;
     function RowAt(AY: Integer): Integer;
@@ -142,7 +155,10 @@ type
     procedure KeyDown(var Key: Word; Shift: TShiftState); override;
     procedure MouseDown(Button: TMouseButton; Shift: TShiftState;
       X, Y: Integer); override;
+    procedure MouseUp(Button: TMouseButton; Shift: TShiftState;
+      X, Y: Integer); override;
     procedure MouseMove(Shift: TShiftState; X, Y: Integer); override;
+    procedure DoEndDrag(Target: TObject; X, Y: Integer); override;
     procedure DblClick; override;
     function DoMouseWheel(Shift: TShiftState; WheelDelta: Integer;
       MousePos: TPoint): Boolean; override;
@@ -152,6 +168,12 @@ type
     procedure MouseLeave; override;
   public
     constructor Create(AOwner: TComponent); override;
+
+    // Publiques comme dans TControl: les proteger reduirait la visibilite d'une
+    // methode virtuelle heritee.
+    procedure DragOver(Source: TObject; X, Y: Integer; AState: TDragState;
+      var Accept: Boolean); override;
+    procedure DragDrop(Source: TObject; X, Y: Integer); override;
 
     procedure SetEntries(const AEntries: TScpEntryArray);
     procedure SelectAll;
@@ -167,6 +189,7 @@ type
       const AFocused: string; ATop: Integer);
     procedure SetPanelActive(AValue: Boolean);
     procedure SetSideKind(AValue: TFilePanelSide);
+    property SideKind: TFilePanelSide read FSide;
     procedure RecomputeMetrics;
 
     // IThemedScrollTarget
@@ -180,7 +203,10 @@ type
 
     property OnActivate: TNotifyEvent read FOnActivate write FOnActivate;
     property OnAction: TFilePanelActionEvent read FOnAction write FOnAction;
+    property OnDrop: TFileDropEvent read FOnDrop write FOnDrop;
     property EntryCount: Integer read VisibleCount;
+    property RowHeight: Integer read FRowHeight;
+    property HeaderHeight: Integer read FHeaderHeight;
   end;
 
 implementation
@@ -191,6 +217,9 @@ uses
 const
   PANEL_PAD = 6;
   MIN_ROW_HEIGHT = 18;
+  // Seuil au-dela duquel un clic devient un glissement. Trop bas, la selection
+  // part en glissement au moindre tremblement.
+  DRAG_THRESHOLD = 6;
 
 function FormatStamp(AUnixUtc: Int64): string;
 var
@@ -212,6 +241,7 @@ begin
   FAnchor := -1;
   FSortCol := fscName;
   FHoverHeader := -1;
+  FDropIndex := -1;
   DoubleBuffered := True;
   RecomputeMetrics;
 end;
@@ -578,6 +608,7 @@ var
   fg: TColor;
   s: string;
   r: TRect;
+  drop: Boolean;
 
   procedure Cell(ACol: TFileSortColumn; const AText: string;
     ARightAlign: Boolean; AColor: TColor);
@@ -601,9 +632,14 @@ var
 begin
   e := FEntries[FOrder[AIndex]];
   sel := FSelected[FOrder[AIndex]];
+  drop := FDragOver and (AIndex = FDropIndex);
   r := Rect(0, AY, ClientWidth, AY + FRowHeight);
 
-  if sel then
+  if drop then
+    // Le dossier vise par le lacher, distinct de la selection: l'un dit OU, et
+    // l'autre QUOI.
+    Canvas.Brush.Color := BlendColor(clAccent, clPanelBg, 40)
+  else if sel then
   begin
     if FPanelActive then
       Canvas.Brush.Color := clSelActive
@@ -618,7 +654,14 @@ begin
   Canvas.FillRect(r);
   Canvas.Brush.Style := bsClear;
 
-  if sel then fg := clSelText else fg := EntryColor(e);
+  if drop then
+  begin
+    Canvas.Pen.Color := clAccent;
+    Canvas.Pen.Style := psSolid;
+    Canvas.Rectangle(0, AY, ClientWidth, AY + FRowHeight);
+  end;
+
+  if sel or drop then fg := clSelText else fg := EntryColor(e);
 
   textTop := AY + (FRowHeight - Canvas.TextHeight('Wg')) div 2;
   iconBox := FRowHeight - 4;
@@ -703,6 +746,16 @@ begin
   end;
 
   DrawHeader;
+
+  if FDragOver then
+  begin
+    Canvas.Pen.Color := clAccent;
+    Canvas.Pen.Width := 2;
+    Canvas.Pen.Style := psSolid;
+    Canvas.Brush.Style := bsClear;
+    Canvas.Rectangle(1, 1, ClientWidth - 1, ClientHeight - 1);
+    Canvas.Pen.Width := 1;
+  end;
 end;
 
 procedure TFileListView.KeyDown(var Key: Word; Shift: TShiftState);
@@ -824,6 +877,7 @@ var
 
 begin
   if CanFocus then SetFocus;
+  FDragArmed := False;
   if Y < FHeaderHeight then
   begin
     x0 := 0;
@@ -865,8 +919,17 @@ begin
   else
     SelectSingle(idx);
   SetFocusIndex(idx);
+  FDragArmed := (Button = mbLeft) and (SelectionCount > 0);
+  FDragOrigin := Point(X, Y);
   Invalidate;
   inherited MouseDown(Button, Shift, X, Y);
+end;
+
+procedure TFileListView.MouseUp(Button: TMouseButton; Shift: TShiftState;
+  X, Y: Integer);
+begin
+  FDragArmed := False;
+  inherited MouseUp(Button, Shift, X, Y);
 end;
 
 procedure TFileListView.MouseMove(Shift: TShiftState; X, Y: Integer);
@@ -901,11 +964,92 @@ begin
     FHoverHeader := newHover;
     Invalidate;
   end;
+  if FDragArmed and (ssLeft in Shift) and
+     ((Abs(X - FDragOrigin.X) >= DRAG_THRESHOLD) or
+      (Abs(Y - FDragOrigin.Y) >= DRAG_THRESHOLD)) then
+  begin
+    FDragArmed := False;
+    if SelectionCount > 0 then
+      BeginDrag(True, -1);
+  end;
   inherited MouseMove(Shift, X, Y);
+end;
+
+// Un lot ne se depose que dans l'AUTRE panneau: vers lui-meme ce serait une
+// copie locale, que cet onglet ne fait pas.
+procedure TFileListView.DragOver(Source: TObject; X, Y: Integer;
+  AState: TDragState; var Accept: Boolean);
+var
+  src: TFileListView;
+  idx, newDrop: Integer;
+begin
+  Accept := False;
+  if not (Source is TFileListView) then Exit;
+  src := TFileListView(Source);
+  if (src = Self) or (src.SideKind = FSide) then Exit;
+  if src.SelectionCount = 0 then Exit;
+  Accept := True;
+
+  if AState = dsDragLeave then
+  begin
+    if FDragOver then
+    begin
+      FDragOver := False;
+      FDropIndex := -1;
+      Invalidate;
+    end;
+    Exit;
+  end;
+
+  // Lacher sur un dossier y entre, ailleurs le lot va dans le dossier affiche.
+  // Un lien n'est pas une destination: ecrire au travers sortirait du panneau.
+  newDrop := -1;
+  idx := RowAt(Y);
+  if (idx >= 0) and (idx < Length(FOrder)) then
+    if FEntries[FOrder[idx]].IsDir and (not FEntries[FOrder[idx]].IsLink) then
+      newDrop := idx;
+  if (not FDragOver) or (newDrop <> FDropIndex) then
+  begin
+    FDragOver := True;
+    FDropIndex := newDrop;
+    Invalidate;
+  end;
+end;
+
+procedure TFileListView.DragDrop(Source: TObject; X, Y: Integer);
+var
+  src: TFileListView;
+  sub: string;
+begin
+  sub := '';
+  if (FDropIndex >= 0) and (FDropIndex < Length(FOrder)) then
+    sub := FEntries[FOrder[FDropIndex]].Name;
+  FDragOver := False;
+  FDropIndex := -1;
+  Invalidate;
+  if not (Source is TFileListView) then Exit;
+  src := TFileListView(Source);
+  if (src.SideKind <> FSide) and Assigned(FOnDrop) then
+    FOnDrop(src.SideKind, sub);
+end;
+
+// Appele sur la SOURCE, quelle que soit la fin: lacher, Echap ou perte du
+// focus.
+procedure TFileListView.DoEndDrag(Target: TObject; X, Y: Integer);
+begin
+  FDragArmed := False;
+  if FDragOver then
+  begin
+    FDragOver := False;
+    FDropIndex := -1;
+    Invalidate;
+  end;
+  inherited DoEndDrag(Target, X, Y);
 end;
 
 procedure TFileListView.MouseLeave;
 begin
+  FDragArmed := False;
   if FHoverHeader <> -1 then
   begin
     FHoverHeader := -1;
@@ -1021,13 +1165,18 @@ begin
   topRow.ParentColor := False;
   topRow.Height := 30;
 
-  FVolumeBox := TComboBox.Create(Self);
-  FVolumeBox.Parent := topRow;
-  FVolumeBox.Align := alLeft;
-  FVolumeBox.Width := 170;
-  FVolumeBox.Style := csDropDownList;
-  FVolumeBox.BorderSpacing.Around := 3;
-  FVolumeBox.OnChange := @VolumeSelected;
+  // Selecteur de volumes cote LOCAL seulement: un serveur POSIX n'a qu'une
+  // arborescence.
+  if ASide = fpsLocal then
+  begin
+    FVolumeBox := TComboBox.Create(Self);
+    FVolumeBox.Parent := topRow;
+    FVolumeBox.Align := alLeft;
+    FVolumeBox.Width := 170;
+    FVolumeBox.Style := csDropDownList;
+    FVolumeBox.BorderSpacing.Around := 3;
+    FVolumeBox.OnChange := @VolumeSelected;
+  end;
 
   FPathEdit := TEdit.Create(Self);
   FPathEdit.Parent := topRow;
@@ -1084,9 +1233,17 @@ begin
   FList.Align := alClient;
   FList.SetSideKind(ASide);
   FList.OnActivate := @ListActivate;
+  FList.OnDrop := FOnDrop;
   FScroll.Bind(FList);
 
   ApplyTheme;
+end;
+
+procedure TFilePanel.SetOnDrop(AValue: TFileDropEvent);
+begin
+  FOnDrop := AValue;
+  if FList <> nil then
+    FList.OnDrop := AValue;
 end;
 
 destructor TFilePanel.Destroy;
@@ -1127,7 +1284,7 @@ end;
 
 function TFilePanel.ButtonCount: Integer;
 begin
-  if FSide = fpsLocal then Result := 8 else Result := 7;
+  Result := 8;
 end;
 
 function TFilePanel.ButtonIcon(AIndex: Integer): TScpIcon;
@@ -1140,7 +1297,7 @@ begin
     4: Result := siRefresh;
     5: Result := siNewFolder;
     6: Result := siCopy;
-    7: Result := siReveal;
+    7: if FSide = fpsLocal then Result := siUpload else Result := siDownload;
   else
     Result := siNone;
   end;
@@ -1156,7 +1313,10 @@ begin
     4: Result := 'Refresh';
     5: Result := 'New folder';
     6: Result := 'Copy full path';
-    7: Result := 'Open in file manager';
+    7: if FSide = fpsLocal then
+         Result := 'Upload the selection to the remote panel (F5)'
+       else
+         Result := 'Download the selection to the local panel (F5)';
   else
     Result := '';
   end;
@@ -1173,7 +1333,7 @@ begin
     5: Result := fpaNewFolder;
     6: Result := fpaCopyPath;
   else
-    Result := fpaReveal;
+    Result := fpaTransfer;
   end;
 end;
 
@@ -1290,7 +1450,7 @@ var
   i: Integer;
 begin
   // Sans ce drapeau, repositionner le selecteur relancerait une navigation.
-  if FSuppressVolumeEvent then Exit;
+  if FSuppressVolumeEvent or (FVolumeBox = nil) then Exit;
   i := FVolumeBox.ItemIndex;
   if (i < 0) or (i >= FVolumePaths.Count) then Exit;
   if Assigned(FOnNavigate) then
@@ -1325,11 +1485,6 @@ begin
   FList.SetEntries(AEntries);
 end;
 
-function TFilePanel.SelectionCount: Integer;
-begin
-  Result := FList.SelectionCount;
-end;
-
 procedure TFilePanel.ShowError(const AError: TScpError);
 begin
   if AError.Kind = sekNone then
@@ -1357,6 +1512,7 @@ procedure TFilePanel.SetVolumes(const ACaptions, APaths: array of string);
 var
   i: Integer;
 begin
+  if FVolumeBox = nil then Exit;   // panneau distant: pas de volumes
   FSuppressVolumeEvent := True;
   try
     FVolumeBox.Items.BeginUpdate;
@@ -1380,6 +1536,7 @@ procedure TFilePanel.SelectVolumeFor(const APath: string);
 var
   i, best, bestLen: Integer;
 begin
+  if FVolumeBox = nil then Exit;
   best := -1;
   bestLen := 0;
   // Le volume RETENU est le plus SPECIFIQUE qui contienne le chemin: sinon

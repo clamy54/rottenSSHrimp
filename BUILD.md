@@ -87,6 +87,12 @@ and an owner-drawn panel that measures text before it has a parent window
 raises inside its own constructor -- which is visible only when the tab is
 opened. It opens a window briefly, so it needs a graphical session.
 
+It also checks the rules of the drag between the two panels, which is the part
+that decides where files get written: a panel refuses its own selection,
+accepts the other one's, and resolves a drop to the folder under the cursor --
+never to a file, and never to a symlink. `--shot <file.png>` saves an image of
+the window, because a layout is not something you read in the source.
+
 Both test scripts run it after the unit tests:
 
 ```sh

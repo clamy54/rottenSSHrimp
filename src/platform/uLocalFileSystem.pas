@@ -15,7 +15,7 @@ interface
 
 uses
   SysUtils, Classes, uScpBackend, uScpErrors, uScpPaths
-  {$IFDEF WINDOWS}, Windows, ShellApi{$ELSE}, BaseUnix, Unix{$ENDIF};
+  {$IFDEF WINDOWS}, Windows{$ELSE}, BaseUnix, Unix{$ENDIF};
 
 type
   TLocalVolumeKind = (lvkFixed, lvkRemovable, lvkNetwork, lvkOptical,
@@ -92,10 +92,6 @@ type
 // l'erreur survient.
 function EnumerateLocalVolumes: TLocalVolumeArray;
 function LocalHomePath: string;
-// Ouvre un dossier dans l'explorateur du systeme. Jamais par une ligne de
-// commande construite a partir d'un chemin: le chemin est passe comme
-// parametre a une API, pas a un shell.
-function RevealInFileManager(const APath: string): Boolean;
 
 implementation
 
@@ -1132,48 +1128,6 @@ begin
   {$IFDEF DARWIN}
   ScanVolumes;
   {$ENDIF}
-end;
-{$ENDIF}
-
-function RevealInFileManager(const APath: string): Boolean;
-{$IFDEF WINDOWS}
-begin
-  // Le chemin passe en PARAMETRE d'une API, jamais dans une ligne de commande
-  // assemblee: un dossier nomme « a & del c:\ » n'a alors rien a interpreter.
-  Result := ShellExecuteW(0, 'open', PWideChar(W(LocalNormalize(APath))),
-    nil, nil, SW_SHOWNORMAL) > 32;
-end;
-{$ELSE}
-var
-  pid: TPid;
-  argv: array[0..2] of PChar;
-  cmd: string;
-  pathCopy: string;
-begin
-  {$IFDEF DARWIN}
-  cmd := '/usr/bin/open';
-  {$ELSE}
-  cmd := '/usr/bin/xdg-open';
-  if not FileExists(cmd) then
-    cmd := '/bin/xdg-open';
-  {$ENDIF}
-  if not FileExists(cmd) then Exit(False);
-  pathCopy := LocalNormalize(APath);
-  // fork + execv: pas de shell dans la chaine, donc rien a echapper et rien
-  // a mal echapper. Le chemin est un argv[1], pas un morceau de commande.
-  pid := fpFork;
-  if pid < 0 then Exit(False);
-  if pid = 0 then
-  begin
-    argv[0] := PChar(cmd);
-    argv[1] := PChar(pathCopy);
-    argv[2] := nil;
-    fpExecv(PChar(cmd), @argv[0]);
-    // execv n'a pas rendu la main: le processus fils doit mourir sans
-    // executer le code de l'application.
-    fpExit(127);
-  end;
-  Result := True;
 end;
 {$ENDIF}
 

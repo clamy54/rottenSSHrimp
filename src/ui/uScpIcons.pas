@@ -290,15 +290,17 @@ begin
       end;
     siUpload:
       begin
-        // Fleche vers la DROITE: le distant est a droite, et l'icone doit
-        // dire ou va le fichier, pas « en haut » dans l'abstrait.
-        Line(A, 3, 12, 15, 12);
-        FillPoly(A, [P(20, 12), P(13, 6.5), P(13, 17.5)]);
+        // Fleche vers la DROITE contre une butee: le distant est a droite, et la
+        // butee la distingue de la fleche de navigation, dans la meme barre.
+        Line(A, 20, 5, 20, 19);
+        Line(A, 3, 12, 12, 12);
+        FillPoly(A, [P(17, 12), P(11, 7), P(11, 17)]);
       end;
     siDownload:
       begin
-        Line(A, 21, 12, 9, 12);
-        FillPoly(A, [P(4, 12), P(11, 6.5), P(11, 17.5)]);
+        Line(A, 4, 5, 4, 19);
+        Line(A, 21, 12, 12, 12);
+        FillPoly(A, [P(7, 12), P(13, 7), P(13, 17)]);
       end;
     siPause:
       begin

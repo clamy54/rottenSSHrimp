@@ -87,9 +87,6 @@ type
     FLocalPanel: TFilePanel;
     FRemotePanel: TFilePanel;
     FMiddle: TPanel;
-    FCenterBar: TPanel;
-    FBtnUpload: TButton;
-    FBtnDownload: TButton;
     FQueueView: TTransferQueueView;
     FNotices: TLabel;
 
@@ -122,14 +119,15 @@ type
       APushHistory: Boolean);
     procedure RefreshSide(ASide: TFilePanelSide);
     procedure CaptureSide(ASide: TFilePanelSide);
-    procedure UpdateTransferButtons;
     procedure WaitForPartialCleanup;
 
-    procedure UploadClick(Sender: TObject);
-    procedure DownloadClick(Sender: TObject);
     procedure ReconnectClick(Sender: TObject);
     procedure CloseClick(Sender: TObject);
-    procedure StartTransfer(ASide: TFilePanelSide);
+    procedure SplitterPaint(Sender: TObject);
+    // ADestDir vide = le dossier affiche en face. Un depot sur un dossier le
+    // designe, et il devient la racine de confinement du lot.
+    procedure StartTransfer(ASide: TFilePanelSide; const ADestDir: string);
+    procedure PanelDrop(ASourceSide: TFilePanelSide; const ASubFolder: string);
     procedure QueueCommand(ACommand: TQueueCommand);
     procedure RefreshTick(Sender: TObject);
 
@@ -196,6 +194,9 @@ const
   // Delai laisse au transport pour retirer ses temporaires: un aller-retour
   // SFTP, pas de quoi figer une fermeture.
   PARTIAL_CLEANUP_GRACE_MS = 5000;
+  // Assez epais pour se voir et s'attraper a la souris sans etre une
+  // bordure: c'est une poignee, pas une decoration.
+  SPLITTER_THICKNESS = 7;
 
 { TScpSessionHandle }
 
@@ -461,8 +462,10 @@ begin
   FQueueSplit := TSplitter.Create(Self);
   FQueueSplit.Parent := Self;
   FQueueSplit.Align := alBottom;
-  FQueueSplit.Height := 5;
+  FQueueSplit.Height := SPLITTER_THICKNESS;
   FQueueSplit.MinSize := 60;
+  FQueueSplit.ResizeStyle := rsUpdate;
+  FQueueSplit.OnPaint := @SplitterPaint;
 
   FMiddle := TPanel.Create(Self);
   FMiddle.Parent := Self;
@@ -477,46 +480,30 @@ begin
   FLocalPanel.Width := 480;
   FLocalPanel.OnAction := @LocalAction;
   FLocalPanel.OnNavigate := @LocalNavigate;
+  FLocalPanel.OnDrop := @PanelDrop;
   FLocalPanel.List.OnAction := @LocalAction;
 
+  // Separateur des deux panneaux: peint par nous, donc visible et aux
+  // couleurs du theme. Sans OnPaint la LCL y met le motif du systeme, qui
+  // reste clair en theme sombre et ne se voit pas.
   FSplit := TSplitter.Create(Self);
   FSplit.Parent := FMiddle;
   FSplit.Align := alLeft;
-  FSplit.Width := 5;
+  // Left explicite: a egalite, la LCL range les alLeft dans l'ordre inverse de
+  // leur creation, et le separateur se collait au bord gauche.
+  FSplit.Left := FLocalPanel.Left + FLocalPanel.Width;
+  FSplit.Width := SPLITTER_THICKNESS;
   FSplit.MinSize := 220;
+  FSplit.ResizeStyle := rsUpdate;
+  FSplit.OnPaint := @SplitterPaint;
 
-  // La barre centrale doit rester visible quel que soit le partage: elle est
-  // posee sur le panneau distant, cote gauche.
   FRemotePanel := TFilePanel.CreateSide(Self, fpsRemote);
   FRemotePanel.Parent := FMiddle;
   FRemotePanel.Align := alClient;
   FRemotePanel.OnAction := @RemoteAction;
   FRemotePanel.OnNavigate := @RemoteNavigate;
+  FRemotePanel.OnDrop := @PanelDrop;
   FRemotePanel.List.OnAction := @RemoteAction;
-
-  FCenterBar := TPanel.Create(Self);
-  FCenterBar.Parent := FMiddle;
-  FCenterBar.Align := alLeft;
-  FCenterBar.Width := 128;
-  FCenterBar.BevelOuter := bvNone;
-  FCenterBar.ParentBackground := False;
-  FCenterBar.ParentColor := False;
-
-  FBtnUpload := TButton.Create(Self);
-  FBtnUpload.Parent := FCenterBar;
-  FBtnUpload.Align := alTop;
-  FBtnUpload.Height := 30;
-  FBtnUpload.Caption := 'Upload ->';
-  FBtnUpload.BorderSpacing.Around := 6;
-  FBtnUpload.OnClick := @UploadClick;
-
-  FBtnDownload := TButton.Create(Self);
-  FBtnDownload.Parent := FCenterBar;
-  FBtnDownload.Align := alTop;
-  FBtnDownload.Height := 30;
-  FBtnDownload.Caption := '<- Download';
-  FBtnDownload.BorderSpacing.Around := 6;
-  FBtnDownload.OnClick := @DownloadClick;
 
   FRefreshTimer := TTimer.Create(Self);
   FRefreshTimer.Interval := REFRESH_DEBOUNCE_MS;
@@ -532,7 +519,8 @@ begin
   if FHeader <> nil then FHeader.Color := clPanelHeader;
   if FHeaderInfo <> nil then FHeaderInfo.Font.Color := clPanelHeaderText;
   if FMiddle <> nil then FMiddle.Color := clAppBg;
-  if FCenterBar <> nil then FCenterBar.Color := clAppBg;
+  if FSplit <> nil then FSplit.Invalidate;
+  if FQueueSplit <> nil then FQueueSplit.Invalidate;
   if FNotices <> nil then FNotices.Font.Color := clTextSecondary;
   if FLocalPanel <> nil then FLocalPanel.ApplyTheme;
   if FRemotePanel <> nil then FRemotePanel.ApplyTheme;
@@ -550,7 +538,6 @@ begin
   // ne se distingue, et F5 n'a pas de sens defini.
   FLocalPanel.List.SetPanelActive(True);
   FRemotePanel.List.SetPanelActive(False);
-  UpdateTransferButtons;
   NavigateTo(fpsLocal, LocalHomePath, True);
   UpdateHeader;
 end;
@@ -600,18 +587,6 @@ begin
   if (FState = rssFailed) and (FErrorMsg <> '') then
     FHeaderInfo.Caption := FHeaderInfo.Caption + '  •  ' + FErrorMsg;
   FBtnReconnect.Enabled := FState in [rssFailed, rssDisconnected];
-end;
-
-// Un bouton actif qui ne ferait rien est un bouton qui ment: ils suivent la
-// selection et l'etat de la connexion.
-procedure TScpTab.UpdateTransferButtons;
-var
-  live: Boolean;
-begin
-  if FClosing or (FBtnUpload = nil) then Exit;
-  live := FState = rssConnected;
-  FBtnUpload.Enabled := live and (FLocalPanel.SelectionCount > 0);
-  FBtnDownload.Enabled := live and (FRemotePanel.SelectionCount > 0);
 end;
 
 procedure TScpTab.Note(const AText: string);
@@ -761,7 +736,6 @@ begin
   end;
   FLocalPanel.List.SetPanelActive(ASide = fpsLocal);
   FRemotePanel.List.SetPanelActive(ASide = fpsRemote);
-  UpdateTransferButtons;
 
   case AAction of
     fpaNavigate:
@@ -874,7 +848,7 @@ begin
         end;
       end;
     fpaTransfer:
-      StartTransfer(ASide);
+      StartTransfer(ASide, '');
     fpaCopyPath:
       begin
         if panel.List.FocusedEntry(entry) then
@@ -889,12 +863,6 @@ begin
         Clipboard.AsText := target;
         Note('Path copied to the clipboard.');
       end;
-    fpaReveal:
-      if ASide = fpsLocal then
-      begin
-        if not RevealInFileManager(FLocalPath) then
-          Note('The system file manager could not be opened.');
-      end;
     fpaFocusOther:
       if ASide = fpsLocal then
         FRemotePanel.FocusList
@@ -905,10 +873,11 @@ end;
 
 // --- Transferts -----------------------------------------------------------
 
-procedure TScpTab.StartTransfer(ASide: TFilePanelSide);
+procedure TScpTab.StartTransfer(ASide: TFilePanelSide; const ADestDir: string);
 var
   names: TStringArray;
   sources: TStringArray;
+  dest: string;
   i, n: Integer;
 begin
   if FClosing or (FTransport = nil) then Exit;
@@ -920,7 +889,11 @@ begin
   if ASide = fpsLocal then
   begin
     names := FLocalPanel.List.SelectedNames;
-    if Length(names) = 0 then Exit;
+    if Length(names) = 0 then
+    begin
+      Note('Select what you want to send first.');
+      Exit;
+    end;
     n := 0;
     SetLength(sources, Length(names));
     for i := 0 to High(names) do
@@ -931,14 +904,20 @@ begin
     end;
     SetLength(sources, n);
     if n = 0 then Exit;
-    // La RACINE de confinement est le dossier distant affiche: rien de ce
-    // lot ne pourra etre ecrit en dehors.
-    FTransport.RequestUpload(sources, FRemotePath, FRemotePath);
+    dest := ADestDir;
+    if dest = '' then dest := FRemotePath;
+    // La RACINE de confinement est le dossier distant VISE: rien de ce lot
+    // ne pourra etre ecrit en dehors.
+    FTransport.RequestUpload(sources, dest, dest);
   end
   else
   begin
     names := FRemotePanel.List.SelectedNames;
-    if Length(names) = 0 then Exit;
+    if Length(names) = 0 then
+    begin
+      Note('Select what you want to fetch first.');
+      Exit;
+    end;
     n := 0;
     SetLength(sources, Length(names));
     for i := 0 to High(names) do
@@ -949,7 +928,9 @@ begin
     end;
     SetLength(sources, n);
     if n = 0 then Exit;
-    FTransport.RequestDownload(sources, FLocalPath, FLocalPath);
+    dest := ADestDir;
+    if dest = '' then dest := FLocalPath;
+    FTransport.RequestDownload(sources, dest, dest);
   end;
   // « Apply to all » ne vaut que pour son propre lot.
   FQueue.ClearConflictPolicy;
@@ -957,14 +938,63 @@ begin
   FQueueView.Refresh;
 end;
 
-procedure TScpTab.UploadClick(Sender: TObject);
+// Un lot depose va dans le dossier survole, sinon dans celui qui est affiche.
+// Le nom repasse par les regles de la DESTINATION avant de servir de chemin.
+procedure TScpTab.PanelDrop(ASourceSide: TFilePanelSide;
+  const ASubFolder: string);
+var
+  dest: string;
 begin
-  StartTransfer(fpsLocal);
+  if FClosing then Exit;
+  if ASourceSide = fpsLocal then
+  begin
+    dest := FRemotePath;
+    if ASubFolder <> '' then
+    begin
+      if CheckRemoteChildName(ASubFolder) <> nvOk then Exit;
+      dest := RemoteJoin(FRemotePath, ASubFolder);
+    end;
+  end
+  else
+  begin
+    dest := FLocalPath;
+    if ASubFolder <> '' then
+    begin
+      if CheckLocalName(ASubFolder) <> nvOk then Exit;
+      dest := LocalJoin(FLocalPath, ASubFolder);
+    end;
+  end;
+  StartTransfer(ASourceSide, dest);
 end;
 
-procedure TScpTab.DownloadClick(Sender: TObject);
+// Le separateur est peint a la main pour rester lisible en theme sombre: une
+// barre pleine, et trois points au milieu qui disent qu'elle se prend.
+procedure TScpTab.SplitterPaint(Sender: TObject);
+var
+  sp: TSplitter;
+  cv: TCanvas;
+  r: TRect;
+  i, cx, cy: Integer;
+  vertical: Boolean;
 begin
-  StartTransfer(fpsRemote);
+  if not (Sender is TSplitter) then Exit;
+  sp := TSplitter(Sender);
+  cv := sp.Canvas;
+  r := sp.ClientRect;
+  cv.Brush.Color := BlendColor(clAppFg, clAppBg, 30);
+  cv.Brush.Style := bsSolid;
+  cv.FillRect(r);
+
+  vertical := sp.Align in [alLeft, alRight];
+  cx := (r.Left + r.Right) div 2;
+  cy := (r.Top + r.Bottom) div 2;
+  cv.Brush.Color := BlendColor(clAppFg, clAppBg, 70);
+  for i := -1 to 1 do
+    if vertical then
+      cv.FillRect(Rect(cx - 1, cy + i * 8 - 1, cx + 1, cy + i * 8 + 1))
+    else
+      cv.FillRect(Rect(cx + i * 8 - 1, cy - 1, cx + i * 8 + 1, cy + 1));
+  cv.Brush.Style := bsClear;
 end;
 
 procedure TScpTab.QueueCommand(ACommand: TQueueCommand);
@@ -1032,7 +1062,6 @@ begin
   FLocalPanel.SetEntries(APath, AEntries);
   FLocalPanel.List.RestoreView(FLocalSavedSel, FLocalSavedFocus,
     FLocalSavedTop);
-  UpdateTransferButtons;
 end;
 
 procedure TScpTab.LocalOpDone(const AError: TScpError);
@@ -1079,7 +1108,6 @@ begin
   FRemotePanel.SetEntries(APath, AEntries);
   FRemotePanel.List.RestoreView(FRemoteSavedSel, FRemoteSavedFocus,
     FRemoteSavedTop);
-  UpdateTransferButtons;
 end;
 
 procedure TScpTab.RemoteHomeReady(const APath: string;
@@ -1107,7 +1135,6 @@ procedure TScpTab.TransportQueueChanged;
 begin
   if FClosing then Exit;
   FQueueView.Refresh;
-  UpdateTransferButtons;
   if FQueue.IsFinished then
   begin
     RefreshSide(fpsLocal);
@@ -1128,7 +1155,6 @@ begin
   FEverConnected := True;
   UpdateCaption;
   UpdateHeader;
-  UpdateTransferButtons;
   FTransport.RequestHome;
 end;
 
