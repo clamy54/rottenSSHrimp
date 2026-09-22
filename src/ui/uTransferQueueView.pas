@@ -132,9 +132,9 @@ end;
 
 procedure TQueueListView.RecomputeMetrics;
 begin
-  Canvas.Font.Name := RSUiFontName;
+  if RSUiFontName <> '' then Canvas.Font.Name := RSUiFontName;
   if RSUiFontSize > 0 then Canvas.Font.Size := RSUiFontSize;
-  FRowHeight := Canvas.TextHeight('Wg') + 8;
+  FRowHeight := UiTextHeight('Wg') + 8;
   if FRowHeight < 20 then FRowHeight := 20;
 end;
 

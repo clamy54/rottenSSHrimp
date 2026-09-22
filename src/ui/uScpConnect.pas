@@ -80,7 +80,7 @@ function StartScpSession(APages: TPageControl; ADoc: TRshDocument;
   AModel: TRshModel; AManager: TSessionManager; const AConnUuid: string;
   ANotice: TSessionNoticeEvent; out AErr: string): TScpTab;
 var
-  params: TSshConnectParams;
+  params, handed: TSshConnectParams;
   tab: TScpTab;
   displayName, jumpUuid: string;
   tun: TSshTunnel;
@@ -121,9 +121,12 @@ begin
         ANotice(Format('%s: Scp via the SSH jump host.', [displayName]));
     end;
 
+    // La propriete passe a l'onglet DES l'appel: si le constructeur echoue c'est
+    // lui qui libere, et un params.Free ici libererait une seconde fois.
+    handed := params;
+    params := nil;
     tab := TScpTab.CreateSession(APages, ADoc, AManager, displayName,
-      AConnUuid, params);
-    params := nil;         // possede par l'onglet desormais
+      AConnUuid, handed);
     tab.AttachTunnel(tun, broker);
     tun := nil;
     broker := nil;
@@ -132,7 +135,7 @@ begin
     tab.Start;
     Result := tab;
   finally
-    params.Free;           // nil si l'onglet l'a prise
+    params.Free;           // nil des que l'onglet l'a prise
     if tun <> nil then begin tun.Shutdown; tun.Free; end;
     broker.Free;
   end;

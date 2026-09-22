@@ -86,6 +86,14 @@ function RgbHexToColor(ARgb: Cardinal): TColor;
 // APct % de A, le reste de B
 function BlendColor(A, B: TColor; APct: Integer): TColor;
 
+// Hauteur d'une ligne de texte dans la police d'interface, SANS handle de
+// fenetre. Le Canvas d'un controle exige un parent: le mesurer depuis un
+// constructeur, avant que le controle soit pose, leve « Control has no parent
+// window ». La mesure se fait donc sur un bitmap hors ecran, qui donne les
+// memes metriques et n'a besoin de personne.
+function UiTextHeight(const ASample: string): Integer;
+function UiTextWidth(const ASample: string): Integer;
+
 implementation
 
 uses
@@ -121,6 +129,41 @@ begin
     RSUiFontName := '';
     RSTerminalFontName := '';
   end;
+end;
+
+// Canvas hors ecran pret a mesurer, a la police d'interface courante. Le
+// bitmap est garde: LayoutColumns mesure a chaque redimensionnement, et en
+// recreer un par appel ferait defiler les objets GDI pendant un glisser.
+// Thread UI uniquement, comme tout ce qui dessine.
+var
+  GMeasureBmp: TBitmap = nil;
+
+function MeasureCanvas: TCanvas;
+begin
+  if GMeasureBmp = nil then
+  begin
+    GMeasureBmp := TBitmap.Create;
+    GMeasureBmp.SetSize(1, 1);
+  end;
+  if RSUiFontName <> '' then
+    GMeasureBmp.Canvas.Font.Name := RSUiFontName;
+  if RSUiFontSize > 0 then
+    GMeasureBmp.Canvas.Font.Size := RSUiFontSize;
+  Result := GMeasureBmp.Canvas;
+end;
+
+function UiTextHeight(const ASample: string): Integer;
+begin
+  Result := MeasureCanvas.TextHeight(ASample);
+  if Result < 1 then
+    Result := 1;
+end;
+
+function UiTextWidth(const ASample: string): Integer;
+begin
+  Result := MeasureCanvas.TextWidth(ASample);
+  if Result < 0 then
+    Result := 0;
 end;
 
 procedure ApplyUiFont(AControl: TControl);
@@ -186,5 +229,8 @@ initialization
   clScpErr         := RgbHexToColor($F14C4C);
   clProgressBar    := RgbHexToColor($FB9E6B);
   clProgressTrack  := RgbHexToColor($3A3A3D);
+
+finalization
+  GMeasureBmp.Free;
 
 end.

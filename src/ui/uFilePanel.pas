@@ -218,9 +218,9 @@ end;
 
 procedure TFileListView.RecomputeMetrics;
 begin
-  Canvas.Font.Name := RSUiFontName;
+  if RSUiFontName <> '' then Canvas.Font.Name := RSUiFontName;
   if RSUiFontSize > 0 then Canvas.Font.Size := RSUiFontSize;
-  FRowHeight := Canvas.TextHeight('Wg') + 6;
+  FRowHeight := UiTextHeight('Wg') + 6;
   if FRowHeight < MIN_ROW_HEIGHT then FRowHeight := MIN_ROW_HEIGHT;
   FHeaderHeight := FRowHeight + 2;
   LayoutColumns;
@@ -237,7 +237,7 @@ var
   avail, fixed: Integer;
   charW: Integer;
 begin
-  charW := Canvas.TextWidth('0');
+  charW := UiTextWidth('0');
   if charW < 4 then charW := 7;
   FColWidths[fscSize] := charW * 11;
   FColWidths[fscModified] := charW * 17;

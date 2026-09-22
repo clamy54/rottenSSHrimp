@@ -48,7 +48,7 @@ into an opaque white pixel. Ask how that was discovered.
 
 ### Tests
 
-Two of them, and they answer different questions.
+Three of them, and they answer different questions.
 
 **Unit tests.** No network, no server, no LCL. They cover the layers of the
 Scp tab that can be reasoned about in isolation: path joining, normalisation
@@ -72,6 +72,26 @@ dated 1970. The check runs on whichever platform you are on, which is the only
 place it can mean anything.
 
 Exit code is non-zero if anything fails, so it drops into CI unchanged.
+
+**A smoke test of the Scp tab.** A separate project because it needs the LCL,
+which the unit tests deliberately do not:
+
+```sh
+lazbuild tests/rsshscpsmoke.lpi && ./rsshscpsmoke
+```
+
+It builds the tab, shows it, lets it paint, starts its three threads against a
+port where nothing is listening, then shuts it down and frees it. Nothing
+leaves the machine. It exists because none of the unit tests touch a control,
+and an owner-drawn panel that measures text before it has a parent window
+raises inside its own constructor -- which is visible only when the tab is
+opened. It opens a window briefly, so it needs a graphical session.
+
+Both test scripts run it after the unit tests:
+
+```sh
+scripts/run-tests.sh          # or: powershell -File scripts\run-tests.ps1
+```
 
 **An SFTP integration scenario.** Not part of any build, because it needs a
 document, its password and a reachable host:

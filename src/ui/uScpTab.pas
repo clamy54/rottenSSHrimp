@@ -163,7 +163,6 @@ type
       var ACancelled: Boolean);
     procedure SkNoticeCancel(Sender: TObject);
   public
-    // Prend possession de AParams.
     constructor CreateSession(APages: TPageControl; ADoc: TRshDocument;
       AManager: TSessionManager; const ADisplayName, AConnUuid: string;
       AParams: TSshConnectParams);
@@ -287,46 +286,54 @@ constructor TScpTab.CreateSession(APages: TPageControl; ADoc: TRshDocument;
   AManager: TSessionManager; const ADisplayName, AConnUuid: string;
   AParams: TSshConnectParams);
 begin
-  inherited Create(APages);
-  PageControl := APages;
-  FDoc := ADoc;
-  FManager := AManager;
-  FDisplayName := ADisplayName;
-  FConnUuid := AConnUuid;
-  FState := rssCreated;
-  FKnownHosts := TSshKnownHosts.Create(ADoc);
-  FLocalHistory := TNavHistory.Create;
-  FRemoteHistory := TNavHistory.Create;
-  FActiveSide := fpsLocal;
+  // AParams appartient a l'onglet des l'entree, echec compris. Passe cette
+  // ligne c'est le transport qui le porte, et son destructeur s'en chargera.
+  try
+    inherited Create(APages);
+    PageControl := APages;
+    FDoc := ADoc;
+    FManager := AManager;
+    FDisplayName := ADisplayName;
+    FConnUuid := AConnUuid;
+    FState := rssCreated;
+    FKnownHosts := TSshKnownHosts.Create(ADoc);
+    FLocalHistory := TNavHistory.Create;
+    FRemoteHistory := TNavHistory.Create;
+    FActiveSide := fpsLocal;
 
-  FQueue := TTransferQueue.Create;
-  FLocalFs := TLocalFileSystem.Create;
-  FLocalWorker := TLocalFsWorker.Create(FLocalFs);
-  FLocalWorker.OnListed := @LocalListed;
-  FLocalWorker.OnOpDone := @LocalOpDone;
-  FLocalWorker.OnVolumes := @LocalVolumes;
+    FQueue := TTransferQueue.Create;
+    FLocalFs := TLocalFileSystem.Create;
+    FLocalWorker := TLocalFsWorker.Create(FLocalFs);
+    FLocalWorker.OnListed := @LocalListed;
+    FLocalWorker.OnOpDone := @LocalOpDone;
+    FLocalWorker.OnVolumes := @LocalVolumes;
 
-  FTransport := TSftpTransport.Create(AParams, FLocalFs, FQueue);
-  FTransport.OnListed := @RemoteListed;
-  FTransport.OnHome := @RemoteHomeReady;
-  FTransport.OnOpDone := @RemoteOpDone;
-  FTransport.OnQueueChanged := @TransportQueueChanged;
-  FTransport.OnNote := @TransportNote;
-  FTransport.OnConnected := @TransportConnected;
-  FTransport.OnFailed := @TransportFailed;
-  FTransport.OnConflict := @TransportConflict;
-  FTransport.OnNonAtomic := @TransportNonAtomic;
-  FTransport.OnHostKey := @HostKeyAsk;
-  FTransport.OnHostKeyLookup := @HostKeyLookup;
-  FTransport.OnHostKeySave := @HostKeySave;
-  FTransport.OnSkNotice := @SkNotice;
-  FTransport.OnSkPin := @SkPin;
+    FTransport := TSftpTransport.Create(AParams, FLocalFs, FQueue);
+    FTransport.OnListed := @RemoteListed;
+    FTransport.OnHome := @RemoteHomeReady;
+    FTransport.OnOpDone := @RemoteOpDone;
+    FTransport.OnQueueChanged := @TransportQueueChanged;
+    FTransport.OnNote := @TransportNote;
+    FTransport.OnConnected := @TransportConnected;
+    FTransport.OnFailed := @TransportFailed;
+    FTransport.OnConflict := @TransportConflict;
+    FTransport.OnNonAtomic := @TransportNonAtomic;
+    FTransport.OnHostKey := @HostKeyAsk;
+    FTransport.OnHostKeyLookup := @HostKeyLookup;
+    FTransport.OnHostKeySave := @HostKeySave;
+    FTransport.OnSkNotice := @SkNotice;
+    FTransport.OnSkPin := @SkPin;
 
-  BuildUi;
+    BuildUi;
 
-  FHandle := TScpSessionHandle.Create(Self);
-  FManager.RegisterSession(FHandle);
-  UpdateCaption;
+    FHandle := TScpSessionHandle.Create(Self);
+    FManager.RegisterSession(FHandle);
+    UpdateCaption;
+  except
+    if FTransport = nil then
+      AParams.Free;
+    raise;
+  end;
 end;
 
 destructor TScpTab.Destroy;
