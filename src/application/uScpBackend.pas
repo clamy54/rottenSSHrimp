@@ -120,7 +120,8 @@ type
     // Rouvre un partiel a AOffset. La poignee doit aussi LIRE: le moteur relit le
     // prefixe par elle avant d'ecrire, et c'est cette relecture par la MEME
     // poignee qui garantit qu'on prolonge le fichier verifie. Un lien a ce chemin
-    // doit faire echouer l'ouverture.
+    // doit faire echouer l'ouverture -- ou, la ou le protocole ne sait pas le
+    // refuser a l'ouverture (SFTP v3), etre detecte juste apres.
     function OpenAppend(const APath: string; AOffset: Int64;
       out AHandle: TScpFileHandle; out AErr: TScpError): Boolean;
       virtual; abstract;

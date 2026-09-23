@@ -164,6 +164,7 @@ type
     // designe, et il devient la racine de confinement du lot.
     procedure StartTransfer(ASide: TFilePanelSide; const ADestDir: string);
     procedure StartDuplicate(ASide: TFilePanelSide);
+    procedure ForgetBatchDecisions;
     procedure PanelDrop(ASourceSide: TFilePanelSide; const ASubFolder: string);
     procedure QueueCommand(ACommand: TQueueCommand);
     procedure RefreshTick(Sender: TObject);
@@ -1015,6 +1016,7 @@ begin
     if dest = '' then dest := FRemotePath;
     // La RACINE de confinement est le dossier distant VISE: rien de ce lot
     // ne pourra etre ecrit en dehors.
+    ForgetBatchDecisions;
     FTransport.RequestUpload(sources, dest, dest);
   end
   else
@@ -1037,12 +1039,20 @@ begin
     if n = 0 then Exit;
     dest := ADestDir;
     if dest = '' then dest := FLocalPath;
+    ForgetBatchDecisions;
     FTransport.RequestDownload(sources, dest, dest);
   end;
-  // « Apply to all » ne vaut que pour son propre lot.
+  FQueueView.Refresh;
+end;
+
+// « Apply to all » et « Skip all similar » ne valent que pour leur propre lot,
+// et s'oublient AVANT de poster la commande: reveille, le fil de transfert peut
+// prendre le premier element du nouveau lot sur-le-champ, et lui appliquer la
+// decision de l'ancien -- ecraser sans demander, par exemple.
+procedure TScpTab.ForgetBatchDecisions;
+begin
   FQueue.ClearConflictPolicy;
   FQueue.ClearSkipKinds;
-  FQueueView.Refresh;
 end;
 
 // Duplication sur place. Le nom libre n'est PAS choisi ici: le dossier peut
@@ -1089,9 +1099,8 @@ begin
   end;
   SetLength(sources, n);
   if n = 0 then Exit;
+  ForgetBatchDecisions;
   FTransport.RequestDuplicate(sources, cur, ASide = fpsRemote);
-  FQueue.ClearConflictPolicy;
-  FQueue.ClearSkipKinds;
   FQueueView.Refresh;
 end;
 
@@ -1545,7 +1554,8 @@ end;
 procedure TScpTab.WaitForPartialCleanup;
 var
   waited: Integer;
-  remaining: Integer;
+  remaining, i: Integer;
+  leftover: TStringArray;
 begin
   if (FTransport = nil) or (FEngine = nil) or FCleaningPartials then Exit;
   FCleaningPartials := True;
@@ -1555,8 +1565,11 @@ begin
     begin
       // Fil de transport mort: les partiels locaux se retirent d'ici, les distants
       // attendront une session vivante, et on le dit.
-      FEngine.CleanupPartials(FLocalFs);
-      remaining := FEngine.Partials.ActiveCount;
+      leftover := FEngine.CleanupPartials(FLocalFs);
+      for i := 0 to High(leftover) do
+        EmitNotice(Format('%s: a partial file could not be removed and is ' +
+          'still on disk: %s', [FDisplayName, DisplaySafeName(leftover[i])]));
+      remaining := FEngine.Partials.ActiveCount - Length(leftover);
       if remaining > 0 then
         EmitNotice(Format('%s: %d partial file(s) are still on the server ' +
           '(not connected); they are named ".rssh-*.part".',

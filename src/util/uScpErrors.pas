@@ -20,7 +20,7 @@ unit uScpErrors;
 interface
 
 uses
-  SysUtils;
+  SysUtils{$IFNDEF WINDOWS}, BaseUnix{$ENDIF};
 
 type
   TScpErrorKind = (
@@ -337,19 +337,21 @@ begin
   end;
   {$ELSE}
   case AOsCode of
-    1: Result := sekAccessDeniedWrite;    // EPERM
-    2: Result := sekNotFound;             // ENOENT
-    13: Result := sekAccessDeniedWrite;   // EACCES
-    17: Result := sekAlreadyExists;       // EEXIST
-    20: Result := sekNotADirectory;       // ENOTDIR
-    21: Result := sekNotADirectory;       // EISDIR
-    24: Result := sekTooManyFiles;        // EMFILE
-    28: Result := sekNoSpace;             // ENOSPC
-    30: Result := sekReadOnlyTarget;      // EROFS
-    36: Result := sekInvalidName;         // ENAMETOOLONG
-    39: Result := sekDirNotEmpty;         // ENOTEMPTY
-    40: Result := sekSymlinkSkipped;      // ELOOP
-    122: Result := sekNoSpace;            // EDQUOT
+    // Par les constantes de la plateforme: au-dela de 35, les numeros ne sont
+    // pas les memes sous Linux et sous macOS.
+    ESysEPERM: Result := sekAccessDeniedWrite;
+    ESysENOENT: Result := sekNotFound;
+    ESysEACCES: Result := sekAccessDeniedWrite;
+    ESysEEXIST: Result := sekAlreadyExists;
+    ESysENOTDIR: Result := sekNotADirectory;
+    ESysEISDIR: Result := sekNotADirectory;
+    ESysEMFILE: Result := sekTooManyFiles;
+    ESysENOSPC: Result := sekNoSpace;
+    ESysEROFS: Result := sekReadOnlyTarget;
+    ESysENAMETOOLONG: Result := sekInvalidName;
+    ESysENOTEMPTY: Result := sekDirNotEmpty;
+    ESysELOOP: Result := sekSymlinkSkipped;
+    ESysEDQUOT: Result := sekNoSpace;
   else
     Result := sekOther;
   end;

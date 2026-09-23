@@ -457,8 +457,10 @@ begin
   begin
     // Un second temporaire pour la meme cible laisserait deux « .part », et la
     // reprise prendrait plus tard celui des deux qu'elle trouve en premier.
-    FPartials.Forget(stale[i]);
-    ADstFs.DeleteFile(stale[i], err);
+    // Oublie seulement ce qui est parti: un partiel qu'on n'a pas pu retirer
+    // doit rester nettoyable a la fermeture.
+    if ADstFs.DeleteFile(stale[i], err) or (err.Kind = sekNotFound) then
+      FPartials.Forget(stale[i]);
   end;
 end;
 
@@ -750,6 +752,18 @@ var
   rootItem: TTransferItem;
   targetPath, targetName, why: string;
   v: TNameVerdict;
+
+  procedure SkipRoot(const AWhy: TScpError);
+  var
+    it: TTransferItem;
+  begin
+    it := FQueue.Add(ADirection, tikFile, ASourcePath,
+      ADstFs.Join(ATargetParent, srcName), DisplaySafeName(srcName));
+    it.TargetRoot := ATargetRoot;
+    it.Error := AWhy;
+    FQueue.SetState(it, tsSkipped);
+  end;
+
 begin
   Result := False;
   AErr := NoScpError;
@@ -783,11 +797,14 @@ begin
     FQueue.SetState(rootItem, tsSkipped);
     Exit(True);
   end;
+  // Un nom refuse, un nom impose invalide ou une sortie de racine ecartent la
+  // selection AVEC un element: sans lui le bilan annoncerait complet un lot
+  // ampute d'une selection entiere.
   if not NameUsable(srcName, why) then
   begin
-    AErr := MakeScpError(sekInvalidName, 'Copying',
-      DisplaySafeName(srcName), why);
-    Exit;
+    SkipRoot(MakeScpError(sekInvalidName, 'Copying',
+      DisplaySafeName(srcName), why));
+    Exit(True);
   end;
   targetName := srcName;
   if ATargetName <> '' then
@@ -797,19 +814,19 @@ begin
     v := ADstFs.CheckName(ATargetName);
     if v <> nvOk then
     begin
-      AErr := MakeScpError(sekInvalidName, 'Copying',
+      SkipRoot(MakeScpError(sekInvalidName, 'Copying',
         DisplaySafeName(ATargetName),
-        NameVerdictText(v, DisplaySafeName(ATargetName)));
-      Exit;
+        NameVerdictText(v, DisplaySafeName(ATargetName))));
+      Exit(True);
     end;
     targetName := ATargetName;
   end;
   targetPath := ADstFs.Join(ATargetParent, targetName);
   if not ADstFs.IsUnder(ATargetRoot, targetPath) then
   begin
-    AErr := MakeScpError(sekOutsideRoot, 'Copying',
-      DisplaySafeName(srcName), '');
-    Exit;
+    SkipRoot(MakeScpError(sekOutsideRoot, 'Copying',
+      DisplaySafeName(srcName), ''));
+    Exit(True);
   end;
 
   if srcEntry.IsLink then
@@ -1685,8 +1702,9 @@ begin
     srcH := nil;
     // Le contenu est complet: un refus a la fermeture de la source ne change
     // rien. Une COUPURE, elle, interrompt l'element; la reprise n'aura qu'a
-    // publier.
-    if okCopy and IsFatalToSession(closeErr.Kind) then
+    // publier. Et elle compte meme si la destination avait deja echoue, sinon
+    // l'element passe en « echec » et l'onglet se croit connecte.
+    if IsFatalToSession(closeErr.Kind) then
     begin
       okCopy := False;
       err := closeErr;
@@ -1702,6 +1720,14 @@ begin
     // Un fichier REMPLACE garde ses droits: un 0600 devenu 0644 est une fuite.
     // Ils sont reposes sur le temporaire AVANT publication, et s'ils ne peuvent
     // pas l'etre la cible n'est pas remplacee.
+    if targetExisted and (not outcome.PrevModeKnown) then
+      // Les droits de la cible n'ont pas pu etre lus: le temporaire garde son
+      // 0600, ce qui ne divulgue rien, mais « garde ses droits » n'est pas
+      // tenu et il faut le dire.
+      AItem.Warning := ScpErrorText(MakeScpError(sekAttrRefused,
+        'Setting the mode of', AItem.DisplayName,
+        'the permissions of the existing file could not be read; the new ' +
+        'content was published readable by its owner only'));
     if targetExisted and outcome.PrevModeKnown then
       if not ADstFs.SetMode(tempPath, prevMode, attrErr) then
       begin
@@ -1716,6 +1742,27 @@ begin
         end;
         FailItem(AItem, attrErr);
         Exit;
+      end;
+
+    // La date est posee sur le TEMPORAIRE, sous son nom imprevisible, jamais sur
+    // la cible publiee: un lien substitue sous le nom final entre le rename et
+    // un SetMTime enverrait la date sur un autre fichier. Le rename la conserve.
+    // Un refus ordinaire est un avertissement; une coupure interrompt, le
+    // partiel etant confirme jusqu'au bout.
+    if srcEntry.MTimeUtc > 0 then
+      if not ADstFs.SetMTime(tempPath, srcEntry.MTimeUtc, attrErr) then
+      begin
+        if IsFatalToSession(attrErr.Kind) then
+        begin
+          FailItem(AItem, attrErr);
+          Exit;
+        end;
+        why := ScpErrorText(MakeScpError(sekAttrRefused,
+          'Setting the timestamp of', AItem.DisplayName, attrErr.Detail));
+        if AItem.Warning = '' then
+          AItem.Warning := why
+        else
+          AItem.Warning := AItem.Warning + ' ' + why;
       end;
 
     // Derniere chance de s'arreter AVANT de toucher la cible; CommitTemp relit la
@@ -1737,16 +1784,7 @@ begin
     end;
     tempPath := '';
 
-    // A partir d'ici le contenu EST arrive: la suite n'est qu'un avertissement.
-    if srcEntry.MTimeUtc > 0 then
-      if not ADstFs.SetMTime(targetPath, srcEntry.MTimeUtc, attrErr) then
-      begin
-        AItem.Warning := ScpErrorText(MakeScpError(sekAttrRefused,
-          'Setting the timestamp of', AItem.DisplayName, attrErr.Detail));
-        // L'element est termine, la session peut etre morte ici meme: retenue pour le
-        // transport, qui la lit apres.
-        NoteFatal(attrErr);
-      end;
+    // A partir d'ici le contenu EST arrive.
     if AItem.Warning <> '' then
       Note(AItem.Warning);
 

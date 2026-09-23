@@ -489,9 +489,15 @@ begin
   Result := TTransferItem(FItems[AIndex]);
 end;
 
+// Sous verrou: l'affichage le lit pendant que le fil de transfert ajoute.
 function TTransferQueue.GetCount: Integer;
 begin
-  Result := FItems.Count;
+  Lock;
+  try
+    Result := FItems.Count;
+  finally
+    Unlock;
+  end;
 end;
 
 function TTransferQueue.Add(ADirection: TTransferDirection;

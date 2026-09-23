@@ -141,9 +141,12 @@ begin
 end;
 
 procedure TQueueListView.SyncSelection;
+var
+  c: Integer;
 begin
-  if Length(FSelected) <> FQueue.Count then
-    SetLength(FSelected, FQueue.Count);
+  c := FQueue.Count;
+  if Length(FSelected) <> c then
+    SetLength(FSelected, c);
   if FTop > ScrollMaxTop then FTop := ScrollMaxTop;
   if Assigned(FOnViewChanged) then FOnViewChanged(Self);
 end;
@@ -318,7 +321,9 @@ begin
   if CanFocus then SetFocus;
   SyncSelection;
   idx := (Y + FTop) div FRowHeight;
-  if (idx < 0) or (idx >= FQueue.Count) then Exit;
+  // Contre FSelected et non contre la file: entre SyncSelection et ici, le
+  // fil de transfert a pu ajouter des elements.
+  if (idx < 0) or (idx >= Length(FSelected)) then Exit;
   if (ssCtrl in Shift) or (ssMeta in Shift) then
     FSelected[idx] := not FSelected[idx]
   else

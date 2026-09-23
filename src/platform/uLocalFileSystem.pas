@@ -123,6 +123,10 @@ const
   AT_FDCWD_ = -100;
   RENAME_NOREPLACE_ = 1;
   {$ENDIF}
+  {$IFDEF DARWIN}
+  // renamex_np n'est pas enveloppe par FPC 3.2: drapeau de <sys/stdio.h>.
+  RENAME_EXCL_ = 4;
+  {$ENDIF}
 
   // Prefixe des temporaires, reconnaissable a l'oeil: un partiel laisse par un
   // plantage doit se comprendre sans explication.
@@ -370,6 +374,13 @@ begin
         fd.nFileSizeHigh, fd.nFileSizeLow, fd.ftLastWriteTime);
       Inc(n);
     until not FindNextFileW(h, fd);
+    // FindNextFile rend aussi False sur une erreur d'E/S: sans ce test, un
+    // dossier lu a moitie passerait pour complet.
+    if GetLastError <> ERROR_NO_MORE_FILES then
+    begin
+      AErr := LastErr('Listing', APath);
+      Exit(False);
+    end;
   finally
     Windows.FindClose(h);
   end;
@@ -384,8 +395,18 @@ begin
   end;
   try
     repeat
+      fpSetErrno(0);
       de := fpReadDir(d^);
-      if de = nil then Break;
+      if de = nil then
+      begin
+        // readdir rend nil a la fin ET sur une erreur: seul errno les separe.
+        if fpGetErrno <> 0 then
+        begin
+          AErr := LastErr('Listing', APath);
+          Exit(False);
+        end;
+        Break;
+      end;
       if FCanceled then
       begin
         AErr := MakeScpError(sekCanceled, 'Listing', APath, '');
@@ -528,12 +549,16 @@ begin
     AErr := LastErr('Creating folder', APath);
 end;
 
+{$IFDEF DARWIN}
+function renamex_np(AFrom, ATo: PChar; AFlags: cuint): cint; cdecl;
+  external 'c' name 'renamex_np';
+{$ENDIF}
+
 function TLocalFileSystem.Rename(const AFrom, ATo: string;
   out AErr: TScpError): Boolean;
 {$IFNDEF WINDOWS}
 var
   code: Integer;
-  fd: cint;
   f, t: string;
 {$ENDIF}
 begin
@@ -592,26 +617,30 @@ begin
     Exit(False);
   end;
   {$ENDIF}
-  // Derniere methode: RESERVER le nom par une creation exclusive, qui echoue
-  // atomiquement s'il est pris, puis renommer par-dessus notre reservation.
-  // Rien ne peut plus apparaitre sous ce nom sans passer par le notre.
-  fd := fpOpen(PChar(t), O_WRONLY or O_CREAT or O_EXCL, &0600);
-  if fd < 0 then
+  {$IFDEF DARWIN}
+  // renamex_np(RENAME_EXCL): le rename qui refuse d'ecraser, depuis macOS
+  // 10.12, dossiers compris. Non enveloppe par FPC 3.2: appel direct.
+  if renamex_np(PChar(f), PChar(t), RENAME_EXCL_) = 0 then Exit(True);
+  code := fpGetErrno;
+  if code = ESysEEXIST then
   begin
-    if fpGetErrno = ESysEEXIST then
-      AErr := MakeScpError(sekAlreadyExists, 'Renaming to',
-        DisplaySafeName(ATo), '')
-    else
-      AErr := LastErr('Renaming to', ATo);
+    AErr := MakeScpError(sekAlreadyExists, 'Renaming to',
+      DisplaySafeName(ATo), '');
     Exit(False);
   end;
-  fpClose(fd);
-  Result := fpRename(PChar(f), PChar(t)) = 0;
-  if not Result then
+  if (code <> ESysENOTSUP) and (code <> ESysEINVAL) then
   begin
     AErr := LastErr('Renaming to', ATo);
-    fpUnlink(PChar(t));
+    Exit(False);
   end;
+  {$ENDIF}
+  // Sans primitive qui refuse d'ecraser, on REFUSE. Reserver le nom par une
+  // creation exclusive puis renommer par-dessus laissait une fenetre, entre
+  // les deux, ou un autre processus remplace la reservation -- et ne savait de
+  // toute facon pas renommer un dossier.
+  AErr := MakeScpError(sekUnsupported, 'Renaming to', DisplaySafeName(ATo),
+    'this file system offers no rename that refuses to overwrite');
+  Result := False;
   {$ENDIF}
   if not Result and (AErr.Kind = sekNone) then
     AErr := LastErr('Renaming to', ATo);
@@ -1022,11 +1051,15 @@ begin
     CloseHandle(hnd);
   end;
   {$ELSE}
-  // Garder la date d'ACCES: la remplacer serait une alteration non demandee.
-  if fpStat(PChar(LocalNormalize(APath)), st) = 0 then
-    tb.actime := st.st_atime
-  else
-    tb.actime := AMTimeUtc;
+  // Garder la date d'ACCES: la remplacer serait une alteration non demandee,
+  // et faute de la connaitre on ne pose rien.
+  if fpStat(PChar(LocalNormalize(APath)), st) <> 0 then
+  begin
+    AErr := MakeScpError(sekAttrRefused, 'Setting the timestamp of',
+      DisplaySafeName(APath), Format('errno %d', [fpGetErrno]));
+    Exit(False);
+  end;
+  tb.actime := st.st_atime;
   tb.modtime := AMTimeUtc;
   Result := fpUTime(PChar(LocalNormalize(APath)), @tb) = 0;
   if not Result then

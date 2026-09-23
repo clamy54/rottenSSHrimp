@@ -26,6 +26,7 @@ const
   LIBSSH2_ERROR_CHANNEL_CLOSED = -26;
   LIBSSH2_ERROR_SOCKET_TIMEOUT = -30;
   LIBSSH2_ERROR_EAGAIN = -37;
+  LIBSSH2_ERROR_SOCKET_RECV = -43;
   // Erreur cote SFTP: le code utile est alors dans libssh2_sftp_last_error.
   LIBSSH2_ERROR_SFTP_PROTOCOL = -31;
 
