@@ -14,7 +14,7 @@ words from now.
 | Directory | Count | Upstream | Licence |
 |---|---|---|---|
 | `folders/` | 23 | [Tabler Icons](https://tabler.io/icons) | [MIT](../LICENSES/Tabler-MIT.txt) |
-| `transfer/` | 15 | [Tabler Icons](https://tabler.io/icons) | [MIT](../LICENSES/Tabler-MIT.txt) |
+| `transfer/` | 22 | [Tabler Icons](https://tabler.io/icons) | [MIT](../LICENSES/Tabler-MIT.txt) |
 | `hosts/` | 18 | [Tabler Icons](https://tabler.io/icons) | [MIT](../LICENSES/Tabler-MIT.txt) |
 | `extended-set/` | 85 | [Tabler Icons](https://tabler.io/icons) | [MIT](../LICENSES/Tabler-MIT.txt) |
 | `folders-dark/` + `folders-light/` | 18 pairs | [Papirus](https://github.com/PapirusDevelopmentTeam/papirus-icon-theme) | [GPL-3.0](../LICENSES/GPL-3.0-or-later.txt) |
@@ -60,11 +60,13 @@ Two consequences worth knowing before you touch it:
   existing files and breaks the mapping instead: the icon silently falls back
   to the hand-drawn one. Grep `XferIdFor` after any rename.
 
-Icons the tab needs and this set does not provide — the queue states (tick,
-cross, warning, pause, play), the broken symlink, the special file, the drive
-glyphs — stay hand-drawn in that same unit. They coexist on screen without
-looking out of place because both follow the Tabler geometry, but they are not
-Tabler artwork and are not covered by the attribution above.
+A few icons the tab uses are not in this set and stay hand-drawn in that same
+unit: the **failed** queue state, whose circled cross has to stay distinct from
+the plain `x` used for **cancelled** — the two states sit in the same column and
+two bare crosses would differ only by colour — plus the drive, network drive and
+server glyphs. They coexist on screen without looking out of place because both
+follow the Tabler geometry, but they are not Tabler artwork and are not covered
+by the attribution above.
 
 ## The `-dark` / `-light` trap
 

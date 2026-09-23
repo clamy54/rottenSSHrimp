@@ -178,13 +178,13 @@ Two upstream projects are embedded as binary resources. `icons/README.md` maps
 each source directory to its upstream project; this section is the licence side
 of the same story.
 
-**Tabler Icons** (https://tabler.io/icons), MIT. 141 monochrome sources, in two
+**Tabler Icons** (https://tabler.io/icons), MIT. 148 monochrome sources, in two
 groups and modified in two different ways:
 
 - the 126 in `icons/folders`, `icons/hosts` and `icons/extended-set`,
   recoloured to black-background and white-background variants and resized to
   16/24/32/48 px;
-- the 15 in `icons/transfer`, reduced to a white alpha mask and resized to
+- the 22 in `icons/transfer`, reduced to a white alpha mask and resized to
   twelve sizes from 12 to 64 px. The colour is applied when the file transfer
   tab draws them, so no coloured variant is shipped.
 
@@ -243,7 +243,7 @@ and must be distributed (or offered) with any binary release:
 | `scripts/gen-vnc-offsets.c` | Generates the verified `rfbClient` struct offsets used by the libvncclient binding. Without it those offsets cannot be re-derived for another libvncclient build, and the binding cannot be safely modified. |
 | `scripts/build-libvnc.sh`, `third_party/libvnc/patches/`, `third_party/libvnc/SHA256SUMS` | Corresponding source of the **embedded, modified** `libvncclient`: the pinned tarball hash, our two security patches, and the exact build recipe. See "libvncclient and the GPL-3 question" above. |
 | `icons/folders`, `icons/hosts`, `icons/extended-set` | Monochrome icon sources (Tabler) consumed by that script. 126 files, of which 85 are the extended set. |
-| `icons/transfer` | Monochrome icon sources (Tabler) for the file transfer tab, consumed by that script. 15 files. |
+| `icons/transfer` | Monochrome icon sources (Tabler) for the file transfer tab, consumed by that script. 22 files. |
 | `icons/folders-dark`, `icons/folders-light`, `icons/hosts-dark`, `icons/hosts-light` | Colour icon sources (Papirus) consumed by that script. |
 | `icons/README.md` | States the provenance and licence of each source directory. |
 | `scripts/build.sh`, `scripts/make-app.sh`, `dist/` | Build and packaging scripts. |

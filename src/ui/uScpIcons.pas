@@ -404,6 +404,16 @@ begin
     siDownload:   Result := 'download';
     siSortAsc:    Result := 'arrow-narrow-up';
     siSortDesc:   Result := 'arrow-narrow-down';
+    siLinkBroken: Result := 'link-off';
+    siSpecial:    Result := 'file-special';
+    siCheck:      Result := 'check';
+    siWarning:    Result := 'warning';
+    siPause:      Result := 'player-pause';
+    siPlay:       Result := 'player-play';
+    // Croix de l'ANNULATION. L'echec garde sa croix CERCLEE: les deux etats se
+    // suivent dans la meme colonne, et deux croix nues ne differeraient que par
+    // la couleur.
+    siCancel:     Result := 'x';
   else
     Result := '';
   end;

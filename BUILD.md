@@ -28,7 +28,7 @@ build of an application with no icons. Enjoy discovering that at runtime.
 
 ### Regenerating the icons (rarely)
 
-The 1468 icon PNGs under `resources/icons/` are committed, so a normal build
+The 1552 icon PNGs under `resources/icons/` are committed, so a normal build
 never touches them. If you add or change an icon in `icons/`, regenerate:
 
 ```sh
