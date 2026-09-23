@@ -15,7 +15,8 @@ interface
 
 uses
   SysUtils, Classes, uScpBackend, uScpErrors, uScpPaths
-  {$IFDEF WINDOWS}, Windows{$ELSE}, BaseUnix, Unix{$ENDIF};
+  {$IFDEF WINDOWS}, Windows{$ELSE}, BaseUnix, Unix{$ENDIF}
+  {$IFDEF LINUX}, Syscall{$ENDIF};
 
 type
   TLocalVolumeKind = (lvkFixed, lvkRemovable, lvkNetwork, lvkOptical,
@@ -104,7 +105,23 @@ const
   // Absent de l'unite Windows de FPC 3.2, valeur de winbase.h: l'appel n'aboutit
   // qu'une fois l'operation SUR LE SUPPORT, ce qui la fait survivre a une coupure.
   MOVEFILE_WRITE_THROUGH_ = $00000008;
+  FILE_TYPE_DISK_ = $0001;
   FILE_FLAG_OPEN_REPARSE_POINT_ = $00200000;
+  {$ENDIF}
+  {$IFDEF LINUX}
+  // renameat2 n'est pas enveloppe par FPC 3.2: numero d'appel par architecture.
+  // Sans numero connu, la reservation exclusive prend le relais.
+  {$IF DEFINED(CPUX86_64)}
+  SYSCALL_RENAMEAT2 = 316; {$DEFINE RSSH_RENAMEAT2}
+  {$ELSEIF DEFINED(CPUAARCH64)}
+  SYSCALL_RENAMEAT2 = 276; {$DEFINE RSSH_RENAMEAT2}
+  {$ELSEIF DEFINED(CPUI386)}
+  SYSCALL_RENAMEAT2 = 353; {$DEFINE RSSH_RENAMEAT2}
+  {$ELSEIF DEFINED(CPUARM)}
+  SYSCALL_RENAMEAT2 = 382; {$DEFINE RSSH_RENAMEAT2}
+  {$ENDIF}
+  AT_FDCWD_ = -100;
+  RENAME_NOREPLACE_ = 1;
   {$ENDIF}
 
   // Prefixe des temporaires, reconnaissable a l'oeil: un partiel laisse par un
@@ -434,7 +451,7 @@ begin
   if not GetFileAttributesExW(PWideChar(NativeW(APath)),
      GetFileExInfoStandard, @fad) then
   begin
-    AErr := LastErr('Reading attributes of', APath);
+    AErr := WithAccessContext(LastErr('Reading attributes of', APath), acDir);
     Exit(False);
   end;
   FillEntryFromAttrs(AEntry, fad.dwFileAttributes, fad.nFileSizeHigh,
@@ -446,7 +463,7 @@ begin
     rc := fpLStat(PChar(LocalNormalize(APath)), st);
   if rc <> 0 then
   begin
-    AErr := LastErr('Reading attributes of', APath);
+    AErr := WithAccessContext(LastErr('Reading attributes of', APath), acDir);
     Exit(False);
   end;
   FillEntryFromStat(AEntry, st);
@@ -515,9 +532,8 @@ function TLocalFileSystem.Rename(const AFrom, ATo: string;
   out AErr: TScpError): Boolean;
 {$IFNDEF WINDOWS}
 var
-  found: Boolean;
-  chkErr: TScpError;
   code: Integer;
+  fd: cint;
   f, t: string;
 {$ENDIF}
 begin
@@ -546,9 +562,9 @@ begin
       DisplaySafeName(ATo), '');
     Exit(False);
   end;
-  // Tout systeme de fichiers ne sait pas faire de lien dur (FAT, certains
-  // montages reseau). Dans ce cas seulement, on retombe sur verifier puis
-  // renommer, avec la course residuelle que cela suppose.
+  // FAT et certains montages reseau ne font pas de lien dur. Alors seulement on
+  // cherche une autre primitive qui refuse d'ecraser -- jamais « verifier puis
+  // renommer », dont la fenetre ecraserait une cible apparue entre les deux.
   if (code <> ESysEPERM) and (code <> ESysEOPNOTSUPP) and
      (code <> ESysEMLINK) and (code <> ESysEXDEV) and
      (code <> ESysEACCES) then
@@ -556,20 +572,48 @@ begin
     AErr := LastErr('Renaming to', ATo);
     Exit(False);
   end;
-  if not Exists(ATo, found, chkErr) then
-  begin
-    AErr := chkErr;
-    Exit(False);
-  end;
-  if found then
+  {$IFDEF RSSH_RENAMEAT2}
+  // renameat2(RENAME_NOREPLACE): le rename qui refuse d'ecraser, tenu par le
+  // noyau depuis Linux 3.15. FPC 3.2 ne l'enveloppe pas: appel direct.
+  code := do_syscall(SYSCALL_RENAMEAT2, TSysParam(AT_FDCWD_),
+    TSysParam(PChar(f)), TSysParam(AT_FDCWD_), TSysParam(PChar(t)),
+    TSysParam(RENAME_NOREPLACE_));
+  if code = 0 then Exit(True);
+  code := fpGetErrno;
+  if code = ESysEEXIST then
   begin
     AErr := MakeScpError(sekAlreadyExists, 'Renaming to',
       DisplaySafeName(ATo), '');
     Exit(False);
   end;
-  Result := fpRename(PChar(f), PChar(t)) = 0;
+  if (code <> ESysENOSYS) and (code <> ESysEINVAL) then
+  begin
+    AErr := LastErr('Renaming to', ATo);
+    Exit(False);
+  end;
   {$ENDIF}
+  // Derniere methode: RESERVER le nom par une creation exclusive, qui echoue
+  // atomiquement s'il est pris, puis renommer par-dessus notre reservation.
+  // Rien ne peut plus apparaitre sous ce nom sans passer par le notre.
+  fd := fpOpen(PChar(t), O_WRONLY or O_CREAT or O_EXCL, &0600);
+  if fd < 0 then
+  begin
+    if fpGetErrno = ESysEEXIST then
+      AErr := MakeScpError(sekAlreadyExists, 'Renaming to',
+        DisplaySafeName(ATo), '')
+    else
+      AErr := LastErr('Renaming to', ATo);
+    Exit(False);
+  end;
+  fpClose(fd);
+  Result := fpRename(PChar(f), PChar(t)) = 0;
   if not Result then
+  begin
+    AErr := LastErr('Renaming to', ATo);
+    fpUnlink(PChar(t));
+  end;
+  {$ENDIF}
+  if not Result and (AErr.Kind = sekNone) then
     AErr := LastErr('Renaming to', ATo);
 end;
 
@@ -620,6 +664,12 @@ function TLocalFileSystem.OpenRead(const APath: string;
   out AHandle: TScpFileHandle; out AErr: TScpError): Boolean;
 var
   h: TLocalHandle;
+  {$IFDEF WINDOWS}
+  info: TByHandleFileInformation;
+  {$ELSE}
+  st: Stat;
+  flags: cint;
+  {$ENDIF}
 begin
   AHandle := nil;
   AErr := NoScpError;
@@ -635,21 +685,48 @@ begin
     FILE_ATTRIBUTE_NORMAL or FILE_FLAG_OPEN_REPARSE_POINT_, 0);
   if h.H = INVALID_HANDLE_VALUE then
   begin
-    AErr := LastErr('Opening', APath);
+    AErr := WithAccessContext(LastErr('Opening', APath), acRead);
     h.Free;
+    Exit(False);
+  end;
+  // Ce qui a ete OUVERT est-il ordinaire? Le lstat repondait pour un chemin,
+  // ceci repond pour la poignee: un tube ou un peripherique glisse a la place
+  // ne se lit pas comme un fichier.
+  if (GetFileType(h.H) <> FILE_TYPE_DISK_) or
+     (not GetFileInformationByHandle(h.H, info)) or
+     ((info.dwFileAttributes and (FILE_ATTRIBUTE_DIRECTORY or
+       FILE_ATTRIBUTE_REPARSE_POINT)) <> 0) then
+  begin
+    CloseHandle(h.H);
+    h.Free;
+    AErr := MakeScpError(sekIsSpecialFile, 'Opening', DisplaySafeName(APath),
+      'what was opened is not a regular file');
     Exit(False);
   end;
   {$ELSE}
-  // O_NOFOLLOW pour la meme raison: c'est l'ouverture, et elle seule, qui
-  // peut refuser un lien sans course. Elle ne protege que le DERNIER
-  // composant; les dossiers traverses restent resolus par leur nom.
-  h.Fd := fpOpen(PChar(LocalNormalize(APath)), O_RDONLY or O_NOFOLLOW);
+  // O_NOFOLLOW: seule l'ouverture peut refuser un lien sans course, et elle ne
+  // protege que le DERNIER composant. O_NONBLOCK: un tube nomme a la place du
+  // fichier ferait attendre un ecrivain, donc pour toujours.
+  h.Fd := fpOpen(PChar(LocalNormalize(APath)),
+    O_RDONLY or O_NOFOLLOW or O_NONBLOCK);
   if h.Fd < 0 then
   begin
-    AErr := LastErr('Opening', APath);
+    AErr := WithAccessContext(LastErr('Opening', APath), acRead);
     h.Free;
     Exit(False);
   end;
+  // fstat sur la poignee: on juge ce qui a ete ouvert, pas le chemin.
+  if (fpFStat(h.Fd, st) <> 0) or (not fpS_ISREG(st.st_mode)) then
+  begin
+    fpClose(h.Fd);
+    h.Free;
+    AErr := MakeScpError(sekIsSpecialFile, 'Opening', DisplaySafeName(APath),
+      'what was opened is not a regular file');
+    Exit(False);
+  end;
+  flags := fpFcntl(h.Fd, F_GETFL);
+  if flags >= 0 then
+    fpFcntl(h.Fd, F_SETFL, flags and (not O_NONBLOCK));
   {$ENDIF}
   AHandle := h;
   Result := True;
@@ -785,7 +862,7 @@ begin
   n := 0;
   if not ReadFile(h.H, ABuf^, LongWord(ACount), n, nil) then
   begin
-    AErr := LastErr('Reading', h.Path);
+    AErr := WithAccessContext(LastErr('Reading', h.Path), acRead);
     Exit(False);
   end;
   AGot := Integer(n);
@@ -795,7 +872,7 @@ begin
   until (n >= 0) or (fpGetErrno <> ESysEINTR);
   if n < 0 then
   begin
-    AErr := LastErr('Reading', h.Path);
+    AErr := WithAccessContext(LastErr('Reading', h.Path), acRead);
     Exit(False);
   end;
   AGot := Integer(n);

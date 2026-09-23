@@ -539,7 +539,9 @@ begin
       // L'element TENU peut etre fini de son point de vue et encore lu de l'autre:
       // il attend le prochain nettoyage.
       if it = FCurrent then Continue;
-      if it.IsTerminal or (it.State = tsFailed) then
+      // Les echecs RESTENT: leur raison se lit, et « Retry failed » les reprend.
+      // Annuler un echec le rend terminal, donc effacable.
+      if it.IsTerminal then
       begin
         it.Free;
         FItems.Delete(i);
@@ -575,8 +577,10 @@ begin
   if AFrom in TERMINAL_STATES then Exit(False);
   case AFrom of
     tsPending:
+      // tsInterrupted depuis l'attente: le contenu d'un dossier coupe a la creation
+      // est interrompu AVEC lui.
       Result := ATo in [tsEnumerating, tsTransferring, tsPaused, tsSkipped,
-        tsFailed, tsCanceled];
+        tsFailed, tsCanceled, tsInterrupted];
     tsEnumerating:
       Result := ATo in [tsCompleted, tsFailed, tsSkipped, tsCanceled,
         tsInterrupted];
@@ -590,7 +594,7 @@ begin
         tsCanceled];
     tsRetrying:
       Result := ATo in [tsTransferring, tsEnumerating, tsFailed, tsSkipped,
-        tsCanceled];
+        tsCanceled, tsInterrupted];
     tsFailed:
       // Un echec n'est pas terminal, mais il repasse par tsRetrying avant
       // tsTransferring pour que l'interface voie le changement.

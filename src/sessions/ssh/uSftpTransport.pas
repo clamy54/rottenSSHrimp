@@ -33,8 +33,11 @@ type
     // Erreur exploitable du dernier echec: le code SSH_FX_* si libssh2 signale
     // une erreur de protocole SFTP, le sien sinon.
     function LastError(const AOp, ASubject: string;
-      ARc: Integer; AIsDirOp: Boolean): TScpError;
+      ARc: Integer; AContext: TScpAccessContext): TScpError;
     function WaitAgain(var ADeadline: QWord): Boolean;
+    // Un READDIR sans permissions ne dit pas ce qu'est l'entree: lstat redemande.
+    // Muet lui aussi, le type reste inconnu et le moteur refusera l'entree.
+    procedure RefineUnknownType(const ADir: string; var AEntry: TScpEntry);
   public
     constructor Create(AOwner: TSftpTransport; const AIdentity: string);
     function IsRemote: Boolean; override;
@@ -111,6 +114,7 @@ type
     Kind: TSftpCommandKind;
     PathA: string;
     PathB: string;
+    Answered: Boolean;
     Sources: TStringArray;
     TargetDir: string;
     TargetRoot: string;
@@ -122,7 +126,9 @@ type
   // revenir en A ferait prendre la premiere reponse A pour la troisieme.
   TSftpListEvent = procedure(const APath: string; ASerial: Int64;
     const AEntries: TScpEntryArray; const AError: TScpError) of object;
-  TSftpPathEvent = procedure(const APath: string;
+  // Le home porte aussi un numero: en retard, il ne doit pas defaire une
+  // navigation plus recente.
+  TSftpPathEvent = procedure(const APath: string; ASerial: Int64;
     const AError: TScpError) of object;
   TSftpSimpleEvent = procedure(const AError: TScpError) of object;
   TSftpQueueEvent = procedure of object;
@@ -169,7 +175,12 @@ type
     FErrLock: TCriticalSection;
     FErrorMsg: string;
     FConnIdentity: string;
-    FPaused: Boolean;
+    // Par les primitives atomiques, pas par une lecture « probablement » atomique
+    // sur cette cible.
+    FPaused: LongInt;
+    // La commande en cours, pour savoir si elle a deja repondu quand une
+    // exception la sort du chemin normal.
+    FCurrentCmd: TSftpCommand;
 
     // Decisions qui appartiennent a l'utilisateur: la question part sur le thread
     // UI, l'attente est bornee et reveillable. Meme motif qu'une cle d'hote.
@@ -199,9 +210,15 @@ type
     procedure FailIfFatal(const AErr: TScpError);
     function RemoveTree(const APath: string; ADepth: Integer;
       out AErr: TScpError): Boolean;
-    // Octets libres sous APath, -1 si le serveur n'annonce pas
-    // statvfs@openssh.com. Thread de transport uniquement.
-    function RemoteFreeBytes(const APath: string): Int64;
+    // Octets libres sous APath, thread de transport uniquement. Extension absente:
+    // -1 SANS erreur. Coupure ou echeance: -1 AVEC l'erreur, qui tue la session.
+    function RemoteFreeBytes(const APath: string;
+      out AErr: TScpError): Int64;
+    function IsPaused: Boolean;
+    // Une exception a sorti la commande avant sa reponse: sans elle, l'interface
+    // resterait sur « Reading... ».
+    procedure AnswerAfterException(ACmd: TSftpCommand;
+      const AMessage: string);
     procedure Cleanup;
     procedure Fail(const AMessage: string);
     procedure SetState(ANext: TRemoteSessionState);
@@ -226,7 +243,7 @@ type
     // --- appelables depuis le thread UI ---
     // Rend le numero de la demande: l'appelant ignore ce qui ne le porte pas.
     function RequestList(const APath: string): Int64;
-    procedure RequestHome;
+    function RequestHome: Int64;
     procedure RequestMkdir(const APath: string);
     procedure RequestRename(const AFrom, ATo: string);
     procedure RequestDelete(const APath: string);
@@ -370,7 +387,7 @@ begin
 end;
 
 function TSftpFileSystem.LastError(const AOp, ASubject: string;
-  ARc: Integer; AIsDirOp: Boolean): TScpError;
+  ARc: Integer; AContext: TScpAccessContext): TScpError;
 var
   fx: LongWord;
   msg: PAnsiChar;
@@ -389,7 +406,7 @@ begin
     fx := 0;
     if FOwner.FSftp <> nil then
       fx := libssh2_sftp_last_error(FOwner.FSftp);
-    Exit(MakeScpError(SftpStatusToKind(fx, AIsDirOp), AOp,
+    Exit(MakeScpError(SftpStatusToKind(fx, AContext), AOp,
       DisplaySafeName(ASubject), detail));
   end;
   case ARc of
@@ -434,7 +451,7 @@ begin
   until not WaitAgain(deadline);
   if rc < 0 then
   begin
-    AErr := LastError('Resolving', APath, rc, True);
+    AErr := LastError('Resolving', APath, rc, acDir);
     Exit(False);
   end;
   if rc > SFTP_NAME_MAX then rc := SFTP_NAME_MAX;
@@ -457,6 +474,9 @@ begin
   AEntry.ModeKnown := (AAttrs.flags and LIBSSH2_SFTP_ATTR_PERMISSIONS) <> 0;
   if AEntry.ModeKnown then
     AEntry.Mode := LongWord(AAttrs.permissions);
+  // Sans permissions, pas de type: IsDir, IsLink et IsSpecial seront tous faux,
+  // et « tous faux » n'est pas « fichier ordinaire ».
+  AEntry.TypeUnknown := not AEntry.ModeKnown;
   if (AAttrs.flags and LIBSSH2_SFTP_ATTR_ACMODTIME) <> 0 then
     AEntry.MTimeUtc := Int64(AAttrs.mtime);
   AEntry.IsDir := ModeIsDir(AEntry.Mode);
@@ -508,10 +528,12 @@ var
   name: string;
   p: AnsiString;
   closeRc: cint;
+  closeErr: TScpError;
 begin
   SetLength(AEntries, 0);
   AErr := NoScpError;
   n := 0;
+  closeRc := 0;
   p := AnsiString(RemoteNormalize(APath));
   deadline := GetTickCount64 + SFTP_OP_TIMEOUT_MS;
   repeat
@@ -524,7 +546,7 @@ begin
   if h = nil then
   begin
     AErr := LastError('Listing', APath,
-      libssh2_session_last_errno(FOwner.FSession), True);
+      libssh2_session_last_errno(FOwner.FSession), acDir);
     Exit(False);
   end;
   try
@@ -546,7 +568,7 @@ begin
       if rc = 0 then Break;          // fin du repertoire
       if rc < 0 then
       begin
-        AErr := LastError('Listing', APath, rc, True);
+        AErr := LastError('Listing', APath, rc, acDir);
         Exit(False);
       end;
       if rc > SFTP_NAME_MAX then rc := SFTP_NAME_MAX;
@@ -566,6 +588,8 @@ begin
       AEntries[n].Name := name;
       AEntries[n].Hidden := name[1] = '.';
       AttrsToEntry(attrs, AEntries[n]);
+      if AEntries[n].TypeUnknown then
+        RefineUnknownType(APath, AEntries[n]);
       ParseLongEntryOwner(string(AnsiString(PAnsiChar(@longBuf[0]))),
         AEntries[n]);
       if AEntries[n].IsLink then
@@ -584,7 +608,38 @@ begin
       if closeRc <> LIBSSH2_ERROR_EAGAIN then Break;
     until not WaitAgain(deadline);
   end;
+  // Le contenu est complet, mais la fermeture peut reveler une coupure: la
+  // taire laisserait la session affichee connectee. Un refus ordinaire, lui,
+  // ne change rien a ce qui a ete lu.
+  if closeRc < 0 then
+  begin
+    closeErr := LastError('Closing', APath, closeRc, acDir);
+    if IsFatalToSession(closeErr.Kind) then
+    begin
+      AErr := closeErr;
+      Exit(False);
+    end;
+  end;
   Result := True;
+end;
+
+procedure TSftpFileSystem.RefineUnknownType(const ADir: string;
+  var AEntry: TScpEntry);
+var
+  e: TScpEntry;
+  err: TScpError;
+begin
+  if not Stat(RemoteJoin(ADir, AEntry.Name), False, e, err) then Exit;
+  if e.TypeUnknown then Exit;
+  AEntry.IsDir := e.IsDir;
+  AEntry.IsLink := e.IsLink;
+  AEntry.IsSpecial := e.IsSpecial;
+  AEntry.Mode := e.Mode;
+  AEntry.ModeKnown := e.ModeKnown;
+  AEntry.TypeUnknown := False;
+  AEntry.ReadOnly := e.ReadOnly;
+  AEntry.LinkTarget := e.LinkTarget;
+  if AEntry.IsDir then AEntry.Size := -1;
 end;
 
 function TSftpFileSystem.Stat(const APath: string; AFollowLink: Boolean;
@@ -615,7 +670,7 @@ begin
   until not WaitAgain(deadline);
   if rc < 0 then
   begin
-    AErr := LastError('Reading attributes of', APath, rc, False);
+    AErr := LastError('Reading attributes of', APath, rc, acDir);
     Exit(False);
   end;
   AttrsToEntry(attrs, AEntry);
@@ -674,7 +729,7 @@ begin
   until not WaitAgain(deadline);
   Result := rc = 0;
   if not Result then
-    AErr := LastError('Creating folder', APath, rc, True);
+    AErr := LastError('Creating folder', APath, rc, acWrite);
 end;
 
 function TSftpFileSystem.Rename(const AFrom, ATo: string;
@@ -697,7 +752,7 @@ begin
   until not WaitAgain(deadline);
   Result := rc = 0;
   if not Result then
-    AErr := LastError('Renaming to', ATo, rc, False);
+    AErr := LastError('Renaming to', ATo, rc, acWrite);
 end;
 
 function TSftpFileSystem.ReplaceAtomic(const AFrom, ATo: string;
@@ -724,7 +779,7 @@ begin
     if rc <> LIBSSH2_ERROR_EAGAIN then Break;
   until not WaitAgain(deadline);
   if rc = 0 then Exit(True);
-  AErr := LastError('Replacing', ATo, rc, False);
+  AErr := LastError('Replacing', ATo, rc, acWrite);
   // SSH_FX_OP_UNSUPPORTED est le SEUL cas ou un repli a du sens. SSH_FX_FAILURE
   // arrive aussi pour un disque plein ou une erreur d'E/S: le ranger ici ferait
   // supprimer la cible pour un echec qui se reproduirait a l'identique.
@@ -747,7 +802,7 @@ begin
   until not WaitAgain(deadline);
   Result := rc = 0;
   if not Result then
-    AErr := LastError('Deleting', APath, rc, False);
+    AErr := LastError('Deleting', APath, rc, acWrite);
 end;
 
 function TSftpFileSystem.DeleteDir(const APath: string;
@@ -766,7 +821,7 @@ begin
   until not WaitAgain(deadline);
   Result := rc = 0;
   if not Result then
-    AErr := LastError('Deleting folder', APath, rc, True);
+    AErr := LastError('Deleting folder', APath, rc, acWrite);
 end;
 
 function TSftpFileSystem.OpenRead(const APath: string;
@@ -792,7 +847,7 @@ begin
   if hnd = nil then
   begin
     AErr := LastError('Opening', APath,
-      libssh2_session_last_errno(FOwner.FSession), False);
+      libssh2_session_last_errno(FOwner.FSession), acRead);
     Exit(False);
   end;
   h := TSftpHandle.Create;
@@ -844,7 +899,7 @@ begin
       Exit(True);
     end;
     AErr := LastError('Creating a temporary file in', ADir,
-      libssh2_session_last_errno(FOwner.FSession), True);
+      libssh2_session_last_errno(FOwner.FSession), acWrite);
     if AErr.Kind <> sekAlreadyExists then
     begin
       if AErr.Kind = sekAccessDeniedDir then
@@ -882,7 +937,7 @@ begin
   if hnd = nil then
   begin
     AErr := LastError('Reopening', APath,
-      libssh2_session_last_errno(FOwner.FSession), False);
+      libssh2_session_last_errno(FOwner.FSession), acWrite);
     Exit(False);
   end;
   h := TSftpHandle.Create;
@@ -912,7 +967,7 @@ begin
   until not WaitAgain(deadline);
   if n < 0 then
   begin
-    AErr := LastError('Reading', h.Path, cint(n), False);
+    AErr := LastError('Reading', h.Path, cint(n), acRead);
     Exit(False);
   end;
   // n < ACount est normal en SFTP: une lecture courte, pas une fin. Seul 0 l'est.
@@ -937,7 +992,7 @@ begin
   until not WaitAgain(deadline);
   if n < 0 then
   begin
-    AErr := LastError('Writing', h.Path, cint(n), False);
+    AErr := LastError('Writing', h.Path, cint(n), acWrite);
     Exit(False);
   end;
   APut := Integer(n);
@@ -967,7 +1022,7 @@ begin
     if rc <> LIBSSH2_ERROR_EAGAIN then Break;
   until not WaitAgain(deadline);
   if rc = 0 then Exit(True);
-  AErr := LastError('Flushing', h.Path, rc, False);
+  AErr := LastError('Flushing', h.Path, rc, acWrite);
   // fsync@openssh.com est une extension que beaucoup de serveurs n'ont pas. Son
   // absence n'est pas un echec -- la fermeture reste le point de verite -- mais
   // elle change le sens de « confirme »: acquitte par le serveur, pas vide sur
@@ -1010,7 +1065,7 @@ begin
     // formalite ferait passer un fichier tronque pour un succes.
     if rc <> 0 then
     begin
-      AErr := LastError('Closing', h.Path, rc, False);
+      AErr := LastError('Closing', h.Path, rc, acWrite);
       Result := False;
     end;
     h.H := nil;
@@ -1056,9 +1111,9 @@ begin
   Result := rc = 0;
   if not Result then
   begin
-    AErr := LastError('Setting the timestamp of', APath, rc, False);
+    AErr := LastError('Setting the timestamp of', APath, rc, acWrite);
     // Le contenu est arrive: ce refus est un avertissement, pas une perte.
-    AErr.Kind := sekAttrRefused;
+    if not IsFatalToSession(AErr.Kind) then AErr.Kind := sekAttrRefused;
   end;
 end;
 
@@ -1085,8 +1140,8 @@ begin
   Result := rc = 0;
   if not Result then
   begin
-    AErr := LastError('Setting the mode of', APath, rc, False);
-    AErr.Kind := sekAttrRefused;
+    AErr := LastError('Setting the mode of', APath, rc, acWrite);
+    if not IsFatalToSession(AErr.Kind) then AErr.Kind := sekAttrRefused;
   end;
 end;
 
@@ -1206,7 +1261,12 @@ begin
   end;
 end;
 
-function TSftpTransport.RemoteFreeBytes(const APath: string): Int64;
+function TSftpTransport.RemoteFreeBytes(const APath: string;
+  out AErr: TScpError): Int64;
+const
+  // SSH_FX_OP_UNSUPPORTED seul veut dire « extension absente »; le reste est
+  // une panne.
+  FX_OP_UNSUPPORTED_ = 8;
 var
   st: TLibssh2SftpStatVfs;
   rc: cint;
@@ -1214,6 +1274,7 @@ var
   p: AnsiString;
 begin
   Result := -1;
+  AErr := NoScpError;
   if (FSftp = nil) or (not Assigned(libssh2_sftp_statvfs)) then Exit;
   p := AnsiString(RemoteNormalize(APath));
   FillChar(st, SizeOf(st), 0);
@@ -1221,12 +1282,26 @@ begin
   repeat
     rc := libssh2_sftp_statvfs(FSftp, PAnsiChar(p), Length(p), @st);
     if rc <> LIBSSH2_ERROR_EAGAIN then Break;
-    if Terminated or (GetTickCount64 >= deadline) then Exit;
+    if Terminated then Exit;
+    if GetTickCount64 >= deadline then
+    begin
+      // Une echeance n'est pas une absence d'extension: la session ne repond plus.
+      AErr := MakeScpError(sekTimeout, 'Reading free space of',
+        DisplaySafeName(APath), '');
+      Exit;
+    end;
     WaitIo(SFTP_POLL_MS);
   until Terminated;
-  // Le serveur n'annonce pas l'extension: -1, et l'appelant s'abstient
-  // plutot que de supposer de la place.
-  if rc <> 0 then Exit;
+  if rc <> 0 then
+  begin
+    // Extension absente: -1 sans erreur, l'appelant s'abstient. Coupure, echeance
+    // ou refus sont des erreurs, et elles sont rendues.
+    if (rc = LIBSSH2_ERROR_SFTP_PROTOCOL) and
+       (libssh2_sftp_last_error(FSftp) = FX_OP_UNSUPPORTED_) then
+      Exit;
+    AErr := FRemote.LastError('Reading free space of', APath, rc, acDir);
+    Exit;
+  end;
   if st.f_frsize = 0 then Exit;
   Result := Int64(st.f_bavail) * Int64(st.f_frsize);
 end;
@@ -1351,6 +1426,12 @@ end;
 
 procedure TSftpTransport.PostResult(AResult: TObject);
 begin
+  // Marque la commande en cours comme servie: une exception survenue apres ne
+  // doit pas poster une seconde reponse.
+  if (FCurrentCmd <> nil) and (AResult is TSftpResult) and
+     (TSftpResult(AResult).Kind in [srListed, srHome, srOpDone,
+       srFreeSpace]) then
+    FCurrentCmd.Answered := True;
   FPubLock.Acquire;
   try
     FPub.Add(AResult);
@@ -1382,7 +1463,7 @@ begin
         if Assigned(FOnListed) then
           FOnListed(r.Path, r.Serial, r.Entries, r.Error);
       srHome:
-        if Assigned(FOnHome) then FOnHome(r.Path, r.Error);
+        if Assigned(FOnHome) then FOnHome(r.Path, r.Serial, r.Error);
       srOpDone:
         if Assigned(FOnOpDone) then FOnOpDone(r.Error);
       srFreeSpace:
@@ -1514,13 +1595,13 @@ begin
   Result := PostCommand(c);
 end;
 
-procedure TSftpTransport.RequestHome;
+function TSftpTransport.RequestHome: Int64;
 var
   c: TSftpCommand;
 begin
   c := TSftpCommand.Create;
   c.Kind := sckRemoteHome;
-  PostCommand(c);
+  Result := PostCommand(c);
 end;
 
 procedure TSftpTransport.RequestMkdir(const APath: string);
@@ -1634,15 +1715,20 @@ end;
 procedure TSftpTransport.PauseTransfers;
 begin
   // Lu entre deux elements: celui en cours finit ou est annule, jamais suspendu.
-  FPaused := True;
+  InterlockedExchange(FPaused, 1);
   FQueue.PauseQueue;
 end;
 
 procedure TSftpTransport.ResumeTransfers;
 begin
-  FPaused := False;
+  InterlockedExchange(FPaused, 0);
   FQueue.ResumeQueue;
   RequestRunQueue;
+end;
+
+function TSftpTransport.IsPaused: Boolean;
+begin
+  Result := InterlockedCompareExchange(FPaused, 0, 0) <> 0;
 end;
 
 procedure TSftpTransport.Shutdown;
@@ -1750,10 +1836,11 @@ var
   srcFs, dstFs: TScpFileSystem;
   root, errText: string;
   interrupted: Boolean;
+  fatalErr: TScpError;
 begin
   while not Terminated do
   begin
-    if FPaused then Break;
+    if IsPaused then Break;
     // TENU jusqu'a ReleaseCurrent: « Clear completed » ne peut pas le liberer
     // sous nos pieds.
     item := FQueue.NextRunnable;
@@ -1776,6 +1863,7 @@ begin
     interrupted := False;
     errText := '';
     try
+      FEngine.TakeFatal(fatalErr);
       FEngine.RunItem(srcFs, dstFs, item, root);
       if item.IsRunnable then
       begin
@@ -1787,6 +1875,13 @@ begin
       // une fois rendu, « Clear completed » peut le liberer des la ligne suivante.
       interrupted := item.State = tsInterrupted;
       if interrupted then errText := ScpErrorText(item.Error);
+      // La coupure peut etre survenue APRES la publication: l'element est termine,
+      // la session est morte quand meme, et c'est le moteur qui l'a vu.
+      if FEngine.TakeFatal(fatalErr) and (not interrupted) then
+      begin
+        interrupted := True;
+        errText := ScpErrorText(fatalErr);
+      end;
     finally
       FQueue.ReleaseCurrent;
     end;
@@ -1867,6 +1962,7 @@ begin
         r := TSftpResult.Create;
         r.Kind := srHome;
         r.Path := path;
+        r.Serial := ACmd.Serial;
         r.Error := err;
         PostResult(r);
         FailIfFatal(err);
@@ -1978,8 +2074,9 @@ begin
         r := TSftpResult.Create;
         r.Kind := srFreeSpace;
         r.Path := ACmd.PathA;
-        r.FreeBytes := RemoteFreeBytes(ACmd.PathA);
+        r.FreeBytes := RemoteFreeBytes(ACmd.PathA, err);
         PostResult(r);
+        FailIfFatal(err);
       end;
     sckCleanupPartials:
       begin
@@ -2004,6 +2101,32 @@ begin
     Fail(ScpErrorText(AErr));
 end;
 
+procedure TSftpTransport.AnswerAfterException(ACmd: TSftpCommand;
+  const AMessage: string);
+var
+  r: TSftpResult;
+begin
+  if ACmd.Answered then Exit;
+  r := TSftpResult.Create;
+  case ACmd.Kind of
+    sckListRemote: r.Kind := srListed;
+    sckRemoteHome: r.Kind := srHome;
+    sckRemoteMkdir, sckRemoteRename, sckRemoteDelete: r.Kind := srOpDone;
+    sckFreeSpace: r.Kind := srFreeSpace;
+  else
+    begin
+      r.Free;
+      Exit;
+    end;
+  end;
+  r.Path := ACmd.PathA;
+  r.Serial := ACmd.Serial;
+  r.FreeBytes := -1;
+  r.Error := MakeScpError(sekOther, 'Serving', DisplaySafeName(ACmd.PathA),
+    AMessage);
+  PostResult(r);
+end;
+
 procedure TSftpTransport.CommandLoop;
 var
   cmd: TSftpCommand;
@@ -2017,7 +2140,7 @@ begin
     begin
       // Rien a servir: si une commande a interrompu la file, c'est ici qu'elle
       // reprend. Sans ce retour, un listing pendant un lot laissait la suite a quai.
-      if (not FPaused) and FQueue.HasRunnable then
+      if (not IsPaused) and FQueue.HasRunnable then
       begin
         DoRunQueue;
         Continue;
@@ -2029,8 +2152,9 @@ begin
       begin
         secondsToNext := 0;
         rc := libssh2_keepalive_send(FSession, @secondsToNext);
-        if (rc < 0) and (rc <> LIBSSH2_ERROR_EAGAIN) and
-           (rc <> LIBSSH2_ERROR_SOCKET_SEND) then
+        // Seul EAGAIN se differe: une sonde qui ne part pas est exactement le signe
+        // de connexion perdue qu'elle cherchait.
+        if (rc < 0) and (rc <> LIBSSH2_ERROR_EAGAIN) then
         begin
           Fail('Connection lost (keepalive): ' + LastErrorText);
           Exit;
@@ -2043,6 +2167,7 @@ begin
     end;
     try
       try
+        FCurrentCmd := cmd;
         RunCommand(cmd);
       except
         on E: Exception do
@@ -2052,9 +2177,12 @@ begin
           // relachera, et il resterait « en cours » sans meme etre reessayable.
           FQueue.FailCurrent(MakeScpError(sekOther, 'Transferring', '',
             E.Message));
+          // Et sans reponse, le panneau qui attend resterait occupe pour toujours.
+          AnswerAfterException(cmd, E.Message);
         end;
       end;
     finally
+      FCurrentCmd := nil;
       cmd.Free;
     end;
   end;

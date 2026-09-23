@@ -42,6 +42,10 @@ type
     // Mode reellement connu? Sans ce drapeau, 0 voudrait dire « inconnu » ET
     // « aucun droit », et un fichier en 0000 serait publie autrement.
     ModeKnown: Boolean;
+    // Le serveur n'a pas dit ce qu'est cette entree, ni au listing ni au lstat.
+    // IsDir, IsLink et IsSpecial sont alors tous faux, ce qui ne veut PAS dire
+    // « fichier ordinaire »: le moteur refuse ce qu'il ne sait pas nommer.
+    TypeUnknown: Boolean;
     MTimeUtc: Int64;       // secondes Unix, 0 si inconnue
     Owner: string;
     Group: string;

@@ -64,6 +64,9 @@ type
     procedure Commit;
     procedure Abandon;
     function Current: string;
+    // Le chemin qu'un Back ou un Forward attend, '' si aucun. Un rechargement du
+    // dossier affiche ne doit pas valider ce deplacement a sa place.
+    function PendingPath: string;
   end;
 
   TScpTab = class(TSessionTabBase)
@@ -174,7 +177,8 @@ type
     // --- relais du transport (thread UI) ---
     procedure RemoteListed(const APath: string; ASerial: Int64;
       const AEntries: TScpEntryArray; const AError: TScpError);
-    procedure RemoteHomeReady(const APath: string; const AError: TScpError);
+    procedure RemoteHomeReady(const APath: string; ASerial: Int64;
+      const AError: TScpError);
     procedure RemoteOpDone(const AError: TScpError);
     procedure TransportQueueChanged;
     procedure TransportNote(const AText: string);
@@ -325,6 +329,14 @@ end;
 procedure TNavHistory.Abandon;
 begin
   FPending := -1;
+end;
+
+function TNavHistory.PendingPath: string;
+begin
+  if (FPending >= 0) and (FPending < FItems.Count) then
+    Result := FItems[FPending]
+  else
+    Result := '';
 end;
 
 function TNavHistory.Current: string;
@@ -692,6 +704,10 @@ begin
       CaptureSide(fpsLocal);
     FLocalWanted := norm;
     FLocalPushPending := APushHistory;
+    // Un listing qui n'est pas celui du Back en attente ne doit pas le valider:
+    // l'index avancerait alors que le dossier d'avant est encore a l'ecran.
+    if (not APushHistory) and (FLocalHistory.PendingPath <> norm) then
+      FLocalHistory.Abandon;
     FLocalPanel.SetBusy(True, 'Reading ' + DisplaySafeName(norm) + '...');
     FLocalWantedSerial := FLocalWorker.RequestList(norm);
   end
@@ -715,6 +731,8 @@ begin
       CaptureSide(fpsRemote);
     FRemoteWanted := norm;
     FRemotePushPending := APushHistory;
+    if (not APushHistory) and (FRemoteHistory.PendingPath <> norm) then
+      FRemoteHistory.Abandon;
     FRemotePanel.SetBusy(True, 'Reading ' + DisplaySafeName(norm) + '...');
     FRemoteWantedSerial := FTransport.RequestList(norm);
   end;
@@ -848,7 +866,12 @@ begin
       if ASide = fpsLocal then
         NavigateTo(ASide, LocalHomePath, True)
       else if (FTransport <> nil) and (FState = rssConnected) then
-        FTransport.RequestHome;
+      begin
+        // Le home est une navigation comme une autre: il porte un numero, et une
+        // reponse en retard est ignoree comme le serait un listing.
+        FRemotePanel.SetBusy(True, 'Reading the home folder...');
+        FRemoteWantedSerial := FTransport.RequestHome;
+      end;
     fpaRefresh:
       begin
         panel.ClearError;
@@ -1303,14 +1326,18 @@ begin
     FRemoteSavedTop);
 end;
 
-procedure TScpTab.RemoteHomeReady(const APath: string;
+procedure TScpTab.RemoteHomeReady(const APath: string; ASerial: Int64;
   const AError: TScpError);
 begin
   if FClosing then Exit;
+  // Par numero, comme un listing: un home demande avant une navigation plus
+  // recente ne doit pas la defaire.
+  if ASerial <> FRemoteWantedSerial then Exit;
   if APath = '' then
   begin
     FRemotePanel.SetBusy(False, '');
     FRemotePanel.ShowError(AError);
+    FRemoteWantedSerial := 0;
     Exit;
   end;
   NavigateTo(fpsRemote, APath, True);
@@ -1362,7 +1389,10 @@ begin
     end;
   end
   else
-    FTransport.RequestHome;
+  begin
+    FRemotePanel.SetBusy(True, 'Reading the home folder...');
+    FRemoteWantedSerial := FTransport.RequestHome;
+  end;
 end;
 
 procedure TScpTab.TransportFailed(const AError: TScpError);

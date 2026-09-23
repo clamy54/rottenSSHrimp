@@ -372,8 +372,17 @@ begin
       except
         on E: Exception do
         begin
+          // La reponse doit etre de la sorte ATTENDUE: un listing qui repondrait
+          // « fait » laisserait le panneau sur « Reading... » pour toujours.
           r := TLocalResult.Create;
-          r.Kind := lrOpDone;
+          if op.Kind = lokList then
+          begin
+            r.Kind := lrListed;
+            r.Path := op.Arg1;
+            r.Serial := op.Serial;
+          end
+          else
+            r.Kind := lrOpDone;
           r.Error := MakeScpError(sekOther, 'Local operation', '',
             E.Message);
           PostResult(r);

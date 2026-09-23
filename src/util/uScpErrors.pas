@@ -79,10 +79,21 @@ function IsWorthRetrying(AKind: TScpErrorKind): Boolean;
 function ScpErrorKindLabel(AKind: TScpErrorKind): string;
 function ScpErrorText(const AError: TScpError): string;
 
-// Conversion depuis un code SSH_FX_* rendu par libssh2_sftp_last_error.
-// AIsDirOp distingue « dossier illisible » de « fichier illisible », que le
-// protocole confond tous deux dans SSH_FX_PERMISSION_DENIED.
-function SftpStatusToKind(AFxCode: LongWord; AIsDirOp: Boolean): TScpErrorKind;
+type
+  // Ce qu'on faisait quand l'acces a ete refuse: protocole et OS ne rendent
+  // qu'un « permission denied », le contexte dit lequel.
+  TScpAccessContext = (acRead, acWrite, acDir);
+
+function AccessDeniedKind(AContext: TScpAccessContext): TScpErrorKind;
+// Un refus d'acces ramene a celui de ce contexte; le reste passe tel quel.
+function WithAccessContext(const AError: TScpError;
+  AContext: TScpAccessContext): TScpError;
+
+// Depuis un code SSH_FX_*. AContext separe « source illisible », « cible non
+// inscriptible » et « dossier non traversable », que SSH_FX_PERMISSION_DENIED
+// confond.
+function SftpStatusToKind(AFxCode: LongWord;
+  AContext: TScpAccessContext): TScpErrorKind;
 function OsErrorToKind(AOsCode: Integer): TScpErrorKind;
 
 implementation
@@ -239,16 +250,32 @@ const
   FX_INVALID_FILENAME = 20;
   FX_LINK_LOOP = 21;
 
-function SftpStatusToKind(AFxCode: LongWord; AIsDirOp: Boolean): TScpErrorKind;
+function AccessDeniedKind(AContext: TScpAccessContext): TScpErrorKind;
+begin
+  case AContext of
+    acRead: Result := sekAccessDeniedRead;
+    acDir: Result := sekAccessDeniedDir;
+  else
+    Result := sekAccessDeniedWrite;
+  end;
+end;
+
+function WithAccessContext(const AError: TScpError;
+  AContext: TScpAccessContext): TScpError;
+begin
+  Result := AError;
+  if Result.Kind in [sekAccessDeniedDir, sekAccessDeniedRead,
+     sekAccessDeniedWrite] then
+    Result.Kind := AccessDeniedKind(AContext);
+end;
+
+function SftpStatusToKind(AFxCode: LongWord;
+  AContext: TScpAccessContext): TScpErrorKind;
 begin
   case AFxCode of
     FX_EOF: Result := sekPrematureEof;
     FX_NO_SUCH_FILE, FX_NO_SUCH_PATH: Result := sekNotFound;
-    FX_PERMISSION_DENIED:
-      if AIsDirOp then
-        Result := sekAccessDeniedDir
-      else
-        Result := sekAccessDeniedRead;
+    FX_PERMISSION_DENIED: Result := AccessDeniedKind(AContext);
     FX_NO_CONNECTION, FX_CONNECTION_LOST: Result := sekConnectionLost;
     FX_OP_UNSUPPORTED: Result := sekUnsupported;
     FX_INVALID_HANDLE: Result := sekPathGone;
