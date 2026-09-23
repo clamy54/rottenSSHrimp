@@ -102,7 +102,8 @@ straight in -- or with F5, or with the arrow at the end of the panel's
 toolbar. Right-click for the same actions plus rename, duplicate and delete.
 Transfers are recursive, and a queue says what is happening; cancelling one
 stops it where it is and leaves the destination as it was. A replaced file
-keeps its permissions, a new one gets its source's, never widened. If the
+keeps its permissions, a new one gets its source's read and write bits, never
+widened and never executable. If the
 connection drops, *Reconnect* replays the same prompts as opening the tab and
 interrupted transfers resume where they were confirmed.
 

@@ -160,9 +160,9 @@ type
 
 // Mode d'un fichier NEUF dont la source n'annonce rien (un disque Windows):
 // lisible par tous, inscriptible par son seul proprietaire, jamais executable.
-// Une source qui en annonce un le voit repris sans ecriture pour tous ni
-// setuid. L'umask peut encore restreindre, jamais elargir. Un fichier REMPLACE
-// garde les droits qu'il avait.
+// Une source qui en annonce un le voit repris sans ecriture pour tous, sans
+// setuid et sans bit d'execution. L'umask peut encore restreindre, jamais
+// elargir. Un fichier REMPLACE garde les droits qu'il avait.
 const
   SCP_DEFAULT_FILE_MODE = &0644;
   SCP_DEFAULT_DIR_MODE = &0755;

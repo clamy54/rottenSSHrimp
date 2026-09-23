@@ -407,14 +407,16 @@ begin
   end;
 end;
 
-// Droits d'un fichier NEUF d'apres sa source. Jamais d'ecriture pour tous ni
-// de setuid/setgid/sticky, quoi qu'elle annonce; un mode INCONNU (Windows,
-// serveur muet) donne le defaut. Un mode connu et NUL en est un: une source
-// sans aucun droit donne un fichier sans aucun droit.
+// Droits d'un fichier NEUF d'apres sa source: lecture et ecriture seulement.
+// Jamais d'ecriture pour tous, jamais de setuid/setgid/sticky, et jamais les
+// bits d'EXECUTION -- un script telecharge ne devient pas executable ici sans
+// qu'on l'ait demande. Un mode INCONNU (Windows, serveur muet) donne le
+// defaut. Un mode connu et NUL en est un: une source sans aucun droit donne
+// un fichier sans aucun droit.
 function ModeForNewFile(ASourceMode: LongWord; AModeKnown: Boolean): LongWord;
 begin
-  if not AModeKnown then Exit(SCP_DEFAULT_FILE_MODE and LongWord(&0775));
-  Result := ASourceMode and LongWord(&0775);
+  if not AModeKnown then Exit(SCP_DEFAULT_FILE_MODE and LongWord(&0664));
+  Result := ASourceMode and LongWord(&0664);
 end;
 
 { TScpTransferEngine }
