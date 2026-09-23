@@ -31,8 +31,7 @@ function StartScpSession(APages: TPageControl; ADoc: TRshDocument;
   ANotice: TSessionNoticeEvent; out AErr: string): TScpTab;
 
 // L'item « File Transfer » doit-il apparaitre pour ce noeud? Une seule
-// connexion SSH,
-// et rien d'autre.
+// connexion SSH, et rien d'autre.
 function CanOpenScp(AModel: TRshModel; const AConnUuid: string): Boolean;
 
 // Onglet Scp VIVANT pour cette connexion, nil sinon.

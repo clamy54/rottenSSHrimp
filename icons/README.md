@@ -61,12 +61,12 @@ Two consequences worth knowing before you touch it:
   to the hand-drawn one. Grep `XferIdFor` after any rename.
 
 A few icons the tab uses are not in this set and stay hand-drawn in that same
-unit: the **failed** queue state, whose circled cross has to stay distinct from
-the plain `x` used for **cancelled** — the two states sit in the same column and
-two bare crosses would differ only by colour — plus the drive, network drive and
-server glyphs. They coexist on screen without looking out of place because both
-follow the Tabler geometry, but they are not Tabler artwork and are not covered
-by the attribution above.
+unit: the **failed** queue state, whose circled cross has to stay distinct
+from the plain `x` used for **cancelled**: the two states sit in the same
+column and two bare crosses would differ only by colour. Plus the drive,
+network drive and server glyphs. They coexist on screen without looking out of
+place because both follow the Tabler geometry, but they are not Tabler artwork
+and are not covered by the attribution above.
 
 ## The `-dark` / `-light` trap
 
