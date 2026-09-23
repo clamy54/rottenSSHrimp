@@ -407,7 +407,7 @@ begin
     siLinkBroken: Result := 'link-off';
     siSpecial:    Result := 'file-special';
     siCheck:      Result := 'check';
-    siWarning:    Result := 'warning';
+    siWarning:    Result := 'alert-circle';
     siPause:      Result := 'player-pause';
     siPlay:       Result := 'player-play';
     // Croix de l'ANNULATION. L'echec garde sa croix CERCLEE: les deux etats se

@@ -4,6 +4,7 @@
 // existent reellement, et le dessin ne choisit que parmi elles.
 const
   XFER_ICON_IDS: array[0..21] of string = (
+    'alert-circle',
     'arrow-narrow-down',
     'arrow-narrow-left',
     'arrow-narrow-right',
@@ -24,7 +25,6 @@ const
     'player-play',
     'refresh',
     'upload',
-    'warning',
     'x');
   XFER_ICON_SIZES: array[0..11] of Integer = (
     12, 14, 16, 18, 20, 22, 24, 28,
