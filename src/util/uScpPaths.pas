@@ -197,10 +197,11 @@ var
 begin
   Result := BasicNameVerdict(AName);
   if Result <> nvOk then Exit;
-  // Un '\' est un caractere ordinaire cote POSIX; ici il ferait un dossier.
+  {$IFDEF WINDOWS}
+  // Ici seulement un '\' ferait un dossier. Sous POSIX c'est un caractere de
+  // nom, et refuser « a\b » y empecherait un telechargement legitime.
   for i := 1 to Length(AName) do
     if AName[i] = '\' then Exit(nvSeparator);
-  {$IFDEF WINDOWS}
   for i := 1 to Length(AName) do
   begin
     c := AName[i];

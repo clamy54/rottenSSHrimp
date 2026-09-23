@@ -758,7 +758,14 @@ function PathIsUnder(const ARoot, APath: string): Boolean;
 begin
   Result := (ARoot <> '') and (Length(APath) > Length(ARoot)) and
     (Copy(APath, 1, Length(ARoot)) = ARoot) and
-    ((APath[Length(ARoot) + 1] = '/') or (APath[Length(ARoot) + 1] = '\'));
+    // Le separateur de la plateforme, plus '/' sous Windows pour les chemins
+    // distants. Sous POSIX '\' est un caractere de nom: l'accepter ici ferait
+    // annuler « d\x » avec le dossier « d ».
+    {$IFDEF WINDOWS}
+    ((APath[Length(ARoot) + 1] = '\') or (APath[Length(ARoot) + 1] = '/'));
+    {$ELSE}
+    (APath[Length(ARoot) + 1] = '/');
+    {$ENDIF}
 end;
 
 // Annuler un DOSSIER annule ce qui devait y aller: sans cela sa ligne passe a
