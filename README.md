@@ -122,7 +122,10 @@ like files do -- Shift and Ctrl (Cmd on macOS) with the mouse or the arrows,
 Ctrl+A for all, Delete to cancel the selection -- and *Clear completed* keeps
 what is still selected. A replaced file
 keeps its permissions -- on Windows its ACL; setuid, setgid and sticky bits
-are never carried onto new content -- and a new one gets its source's read
+are never carried onto new content. A file whose permissions, or whose very
+type, the server will not tell is left alone rather than replaced, and a
+symbolic link in the way is replaced by a new file, never followed. A new
+file gets its source's read
 and write bits, never widened and never executable. A new folder is created
 with its source's permissions from the start, so a private folder is never
 readable by others while it fills, and its source is read again just before
@@ -131,7 +134,8 @@ keeps from others -- a private file or folder -- and any temporary file that
 will replace an existing one are created with an ACL for you, SYSTEM and
 Administrators only, and keep it through an interruption; everything else
 inherits the folder's ACL like any new file. A duplicate on the local disk
-takes its source's own ACL before a single byte is written. Windows ACLs are
+takes its source's own ACL before a single byte is written, and its
+read-only, hidden and system attributes before it appears. Windows ACLs are
 not translated into permission bits on upload: a new file there gets the
 server's usual read and write bits. A selection that would take the
 queue past 500,000 items is set aside whole, with the reason, rather than

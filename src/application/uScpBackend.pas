@@ -106,6 +106,10 @@ type
       out AErr: TScpError): Boolean; virtual; abstract;
     function DeleteFile(const APath: string; out AErr: TScpError): Boolean;
       virtual; abstract;
+    // Retire un temporaire A NOUS, meme devenu lecture seule par
+    // CopyAttributesFrom: sans cela il ne partirait plus. Defaut: DeleteFile.
+    function DeleteTemp(const APath: string; out AErr: TScpError): Boolean;
+      virtual;
     function DeleteDir(const APath: string; out AErr: TScpError): Boolean;
       virtual; abstract;
 
@@ -164,6 +168,11 @@ type
     // creation et une copie de droits apres coup. Defaut: MakeDir.
     function MakeDirFromSource(const ASourcePath, APath: string;
       AMode: LongWord; out AErr: TScpError): Boolean; virtual;
+    // Copie sur place, par les POIGNEES: les attributs de la source que ni les
+    // modes ni la DACL ne portent (lecture seule, cache, systeme, hors index).
+    // Appele en dernier, juste avant de fermer le temporaire. Defaut: rien.
+    function CopyAttributesFrom(ASource, ATarget: TScpFileHandle;
+      out AErr: TScpError): Boolean; virtual;
 
     // --- Chemins: chaque cote a ses regles, jamais de concatenation nue ---
     function Join(const ABase, AName: string): string; virtual; abstract;
@@ -208,6 +217,19 @@ function TScpFileSystem.MakeDirFromSource(const ASourcePath, APath: string;
   AMode: LongWord; out AErr: TScpError): Boolean;
 begin
   Result := MakeDir(APath, AMode, AErr);
+end;
+
+function TScpFileSystem.CopyAttributesFrom(ASource, ATarget: TScpFileHandle;
+  out AErr: TScpError): Boolean;
+begin
+  AErr := NoScpError;
+  Result := True;
+end;
+
+function TScpFileSystem.DeleteTemp(const APath: string;
+  out AErr: TScpError): Boolean;
+begin
+  Result := DeleteFile(APath, AErr);
 end;
 
 end.

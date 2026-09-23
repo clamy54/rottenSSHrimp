@@ -569,12 +569,14 @@ var
   name: string;
   p: AnsiString;
   closeRc: cint;
-  closeErr: TScpError;
+  listErr, closeErr: TScpError;
 begin
   SetLength(AEntries, 0);
   AErr := NoScpError;
   n := 0;
   closeRc := 0;
+  listErr := NoScpError;
+  closeErr := NoScpError;
   p := AnsiString(RemoteNormalize(APath));
   deadline := GetTickCount64 + SFTP_OP_TIMEOUT_MS;
   repeat
@@ -590,14 +592,18 @@ begin
       libssh2_session_last_errno(FOwner.FSession), acDir);
     Exit(False);
   end;
+  // Aucune sortie avant la fermeture: une coupure qu'elle revele doit pouvoir
+  // l'emporter sur l'erreur qui a arrete le listing.
   try
     while True do
     begin
-      if FOwner.Terminated then
+      // Canceled, « Cancel selected » compris, a CHAQUE entree: libssh2 rend
+      // sans EAGAIN ce qu'il a deja recu, et WaitAgain ne voit alors rien.
+      if Canceled then
       begin
-        AErr := MakeScpError(sekCanceled, 'Listing', DisplaySafeName(APath),
-          '');
-        Exit(False);
+        listErr := MakeScpError(sekCanceled, 'Listing',
+          DisplaySafeName(APath), '');
+        Break;
       end;
       deadline := GetTickCount64 + SFTP_OP_TIMEOUT_MS;
       FillChar(attrs, SizeOf(attrs), 0);
@@ -609,8 +615,8 @@ begin
       if rc = 0 then Break;          // fin du repertoire
       if rc < 0 then
       begin
-        AErr := LastError('Listing', APath, rc, acDir);
-        Exit(False);
+        listErr := LastError('Listing', APath, rc, acDir);
+        Break;
       end;
       if rc > SFTP_NAME_MAX then rc := SFTP_NAME_MAX;
       SetString(name, PAnsiChar(@nameBuf[0]), rc);
@@ -619,44 +625,47 @@ begin
       if n >= SCP_MAX_DIR_ENTRIES then
       begin
         // Un serveur qui envoie sans fin: on s'arrete et on le dit.
-        AErr := MakeScpError(sekOther, 'Listing', DisplaySafeName(APath),
+        listErr := MakeScpError(sekOther, 'Listing', DisplaySafeName(APath),
           Format('the server returned more than %d entries',
             [SCP_MAX_DIR_ENTRIES]));
-        Exit(False);
+        Break;
       end;
-      SetLength(AEntries, n + 1);
+      if n = Length(AEntries) then
+        SetLength(AEntries, ScpListCapacity(n));
       AEntries[n] := Default(TScpEntry);
       AEntries[n].Name := name;
       AEntries[n].Hidden := name[1] = '.';
       AttrsToEntry(attrs, AEntries[n]);
       if AEntries[n].TypeUnknown then
-        if not RefineUnknownType(APath, AEntries[n], AErr) then Exit(False);
+        if not RefineUnknownType(APath, AEntries[n], listErr) then Break;
       ParseLongEntryOwner(string(AnsiString(PAnsiChar(@longBuf[0]))),
         AEntries[n]);
       if AEntries[n].IsLink then
-        if not DescribeLink(APath, AEntries[n], AErr) then Exit(False);
+        if not DescribeLink(APath, AEntries[n], listErr) then Break;
       Inc(n);
     end;
   finally
+    SetLength(AEntries, n);
+    // WaitToClose et pas WaitAgain: une annulation coupait l'attente, et la
+    // poignee restait ouverte sur le serveur jusqu'a la deconnexion.
     deadline := GetTickCount64 + SFTP_OP_TIMEOUT_MS;
     repeat
       closeRc := libssh2_sftp_close_handle(h);
       if closeRc <> LIBSSH2_ERROR_EAGAIN then Break;
-    until not WaitAgain(deadline);
+    until not WaitToClose(deadline);
+    if closeRc < 0 then
+      closeErr := LastError('Closing', APath, closeRc, acDir);
   end;
-  // Le contenu est complet, mais la fermeture peut reveler une coupure: la
-  // taire laisserait la session affichee connectee. Un refus ordinaire, lui,
-  // ne change rien a ce qui a ete lu.
-  if closeRc < 0 then
-  begin
-    closeErr := LastError('Closing', APath, closeRc, acDir);
-    if IsFatalToSession(closeErr.Kind) then
-    begin
-      AErr := closeErr;
-      Exit(False);
-    end;
-  end;
-  Result := True;
+  // Une seule issue, par ordre de gravite: coupure au listing, coupure a la
+  // fermeture, puis ce qui a arrete le listing -- annulation ou refus. Un
+  // refus ordinaire a la fermeture ne change rien a un contenu complet.
+  if IsFatalToSession(listErr.Kind) then
+    AErr := listErr
+  else if IsFatalToSession(closeErr.Kind) then
+    AErr := closeErr
+  else
+    AErr := listErr;
+  Result := AErr.Kind = sekNone;
 end;
 
 // False seulement si le lstat a ete coupe par la session: un refus ordinaire

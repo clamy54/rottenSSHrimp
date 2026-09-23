@@ -98,6 +98,10 @@ type
     {$IFDEF WINDOWS}
     function MakeDirFromSource(const ASourcePath, APath: string;
       AMode: LongWord; out AErr: TScpError): Boolean; override;
+    function CopyAttributesFrom(ASource, ATarget: TScpFileHandle;
+      out AErr: TScpError): Boolean; override;
+    function DeleteTemp(const APath: string;
+      out AErr: TScpError): Boolean; override;
     {$ENDIF}
     function Join(const ABase, AName: string): string; override;
     function Parent(const APath: string): string; override;
@@ -131,12 +135,14 @@ const
   READ_CONTROL_ = $00020000;
   SYNCHRONIZE_ = $00100000;
   FILE_READ_ATTRIBUTES_ = $0080;
+  FILE_WRITE_ATTRIBUTES_ = $0100;
   FILE_LIST_DIRECTORY_ = $0001;
   FILE_SHARE_DELETE_ = $0004;
   FILE_OPEN_REPARSE_POINT_ = $00200000;
   FILE_OPEN_FOR_BACKUP_INTENT_ = $00004000;
   FILE_SYNCHRONOUS_IO_NONALERT_ = $00000020;
   OBJ_CASE_INSENSITIVE_ = $00000040;
+  FileBasicInfo_ = 0;
   FileDispositionInfo_ = 4;
   FileIdBothDirectoryInfo_ = 10;
   FileIdBothDirectoryRestartInfo_ = 11;
@@ -217,6 +223,11 @@ type
   end;
   TFileDispositionInfo = record
     DeleteFile: ByteBool;
+  end;
+  // FILE_BASIC_INFO: une date a zero n'est pas touchee.
+  TFileBasicInfo = record
+    CreationTime, LastAccessTime, LastWriteTime, ChangeTime: Int64;
+    FileAttributes: DWORD;
   end;
   // FILE_ID_BOTH_DIR_INFO de winbase.h.
   TFileIdBothDirInfo = record
@@ -431,6 +442,17 @@ begin
   Result := W(LocalNativePath(APath));
 end;
 
+// Ce qu'une copie sur place reprend de sa source, et rien d'autre: ni
+// compression, ni chiffrement, ni point de reanalyse. Zero s'ecrit NORMAL,
+// sinon FILE_BASIC_INFO laisserait les attributs herites en place.
+function CopiedAttributes(AAttrs: DWORD): DWORD;
+begin
+  Result := AAttrs and (FILE_ATTRIBUTE_READONLY or FILE_ATTRIBUTE_HIDDEN or
+    FILE_ATTRIBUTE_SYSTEM or FILE_ATTRIBUTE_ARCHIVE or
+    FILE_ATTRIBUTE_NOT_CONTENT_INDEXED_);
+  if Result = 0 then Result := FILE_ATTRIBUTE_NORMAL;
+end;
+
 function LastErr(const AOp, ASubject: string): TScpError;
 var
   code: Integer;
@@ -617,7 +639,8 @@ begin
           Format('more than %d entries', [SCP_MAX_DIR_ENTRIES]));
         Exit(False);
       end;
-      SetLength(AEntries, n + 1);
+      if n = Length(AEntries) then
+        SetLength(AEntries, ScpListCapacity(n));
       AEntries[n] := Default(TScpEntry);
       AEntries[n].Name := name;
       FillEntryFromAttrs(AEntries[n], fd.dwFileAttributes,
@@ -632,6 +655,7 @@ begin
       Exit(False);
     end;
   finally
+    SetLength(AEntries, n);
     Windows.FindClose(h);
   end;
   {$ELSE}
@@ -671,7 +695,8 @@ begin
         Exit(False);
       end;
       full := LocalJoin(APath, name);
-      SetLength(AEntries, n + 1);
+      if n = Length(AEntries) then
+        SetLength(AEntries, ScpListCapacity(n));
       AEntries[n] := Default(TScpEntry);
       AEntries[n].Name := name;
       AEntries[n].Hidden := name[1] = '.';
@@ -695,6 +720,7 @@ begin
       Inc(n);
     until False;
   finally
+    SetLength(AEntries, n);
     fpCloseDir(d^);
   end;
   {$ENDIF}
@@ -1013,10 +1039,12 @@ function TLocalFileSystem.MakeDirFromSource(const ASourcePath, APath: string;
   AMode: LongWord; out AErr: TScpError): Boolean;
 var
   h: THandle;
-  info: TByHandleFileInformation;
-  need: DWORD;
+  info, made: TByHandleFileInformation;
+  need, code: DWORD;
   sd: array of Byte;
   sa: TSecurityAttributes;
+  basic: TFileBasicInfo;
+  disp: TFileDispositionInfo;
 begin
   Result := False;
   AErr := NoScpError;
@@ -1031,24 +1059,44 @@ begin
     Exit;
   end;
   try
-    if (not GetFileInformationByHandle(h, info)) or
-       ((info.dwFileAttributes and (FILE_ATTRIBUTE_DIRECTORY or
-         FILE_ATTRIBUTE_REPARSE_POINT)) <> FILE_ATTRIBUTE_DIRECTORY) then
+    // Une E/S qui echoue (partage deconnecte) n'est pas « plus un dossier »:
+    // chaque cause garde son code, lu AVANT tout autre appel.
+    if not GetFileInformationByHandle(h, info) then
+    begin
+      AErr := LastErr('Duplicating', ASourcePath);
+      Exit;
+    end;
+    if (info.dwFileAttributes and (FILE_ATTRIBUTE_DIRECTORY or
+        FILE_ATTRIBUTE_REPARSE_POINT)) <> FILE_ATTRIBUTE_DIRECTORY then
     begin
       AErr := MakeScpError(sekNotADirectory, 'Duplicating',
         DisplaySafeName(ASourcePath), 'the source is not a folder any more');
       Exit;
     end;
+    // Le premier appel DOIT echouer faute de place, et seulement ainsi.
     need := 0;
-    GetKernelObjectSecurity(h, DACL_SECURITY_INFORMATION, nil, 0, @need);
-    SetLength(sd, need);
-    if (need = 0) or (not GetKernelObjectSecurity(h,
-       DACL_SECURITY_INFORMATION, @sd[0], need, @need)) then
+    if GetKernelObjectSecurity(h, DACL_SECURITY_INFORMATION, nil, 0, @need)
+    then
+      code := ERROR_INVALID_DATA
+    else
+      code := GetLastError;
+    if (code = ERROR_INSUFFICIENT_BUFFER) and (need > 0) then
+    begin
+      SetLength(sd, need);
+      if GetKernelObjectSecurity(h, DACL_SECURITY_INFORMATION, @sd[0], need,
+         @need) then
+        code := ERROR_SUCCESS
+      else
+        code := GetLastError;
+    end
+    else if code = ERROR_INSUFFICIENT_BUFFER then
+      code := ERROR_INVALID_DATA;
+    if code <> ERROR_SUCCESS then
     begin
       AErr := MakeScpError(sekAttrRefused, 'Duplicating',
         DisplaySafeName(ASourcePath),
         Format('the permissions of the source could not be read (Windows ' +
-          'error %d); the copy was not created', [GetLastError]));
+          'error %d); the copy was not created', [code]));
       Exit;
     end;
   finally
@@ -1057,9 +1105,136 @@ begin
   sa.nLength := SizeOf(sa);
   sa.bInheritHandle := False;
   sa.lpSecurityDescriptor := @sd[0];
-  Result := CreateDirectoryW(PWideChar(NativeW(APath)), @sa);
-  if not Result then
+  if not CreateDirectoryW(PWideChar(NativeW(APath)), @sa) then
+  begin
     AErr := LastErr('Creating folder', APath);
+    Exit;
+  end;
+  // Les attributs (cache, systeme, hors index...) par une POIGNEE sur le
+  // dossier cree, et non par son nom: il est encore vide, et s'ils ne tiennent
+  // pas il repart par cette meme poignee.
+  h := CreateFileW(PWideChar(NativeW(APath)), DELETE_ or
+    FILE_READ_ATTRIBUTES_ or FILE_WRITE_ATTRIBUTES_,
+    FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE_, nil,
+    OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS or FILE_FLAG_OPEN_REPARSE_POINT_,
+    0);
+  if h = INVALID_HANDLE_VALUE then
+  begin
+    AErr := LastErr('Setting the attributes of', APath);
+    Exit;
+  end;
+  try
+    if not GetFileInformationByHandle(h, made) then
+    begin
+      AErr := LastErr('Setting the attributes of', APath);
+      Exit;
+    end;
+    if (made.dwFileAttributes and (FILE_ATTRIBUTE_DIRECTORY or
+        FILE_ATTRIBUTE_REPARSE_POINT)) <> FILE_ATTRIBUTE_DIRECTORY then
+    begin
+      AErr := MakeScpError(sekOutsideRoot, 'Creating folder',
+        DisplaySafeName(APath), 'the new folder was replaced before its ' +
+        'attributes could be set');
+      Exit;
+    end;
+    basic := Default(TFileBasicInfo);
+    basic.FileAttributes := CopiedAttributes(info.dwFileAttributes);
+    if not SetFileInformationByHandle(h, FileBasicInfo_, @basic,
+       SizeOf(basic)) then
+    begin
+      code := GetLastError;
+      disp.DeleteFile := True;
+      SetFileInformationByHandle(h, FileDispositionInfo_, @disp, SizeOf(disp));
+      AErr := MakeScpError(sekAttrRefused, 'Creating folder',
+        DisplaySafeName(APath), Format('the attributes of the source could ' +
+          'not be given to the copy (Windows error %d); the copy was not ' +
+          'created', [code]));
+      Exit;
+    end;
+  finally
+    CloseHandle(h);
+  end;
+  Result := True;
+end;
+
+// Par les poignees: la source est celle qu'on a lue, le temporaire celui
+// qu'on a ecrit. Lecture seule comprise: DeleteTemp saura la lever.
+function TLocalFileSystem.CopyAttributesFrom(ASource, ATarget: TScpFileHandle;
+  out AErr: TScpError): Boolean;
+var
+  info: TByHandleFileInformation;
+  basic: TFileBasicInfo;
+  code: DWORD;
+begin
+  Result := False;
+  AErr := NoScpError;
+  if not GetFileInformationByHandle(TLocalHandle(ASource).H, info) then
+  begin
+    code := GetLastError;
+    AErr := MakeScpError(sekAttrRefused, 'Duplicating',
+      DisplaySafeName(TLocalHandle(ASource).Path),
+      Format('the attributes of the source could not be read (Windows ' +
+        'error %d); the copy was not published', [code]));
+    Exit;
+  end;
+  basic := Default(TFileBasicInfo);
+  basic.FileAttributes := CopiedAttributes(info.dwFileAttributes);
+  if not SetFileInformationByHandle(TLocalHandle(ATarget).H, FileBasicInfo_,
+     @basic, SizeOf(basic)) then
+  begin
+    code := GetLastError;
+    AErr := MakeScpError(sekAttrRefused, 'Duplicating',
+      DisplaySafeName(TLocalHandle(ASource).Path),
+      Format('the attributes of the source could not be given to the copy ' +
+        '(Windows error %d); the copy was not published', [code]));
+    Exit;
+  end;
+  Result := True;
+end;
+
+// Un temporaire en lecture seule refuse DeleteFileW. On ne leve l'attribut que
+// sur ce qu'une poignee ouverte sans suivre de lien montre etre un fichier en
+// lecture seule, et on le retire par cette meme poignee.
+function TLocalFileSystem.DeleteTemp(const APath: string;
+  out AErr: TScpError): Boolean;
+var
+  h: THandle;
+  code: DWORD;
+  info: TByHandleFileInformation;
+  basic: TFileBasicInfo;
+  disp: TFileDispositionInfo;
+begin
+  AErr := NoScpError;
+  if DeleteFileW(PWideChar(NativeW(APath))) then Exit(True);
+  code := GetLastError;
+  AErr := LastErr('Deleting', APath);
+  Result := False;
+  if code <> ERROR_ACCESS_DENIED then Exit;
+  h := CreateFileW(PWideChar(NativeW(APath)), DELETE_ or
+    FILE_READ_ATTRIBUTES_ or FILE_WRITE_ATTRIBUTES_,
+    FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE_, nil,
+    OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT_, 0);
+  if h = INVALID_HANDLE_VALUE then Exit;
+  try
+    if (not GetFileInformationByHandle(h, info)) or
+       ((info.dwFileAttributes and (FILE_ATTRIBUTE_READONLY or
+         FILE_ATTRIBUTE_DIRECTORY or FILE_ATTRIBUTE_REPARSE_POINT)) <>
+         FILE_ATTRIBUTE_READONLY) then
+      Exit;
+    basic := Default(TFileBasicInfo);
+    basic.FileAttributes := CopiedAttributes(info.dwFileAttributes and
+      (not FILE_ATTRIBUTE_READONLY));
+    disp.DeleteFile := True;
+    if SetFileInformationByHandle(h, FileBasicInfo_, @basic, SizeOf(basic))
+       and SetFileInformationByHandle(h, FileDispositionInfo_, @disp,
+         SizeOf(disp)) then
+    begin
+      AErr := NoScpError;
+      Result := True;
+    end;
+  finally
+    CloseHandle(h);
+  end;
 end;
 {$ENDIF}
 

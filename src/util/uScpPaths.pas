@@ -34,6 +34,7 @@ const
   SCP_MAX_PATH_BYTES = 4096;
   SCP_MAX_DEPTH = 64;
   SCP_MAX_DIR_ENTRIES = 200000;
+  SCP_LIST_FIRST_CAPACITY = 256;
 
 type
   // Pourquoi un nom est refuse. Le texte va a l'utilisateur: il nomme la cause.
@@ -123,6 +124,10 @@ function ScpApplyMode(AOld, ABits, AMask: LongWord;
 // Quatre chiffres, toujours: « 755 » et « 0755 » se lisent pareil, mais la
 // forme fixe montre que le premier chiffre existe et vaut zero.
 function ScpModeToOctal(AMode: LongWord): string;
+// Taille suivante d'un tableau de listing plein a ACount: il DOUBLE, borne par
+// SCP_MAX_DIR_ENTRIES. Une entree de plus a chaque fois recopiait tout le
+// tableau, chaines comprises, a chaque entree: quadratique sur 200 000.
+function ScpListCapacity(ACount: Integer): Integer;
 // False si ce n'est pas un octal de 1 a 4 chiffres. Un champ mal saisi ne doit
 // pas se traduire par un mode arbitraire.
 function ScpOctalToMode(const AText: string; out AMode: LongWord): Boolean;
@@ -706,6 +711,16 @@ begin
     for i := 0 to 2 do
       if (Result and (LongWord(4) shl (i * 3))) <> 0 then
         Result := Result or (LongWord(1) shl (i * 3));
+end;
+
+function ScpListCapacity(ACount: Integer): Integer;
+begin
+  if ACount < SCP_LIST_FIRST_CAPACITY then
+    Result := SCP_LIST_FIRST_CAPACITY
+  else if ACount >= SCP_MAX_DIR_ENTRIES div 2 then
+    Result := SCP_MAX_DIR_ENTRIES
+  else
+    Result := ACount * 2;
 end;
 
 function ScpModeToOctal(AMode: LongWord): string;

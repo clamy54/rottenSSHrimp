@@ -135,11 +135,13 @@ type
   TScpConflictOutcome = record
     ResumeFrom: Int64;
     ResumeTemp: string;
-    // Droits de la cible remplacee. PrevModeKnown distingue « inconnus » de
-    // « reellement 0000 »: un fichier sans aucun droit doit en garder zero.
+    // Droits LUS de la cible remplacee: un fichier sans aucun droit en garde
+    // zero. Une cible dont les droits ne se lisent pas n'est pas remplacee.
     PrevMode: LongWord;
-    PrevModeKnown: Boolean;
     TargetExisted: Boolean;
+    // La cible est un LIEN: le rename remplace le lien, qui n'a pas de droits a
+    // garder, par un fichier neuf.
+    TargetIsLink: Boolean;
   end;
 
   TScpTransferEngine = class
@@ -649,7 +651,7 @@ begin
     // reprise prendrait plus tard celui des deux qu'elle trouve en premier.
     // Oublie seulement ce qui est parti: un partiel qu'on n'a pas pu retirer
     // doit rester nettoyable a la fermeture.
-    if ADstFs.DeleteFile(stale[i], err) or (err.Kind = sekNotFound) then
+    if ADstFs.DeleteTemp(stale[i], err) or (err.Kind = sekNotFound) then
       FPartials.Forget(stale[i]);
   end;
 end;
@@ -659,7 +661,7 @@ procedure TScpTransferEngine.DiscardPartial(ADstFs: TScpFileSystem;
 var
   err: TScpError;
 begin
-  if ADstFs.DeleteFile(ATempPath, err) or (err.Kind = sekNotFound) then
+  if ADstFs.DeleteTemp(ATempPath, err) or (err.Kind = sekNotFound) then
     FPartials.Forget(ATempPath);
 end;
 
@@ -1453,6 +1455,16 @@ begin
     AErr := statErr;
     Exit;
   end;
+  // Sans type, rien n'est « un fichier ordinaire »: sous SFTP le type vient
+  // des permissions, et un serveur qui les tait laisserait croire a un fichier
+  // ce qui est peut-etre un dossier.
+  if dstEntry.TypeUnknown then
+  begin
+    AErr := MakeScpError(sekOther, 'Copying', DisplaySafeName(ATargetPath),
+      'the server did not say whether the destination is a file, a folder ' +
+      'or a link; it was left untouched');
+    Exit;
+  end;
   if dstEntry.IsDir then
   begin
     // Ecraser un dossier par un fichier n'est pas un conflit ordinaire.
@@ -1461,6 +1473,16 @@ begin
       'the destination is a folder, not a file');
     Exit;
   end;
+  if (not dstEntry.IsLink) and (not dstEntry.ModeKnown) then
+  begin
+    // « Un fichier remplace garde ses droits »: des droits qu'on ne lit pas ne
+    // se gardent pas. Refuse AVANT la question, la cible reste intacte.
+    AErr := MakeScpError(sekAttrRefused, 'Copying',
+      DisplaySafeName(ATargetPath), 'the permissions of the existing file ' +
+      'could not be read, so they could not be kept; it was left untouched');
+    Exit;
+  end;
+  AOutcome.TargetIsLink := dstEntry.IsLink;
   if dstEntry.IsLink then
   begin
     if ADstFs.Stat(ATargetPath, True, dstEntry, statErr) then
@@ -1473,9 +1495,8 @@ begin
   begin
     info.TargetSize := dstEntry.Size;
     info.TargetTimeUtc := dstEntry.MTimeUtc;
-    AOutcome.PrevMode := dstEntry.Mode and LongWord(&07777);
     // Mode LU: zero veut dire « aucun droit » et doit le rester.
-    AOutcome.PrevModeKnown := dstEntry.ModeKnown;
+    AOutcome.PrevMode := dstEntry.Mode and LongWord(&07777);
   end;
 
   info.ResumeAllowed := FPartials.FindResumable(ATargetPath,
@@ -1543,8 +1564,8 @@ begin
             AOutcome.ResumeTemp := '';
             // Le nom retenu n'existait pas: la publication doit le creer sans ecraser.
             AOutcome.TargetExisted := False;
+            AOutcome.TargetIsLink := False;
             AOutcome.PrevMode := 0;
-            AOutcome.PrevModeKnown := False;
             Exit(True);
           end;
         end;
@@ -1929,7 +1950,7 @@ var
   targetPath, tempPath, parentDir: string;
   resumeFrom: Int64;
   resumeTemp: string;
-  targetExisted, found, okCopy: Boolean;
+  targetExisted, replacesFile, found, okCopy: Boolean;
   v: TNameVerdict;
   prevMode, newMode, tempMode: LongWord;
   why: string;
@@ -2149,17 +2170,19 @@ begin
   // les deux serait remplace sans que personne l'ait vu. Une cible vue absente
   // se publie par un rename qui REFUSE d'ecraser.
   targetExisted := outcome.TargetExisted;
+  // Un lien remplace laisse place a un fichier NEUF: rien a garder de lui.
+  replacesFile := targetExisted and (not outcome.TargetIsLink);
 
   // Refus = annule par l'interface pendant qu'on preparait: rien n'est ecrit.
   if not FQueue.SetState(AItem, tsTransferring) then Exit;
   parentDir := ADstFs.Parent(targetPath);
   // Le mode d'un fichier NEUF est donne A LA CREATION du temporaire, ce qui
-  // laisse l'umask le restreindre; un chmod apres coup passerait outre. Si une
-  // cible EXISTE, le temporaire nait en 0600 et recoit les droits de la cible
+  // laisse l'umask le restreindre; un chmod apres coup passerait outre. Si un
+  // fichier EXISTE, le temporaire nait en 0600 et recoit les droits de la cible
   // juste avant la publication.
   newMode := ModeForNewFile(srcEntry.Mode, srcEntry.ModeKnown);
   tempMode := newMode;
-  if targetExisted then tempMode := LongWord(&0600);
+  if replacesFile then tempMode := LongWord(&0600);
   try
     if not ASrcFs.OpenRead(AItem.SourcePath, srcH, err) then
     begin
@@ -2318,18 +2341,9 @@ begin
     // peut y glisser autre chose entre deux appels. Le rename les conserve.
     // Un fichier REMPLACE garde ses droits: un 0600 devenu 0644 est une fuite.
     // S'ils ne peuvent pas etre reposes, la cible n'est pas remplacee.
-    if okCopy and targetExisted then
+    if okCopy and replacesFile then
     begin
-      if not outcome.PrevModeKnown then
-        // Les droits de la cible n'ont pas pu etre lus: le temporaire garde ceux
-        // d'un fichier neuf, ce qui ne divulgue rien, mais « garde ses droits »
-        // n'est pas tenu et il faut le dire.
-        AddWarning(ScpErrorText(MakeScpError(sekAttrRefused,
-          'Setting the mode of', AItem.DisplayName,
-          'the permissions of the existing file could not be read; the new ' +
-          'content was published with the permissions of a new file')))
-      else if not ADstFs.SetMode(dstH, ModeForReplacedFile(prevMode), attrErr)
-      then
+      if not ADstFs.SetMode(dstH, ModeForReplacedFile(prevMode), attrErr) then
       begin
         ADstFs.Close(dstH, closeErr);
         dstH := nil;
@@ -2365,6 +2379,18 @@ begin
           AddWarning(ScpErrorText(MakeScpError(sekAttrRefused,
             'Setting the timestamp of', AItem.DisplayName, attrErr.Detail)));
       end;
+
+    // Copie sur place: les attributs de la source en DERNIER, par la poignee.
+    // Un refus arrete avant la publication, comme pour la protection.
+    if okCopy and (ASrcFs = ADstFs) and (not targetExisted) and
+       (not ADstFs.CopyAttributesFrom(srcH, dstH, attrErr)) then
+    begin
+      ADstFs.Close(dstH, closeErr);
+      dstH := nil;
+      DiscardPartial(ADstFs, tempPath);
+      FailItem(AItem, attrErr);
+      Exit;
+    end;
 
     // La fermeture est ou un serveur avoue un quota depasse, et ou une coupure
     // se revele: elle compte meme apres un echec, sinon l'element passe en
@@ -2475,7 +2501,7 @@ begin
       Inc(i);
       Continue;
     end;
-    if ADstFs.DeleteFile(p.TempPath, err) then
+    if ADstFs.DeleteTemp(p.TempPath, err) then
       FPartials.Forget(p.TempPath)
     else
     begin
