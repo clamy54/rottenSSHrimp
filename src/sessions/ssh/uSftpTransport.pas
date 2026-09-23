@@ -94,6 +94,11 @@ type
       out AErr: TScpError): Boolean; override;
     function SetMode(AHandle: TScpFileHandle; AMode: LongWord;
       out AErr: TScpError): Boolean; override;
+    // Chmod par CHEMIN, pour une demande portant sur un fichier que personne
+    // n'ouvre. Hors du contrat de TScpFileSystem: le moteur de transfert pose
+    // ses attributs par poignee, lui.
+    function SetModeAt(const APath: string; AMode: LongWord;
+      out AErr: TScpError): Boolean;
     function Join(const ABase, AName: string): string; override;
     function Parent(const APath: string): string; override;
     function BaseName(const APath: string): string; override;
@@ -109,6 +114,7 @@ type
     sckRemoteMkdir,
     sckRemoteRename,
     sckRemoteDelete,      // fichier ou dossier, recursif si dossier
+    sckRemoteChmod,
     sckEnqueueUpload,
     sckEnqueueDownload,
     sckEnqueueDuplicate,  // copie dans le MEME dossier, sous un autre nom
@@ -133,6 +139,13 @@ type
     // Lot attribue A LA DEMANDE, sur le thread UI: c'est lui que porteront les
     // elements, quel que soit le moment ou ils entrent en file.
     Batch: Integer;
+    // Droits demandes: ModeBits porte la valeur, ModeMask les bits DECIDES.
+    // Sur une selection aux droits differents, une case laissee indeterminee
+    // sort du masque et chaque fichier garde le bit qu'il avait.
+    ModeBits: LongWord;
+    ModeMask: LongWord;
+    Recursive: Boolean;
+    DirX: Boolean;
   end;
 
   // ASerial: le numero de la demande servie. Sans lui, aller en A, en B, puis
@@ -223,6 +236,11 @@ type
     procedure FailIfFatal(const AErr: TScpError);
     function RemoveTree(const APath: string; ADepth: Integer;
       out AErr: TScpError): Boolean;
+    // ASkippedLinks compte les liens laisses tels quels, pour le dire en une
+    // fois a la fin plutot qu'une note par lien.
+    function ChmodTree(const APath: string; ACmd: TSftpCommand;
+      ADepth: Integer; var ASkippedLinks: Integer;
+      out AErr: TScpError): Boolean;
     // Octets libres sous APath, thread de transport uniquement. Extension absente:
     // -1 SANS erreur. Coupure ou echeance: -1 AVEC l'erreur, qui tue la session.
     function RemoteFreeBytes(const APath: string;
@@ -261,6 +279,10 @@ type
     procedure RequestMkdir(const APath: string);
     procedure RequestRename(const AFrom, ATo: string);
     procedure RequestDelete(const APath: string);
+    // Droits de APaths. ARecursive descend dans les dossiers, ADirX ajoute x
+    // aux dossiers la ou r est acquis.
+    procedure RequestChmod(const APaths: TStringArray;
+      ABits, AMask: LongWord; ARecursive, ADirX: Boolean);
     procedure RequestUpload(const ASources: TStringArray;
       const ARemoteDir, ARemoteRoot: string);
     procedure RequestDownload(const ASources: TStringArray;
@@ -321,7 +343,8 @@ const
   // Tampons de readdir, bornes FIXES: jamais une taille venue du serveur.
   SFTP_NAME_MAX = 1024;
   SFTP_LONGENTRY_MAX = 2048;
-  SFTP_MAX_RM_DEPTH = 64;
+  // Parcours recursif par chemin: suppression comme droits.
+  SFTP_MAX_TREE_DEPTH = 64;
   TEMP_PREFIX = '.rssh-';
   TEMP_SUFFIX = '.part';
   TEMP_RANDOM_BYTES = 12;
@@ -1307,6 +1330,36 @@ begin
   end;
 end;
 
+// SETSTAT SUIT les liens: sur un lien, ces droits partiraient sur sa cible,
+// n'importe ou dans l'arborescence. L'appelant a donc deja ecarte les liens
+// par lstat; ce n'est pas verifiable ici, le protocole n'ayant pas de lchmod.
+function TSftpFileSystem.SetModeAt(const APath: string; AMode: LongWord;
+  out AErr: TScpError): Boolean;
+var
+  attrs: LIBSSH2_SFTP_ATTRIBUTES;
+  p: AnsiString;
+  rc: cint;
+  deadline: QWord;
+begin
+  AErr := NoScpError;
+  p := AnsiString(APath);
+  FillChar(attrs, SizeOf(attrs), 0);
+  attrs.flags := LIBSSH2_SFTP_ATTR_PERMISSIONS;
+  attrs.permissions := culong(AMode and SCP_MODE_BITS);
+  deadline := GetTickCount64 + SFTP_OP_TIMEOUT_MS;
+  repeat
+    rc := libssh2_sftp_stat_ex(FOwner.FSftp, PAnsiChar(p), Length(p),
+      LIBSSH2_SFTP_SETSTAT, @attrs);
+    if rc <> LIBSSH2_ERROR_EAGAIN then Break;
+  until not WaitAgain(deadline);
+  Result := rc = 0;
+  if not Result then
+  begin
+    AErr := LastError('Setting the permissions of', APath, rc, acWrite);
+    if not IsFatalToSession(AErr.Kind) then AErr.Kind := sekAttrRefused;
+  end;
+end;
+
 function TSftpFileSystem.Join(const ABase, AName: string): string;
 begin
   Result := RemoteJoin(ABase, AName);
@@ -1787,6 +1840,23 @@ begin
   PostCommand(c);
 end;
 
+procedure TSftpTransport.RequestChmod(const APaths: TStringArray;
+  ABits, AMask: LongWord; ARecursive, ADirX: Boolean);
+var
+  c: TSftpCommand;
+begin
+  c := TSftpCommand.Create;
+  c.Kind := sckRemoteChmod;
+  c.Sources := Copy(APaths, 0, Length(APaths));
+  // Sujet d'un message d'echec inattendu: sans lui il serait vide.
+  if Length(APaths) > 0 then c.PathA := APaths[0];
+  c.ModeBits := ABits;
+  c.ModeMask := AMask;
+  c.Recursive := ARecursive;
+  c.DirX := ADirX;
+  PostCommand(c);
+end;
+
 procedure TSftpTransport.RequestUpload(const ASources: TStringArray;
   const ARemoteDir, ARemoteRoot: string);
 var
@@ -1948,10 +2018,10 @@ begin
     AErr := MakeScpError(sekCanceled, 'Deleting', DisplaySafeName(APath), '');
     Exit(False);
   end;
-  if ADepth > SFTP_MAX_RM_DEPTH then
+  if ADepth > SFTP_MAX_TREE_DEPTH then
   begin
     AErr := MakeScpError(sekOther, 'Deleting', DisplaySafeName(APath),
-      Format('maximum depth of %d reached', [SFTP_MAX_RM_DEPTH]));
+      Format('maximum depth of %d reached', [SFTP_MAX_TREE_DEPTH]));
     Exit(False);
   end;
   if not FRemote.Stat(APath, False, e, statErr) then
@@ -2000,6 +2070,74 @@ begin
     if not RemoveTree(child, ADepth + 1, AErr) then Exit(False);
   end;
   Result := FRemote.DeleteDir(APath, AErr);
+end;
+
+function TSftpTransport.ChmodTree(const APath: string; ACmd: TSftpCommand;
+  ADepth: Integer; var ASkippedLinks: Integer;
+  out AErr: TScpError): Boolean;
+var
+  entries: TScpEntryArray;
+  e: TScpEntry;
+  i: Integer;
+  child: string;
+begin
+  AErr := NoScpError;
+  if Terminated then
+  begin
+    AErr := MakeScpError(sekCanceled, 'Setting the permissions of',
+      DisplaySafeName(APath), '');
+    Exit(False);
+  end;
+  if ADepth > SFTP_MAX_TREE_DEPTH then
+  begin
+    AErr := MakeScpError(sekOther, 'Setting the permissions of',
+      DisplaySafeName(APath),
+      Format('maximum depth of %d reached', [SFTP_MAX_TREE_DEPTH]));
+    Exit(False);
+  end;
+  if not FRemote.Stat(APath, False, e, AErr) then Exit(False);
+  // Un lien reste tel quel: le chmod le traverserait pour aller poser ces
+  // droits sur sa cible, que l'utilisateur n'a pas designee.
+  if e.IsLink then
+  begin
+    Inc(ASkippedLinks);
+    Exit(True);
+  end;
+  if e.IsDir and ACmd.Recursive then
+  begin
+    if not FRemote.List(APath, entries, AErr) then Exit(False);
+    for i := 0 to High(entries) do
+    begin
+      if CheckRemoteChildName(entries[i].Name) <> nvOk then
+      begin
+        AErr := MakeScpError(sekInvalidName, 'Setting the permissions of',
+          DisplaySafeName(entries[i].Name), '');
+        Exit(False);
+      end;
+      child := RemoteJoin(APath, entries[i].Name);
+      if not RemoteIsUnder(APath, child) then
+      begin
+        AErr := MakeScpError(sekOutsideRoot, 'Setting the permissions of',
+          DisplaySafeName(entries[i].Name), '');
+        Exit(False);
+      end;
+      if not ChmodTree(child, ACmd, ADepth + 1, ASkippedLinks, AErr) then
+        Exit(False);
+    end;
+  end;
+  // Le dossier passe APRES son contenu: se retirer r ou x d'abord fermerait
+  // la porte sur ce qu'il reste a faire dedans.
+  if (not e.ModeKnown) and ((ACmd.ModeMask and SCP_MODE_BITS)
+     <> SCP_MODE_BITS) then
+  begin
+    // Sans les droits actuels, les bits hors du masque seraient inventes.
+    AErr := MakeScpError(sekAttrRefused, 'Setting the permissions of',
+      DisplaySafeName(APath), 'the server did not report the current mode');
+    Exit(False);
+  end;
+  Result := FRemote.SetModeAt(APath,
+    ScpApplyMode(e.Mode, ACmd.ModeBits, ACmd.ModeMask, e.IsDir, ACmd.DirX),
+    AErr);
 end;
 
 procedure TSftpTransport.DoRunQueue;
@@ -2088,6 +2226,7 @@ var
   leftover: TStringArray;
   r: TSftpResult;
   it: TTransferItem;
+  skipped: Integer;
 begin
   err := NoScpError;
   case ACmd.Kind of
@@ -2143,6 +2282,21 @@ begin
     sckRemoteDelete:
       begin
         RemoveTree(ACmd.PathA, 0, err);
+        r := TSftpResult.Create;
+        r.Kind := srOpDone;
+        r.Error := err;
+        PostResult(r);
+        FailIfFatal(err);
+      end;
+    sckRemoteChmod:
+      begin
+        skipped := 0;
+        for i := 0 to High(ACmd.Sources) do
+          if not ChmodTree(ACmd.Sources[i], ACmd, 0, skipped, err) then Break;
+        if skipped > 0 then
+          EngineNote(Format('%d symbolic link(s) kept as they are: ' +
+            'permissions set through a link would land on its target.',
+            [skipped]));
         r := TSftpResult.Create;
         r.Kind := srOpDone;
         r.Error := err;
@@ -2232,7 +2386,8 @@ begin
   case ACmd.Kind of
     sckListRemote: r.Kind := srListed;
     sckRemoteHome: r.Kind := srHome;
-    sckRemoteMkdir, sckRemoteRename, sckRemoteDelete: r.Kind := srOpDone;
+    sckRemoteMkdir, sckRemoteRename, sckRemoteDelete,
+    sckRemoteChmod: r.Kind := srOpDone;
     sckFreeSpace: r.Kind := srFreeSpace;
   else
     begin

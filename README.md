@@ -99,7 +99,16 @@ two-panel file manager in a tab: local on the left, remote on the right, a
 splitter between them, and multi-select with Ctrl and Shift. Send a selection
 across by dragging it into the other panel -- drop it on a folder to go
 straight in -- or with F5, or with the arrow at the end of the panel's
-toolbar. Right-click for the same actions plus rename, duplicate and delete.
+toolbar. Right-click for the same actions plus rename, duplicate, delete, and
+*Properties* on the remote side -- what the server says about an entry, and
+its access rights: the nine permission bits, setuid, setgid and the sticky
+bit, as boxes or as an octal number, optionally applied to the contents of a
+folder. On several files at once, a box whose files disagree stays
+undecided and each file keeps the bit it had. Symbolic links keep their own
+permissions, because SFTP has no way to set them through a link without
+landing on its target, and a folder is done after its contents, so a rights
+change cannot lock the walk out halfway. Owner and group are shown as the
+server reports them and are not editable.
 Transfers are recursive, and a queue says what is happening; cancelling one
 stops it where it is and leaves the destination as it was. A replaced file
 keeps its permissions -- on Windows its ACL; setuid, setgid and sticky bits

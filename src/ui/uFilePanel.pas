@@ -37,6 +37,7 @@ type
     fpaTransfer,      // F5, bouton, ou glisser-deposer: envoyer en face
     fpaDuplicate,     // copie sur place, sous un nom libre
     fpaCopyPath,
+    fpaProperties,    // droits d'acces de la selection distante
     fpaFocusOther);
 
   TFilePanelActionEvent = procedure(AAction: TFilePanelAction) of object;
@@ -67,6 +68,8 @@ type
     FMiRename: TMenuItem;
     FMiDuplicate: TMenuItem;
     FMiDelete: TMenuItem;
+    // Cote local seulement: nil. Les droits Unix n'y veulent rien dire.
+    FMiProps: TMenuItem;
     FOnAction: TFilePanelActionEvent;
     FOnNavigate: TFilePathEvent;
     FOnDrop: TFileDropEvent;
@@ -92,6 +95,7 @@ type
     procedure MenuRename(Sender: TObject);
     procedure MenuDuplicate(Sender: TObject);
     procedure MenuDelete(Sender: TObject);
+    procedure MenuProps(Sender: TObject);
     function ButtonAt(X: Integer): Integer;
     function ButtonCount: Integer;
     function ButtonIcon(AIndex: Integer): TScpIcon;
@@ -199,6 +203,10 @@ type
     // Noms selectionnes, y compris les entrees non transferables: c'est le moteur
     // qui tranche, avec un motif. Les cacher ici les ferait disparaitre sans un mot.
     function SelectedNames: TStringArray;
+    // Memes entrees que SelectedNames, entieres: la fenetre de droits a
+    // besoin du mode de chacune, et un second lstat par fichier dirait la
+    // meme chose en chargeant le serveur.
+    function SelectedEntries: TScpEntryArray;
     function FocusedEntry(out AEntry: TScpEntry): Boolean;
     // La ligne sous le curseur est-elle « .. »? Renommer, supprimer ou copier le
     // chemin doivent le savoir: ce n'est pas un element.
@@ -502,6 +510,27 @@ begin
   begin
     SetLength(Result, 1);
     Result[0] := FEntries[FOrder[FFocusIndex]].Name;
+  end;
+end;
+
+function TFileListView.SelectedEntries: TScpEntryArray;
+var
+  i, n: Integer;
+begin
+  Result := nil;
+  n := 0;
+  for i := 0 to High(FOrder) do
+    if FSelected[FOrder[i]] and (not IsParentRow(i)) then
+    begin
+      SetLength(Result, n + 1);
+      Result[n] := FEntries[FOrder[i]];
+      Inc(n);
+    end;
+  if (n = 0) and (FFocusIndex >= 0) and (FFocusIndex < Length(FOrder)) and
+     (not IsParentRow(FFocusIndex)) then
+  begin
+    SetLength(Result, 1);
+    Result[0] := FEntries[FOrder[FFocusIndex]];
   end;
 end;
 
@@ -886,6 +915,12 @@ begin
     VK_DELETE:
       begin
         if Assigned(FOnAction) then FOnAction(fpaDelete);
+        Key := 0;
+        Exit;
+      end;
+    VK_F9:
+      begin
+        if Assigned(FOnAction) then FOnAction(fpaProperties);
         Key := 0;
         Exit;
       end;
@@ -1361,6 +1396,13 @@ begin
   FMiDuplicate := AddItem('Duplicate', @MenuDuplicate);
   AddSeparator;
   FMiDelete := AddItem('Delete', @MenuDelete);
+  // Une entree qui n'existe que d'un cote n'est pas une entree qui va et
+  // vient: le panneau local n'a pas de droits Unix a montrer.
+  if FSide = fpsRemote then
+  begin
+    AddSeparator;
+    FMiProps := AddItem('Properties...', @MenuProps);
+  end;
   FList.PopupMenu := FMenu;
   {$IFNDEF DARWIN}
   ThemePopupMenu(FMenu);
@@ -1380,6 +1422,7 @@ begin
   FMiDuplicate.Enabled := n > 0;
   FMiDelete.Enabled := n > 0;
   FMiRename.Enabled := (FList.EntryCount > 0) and (not FList.FocusedIsParent);
+  if FMiProps <> nil then FMiProps.Enabled := n > 0;
 end;
 
 procedure TFilePanel.MenuTransfer(Sender: TObject);
@@ -1400,6 +1443,11 @@ end;
 procedure TFilePanel.MenuDelete(Sender: TObject);
 begin
   if Assigned(FOnAction) then FOnAction(fpaDelete);
+end;
+
+procedure TFilePanel.MenuProps(Sender: TObject);
+begin
+  if Assigned(FOnAction) then FOnAction(fpaProperties);
 end;
 
 procedure TFilePanel.SetOnDrop(AValue: TFileDropEvent);

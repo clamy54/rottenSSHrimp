@@ -24,7 +24,7 @@ uses
   uSshTransport, uSshKnownHosts, uSshTunnel, uSshTunnelConnect, uSecureBytes,
   uScpBackend, uScpErrors, uScpPaths, uTransferQueue, uSftpTransport,
   uScpEngine, uLocalFileSystem, uLocalFsWorker, uFilePanel,
-  uTransferQueueView, uTheme, uThemedSplitter, uScpIcons;
+  uTransferQueueView, uScpPropsDialog, uTheme, uThemedSplitter, uScpIcons;
 
 type
   TScpTab = class;
@@ -805,6 +805,8 @@ var
   names: TStringArray;
   i: Integer;
   v: TNameVerdict;
+  sel: TScpEntryArray;
+  props: TScpPropsResult;
 begin
   if FClosing then Exit;
   FActiveSide := ASide;
@@ -824,7 +826,8 @@ begin
   FRemotePanel.List.SetPanelActive(ASide = fpsRemote);
 
   if (cur = '') and (AAction in [fpaParent, fpaNewFolder, fpaRename,
-     fpaDelete, fpaTransfer, fpaDuplicate, fpaCopyPath]) then Exit;
+     fpaDelete, fpaTransfer, fpaDuplicate, fpaCopyPath,
+     fpaProperties]) then Exit;
 
   case AAction of
     fpaNavigate:
@@ -969,6 +972,29 @@ begin
           target := cur;
         Clipboard.AsText := target;
         Note('Path copied to the clipboard.');
+      end;
+    fpaProperties:
+      begin
+        // Droits Unix: le panneau local n'en a pas a montrer, et une session
+        // coupee ne peut rien poser.
+        if (ASide <> fpsRemote) or (FTransport = nil) or
+           (FState <> rssConnected) then Exit;
+        sel := panel.List.SelectedEntries;
+        if Length(sel) = 0 then Exit;
+        props := ShowScpProperties(cur, sel);
+        if not props.Apply then Exit;
+        SetLength(names, 0);
+        for i := 0 to High(sel) do
+        begin
+          // Un nom que le validateur refuse ne part pas en chemin: la
+          // fenetre l'a montre, elle ne le rend pas modifiable pour autant.
+          if CheckRemoteChildName(sel[i].Name) <> nvOk then Continue;
+          SetLength(names, Length(names) + 1);
+          names[High(names)] := RemoteJoin(cur, sel[i].Name);
+        end;
+        if Length(names) = 0 then Exit;
+        FTransport.RequestChmod(names, props.Bits, props.Mask,
+          props.Recursive, props.DirX);
       end;
     fpaFocusOther:
       if ASide = fpsLocal then

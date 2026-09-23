@@ -1950,6 +1950,10 @@
         <IsPartOfProject Value="True"/>
       </Unit>
       <Unit>
+        <Filename Value="../src/ui/uScpPropsDialog.pas"/>
+        <IsPartOfProject Value="True"/>
+      </Unit>
+      <Unit>
         <Filename Value="../src/ui/uScpTab.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit>

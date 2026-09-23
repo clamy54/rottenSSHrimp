@@ -105,6 +105,28 @@ function ModeIsLink(AMode: LongWord): Boolean;
 function ModeIsRegular(AMode: LongWord): Boolean;
 function ModeIsSpecial(AMode: LongWord): Boolean;
 
+// --- Droits d'acces -------------------------------------------------------
+
+// Les douze bits qu'un chmod peut poser: rwx pour trois classes, plus setuid,
+// setgid et le sticky bit. Le type du fichier n'en fait pas partie.
+const
+  SCP_MODE_BITS = LongWord(&07777);
+
+// Applique une decision a un mode existant. AMask porte les bits DECIDES et
+// ABits leur valeur: hors du masque le mode ne bouge pas, ce qui permet de ne
+// toucher qu'une case sur une selection dont les fichiers n'ont pas les memes
+// droits. ADirX ajoute x la ou r est acquis, sur les DOSSIERS seulement: un
+// dossier lisible mais non traversable ne sert a rien, tandis que poser x sur
+// des fichiers les rendrait executables.
+function ScpApplyMode(AOld, ABits, AMask: LongWord;
+  AIsDir, ADirX: Boolean): LongWord;
+// Quatre chiffres, toujours: « 755 » et « 0755 » se lisent pareil, mais la
+// forme fixe montre que le premier chiffre existe et vaut zero.
+function ScpModeToOctal(AMode: LongWord): string;
+// False si ce n'est pas un octal de 1 a 4 chiffres. Un champ mal saisi ne doit
+// pas se traduire par un mode arbitraire.
+function ScpOctalToMode(const AText: string; out AMode: LongWord): Boolean;
+
 implementation
 
 uses
@@ -671,6 +693,48 @@ begin
   // un listing passerait pour des peripheriques.
   if (AMode and S_IFMT) = 0 then Exit(False);
   Result := not (ModeIsDir(AMode) or ModeIsLink(AMode) or ModeIsRegular(AMode));
+end;
+
+function ScpApplyMode(AOld, ABits, AMask: LongWord;
+  AIsDir, ADirX: Boolean): LongWord;
+var
+  i: Integer;
+begin
+  AMask := AMask and SCP_MODE_BITS;
+  Result := (AOld and SCP_MODE_BITS and (not AMask)) or (ABits and AMask);
+  if AIsDir and ADirX then
+    for i := 0 to 2 do
+      if (Result and (LongWord(4) shl (i * 3))) <> 0 then
+        Result := Result or (LongWord(1) shl (i * 3));
+end;
+
+function ScpModeToOctal(AMode: LongWord): string;
+var
+  i: Integer;
+begin
+  AMode := AMode and SCP_MODE_BITS;
+  SetLength(Result, 4);
+  for i := 4 downto 1 do
+  begin
+    Result[i] := Char(Ord('0') + (AMode and 7));
+    AMode := AMode shr 3;
+  end;
+end;
+
+function ScpOctalToMode(const AText: string; out AMode: LongWord): Boolean;
+var
+  s: string;
+  i: Integer;
+begin
+  AMode := 0;
+  s := Trim(AText);
+  if (s = '') or (Length(s) > 4) then Exit(False);
+  for i := 1 to Length(s) do
+  begin
+    if (s[i] < '0') or (s[i] > '7') then Exit(False);
+    AMode := (AMode shl 3) or LongWord(Ord(s[i]) - Ord('0'));
+  end;
+  Result := True;
 end;
 
 function FormatUnixMode(AMode: LongWord): string;
