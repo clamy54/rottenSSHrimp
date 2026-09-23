@@ -39,7 +39,7 @@ function ShowScpProperties(const ALocation: string;
 implementation
 
 uses
-  DateUtils;
+  DateUtils, Dialogs;
 
 type
   // Les douze cases, dans l'ordre des bits du mode: 0..8 = rwx des trois
@@ -110,7 +110,7 @@ const
   SPECIAL_NAMES: array[0..2] of string = ('Set UID', 'Set GID', 'Sticky bit');
   COL_X: array[0..2] of Integer = (132, 172, 212);
 var
-  y, i, c, b, setCount, known, dirs, links: Integer;
+  y, i, c, b, setCount, known, dirs, links, editable: Integer;
   bit: LongWord;
   head: string;
   someModeUnknown: Boolean;
@@ -201,7 +201,8 @@ begin
   begin
     if AEntries[i].IsDir and (not AEntries[i].IsLink) then Inc(dirs);
     if AEntries[i].IsLink then Inc(links);
-    if not AEntries[i].ModeKnown then someModeUnknown := True;
+    if (not AEntries[i].ModeKnown) and (not AEntries[i].IsLink) then
+      someModeUnknown := True;
   end;
 
   y := 14;
@@ -252,19 +253,22 @@ begin
   end;
 
   // Etat de depart: cochee si TOUTES les entrees ont le bit, vide si aucune,
-  // indeterminee sinon. Un mode que le serveur n'a pas dit ne vote pas.
+  // indeterminee sinon. Les liens ne comptent pas, ils ne seront pas touches.
+  // Un seul mode inconnu laisse la case indeterminee: la decider d'apres les
+  // autres ecrirait sur lui des bits que personne n'a choisis.
+  editable := Length(AEntries) - links;
   for i := 0 to 11 do
   begin
     bit := BoxBit(i);
     setCount := 0;
     known := 0;
     for c := 0 to High(AEntries) do
-      if AEntries[c].ModeKnown then
+      if AEntries[c].ModeKnown and (not AEntries[c].IsLink) then
       begin
         Inc(known);
         if (AEntries[c].Mode and bit) <> 0 then Inc(setCount);
       end;
-    if (known = 0) or ((setCount > 0) and (setCount < known)) then
+    if (known <> editable) or ((setCount > 0) and (setCount < known)) then
       FBoxes[i].State := cbGrayed
     else if setCount = known then
       FBoxes[i].State := cbChecked
@@ -319,7 +323,8 @@ begin
   end;
 
   FForm.ClientHeight := y + 48;
-  AddBtn('Apply', 16, 100, @ApplyClick);
+  // Rien que des liens: il n'y a rien a qui poser ces droits.
+  AddBtn('Apply', 16, 100, @ApplyClick).Enabled := editable > 0;
   AddBtn('Cancel', 122, 100, @CancelClick);
 
   ApplyUiFont(FForm);
@@ -387,7 +392,21 @@ end;
 procedure TPropsForm.ApplyClick(Sender: TObject);
 var
   i: Integer;
+  m: LongWord;
 begin
+  // Le champ est RELU: une saisie invalide laisse les cases a la derniere
+  // valeur valide, qui n'est pas celle qu'on lit a l'ecran.
+  if Trim(FOctal.Text) <> '' then
+  begin
+    if not ScpOctalToMode(FOctal.Text, m) then
+    begin
+      MessageDlg('Properties', 'Enter an octal mode from 0000 to 7777.',
+        mtError, [mbOK], 0);
+      FOctal.SetFocus;
+      Exit;
+    end;
+    OctalChanged(FOctal);
+  end;
   FResult.Bits := 0;
   FResult.Mask := 0;
   for i := 0 to 11 do

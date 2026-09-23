@@ -243,6 +243,64 @@ function SetFileInformationByHandle(hFile: THandle;
   FileInformationClass: DWORD; lpFileInformation: Pointer;
   dwBufferSize: DWORD): BOOL; stdcall;
   external 'kernel32' name 'SetFileInformationByHandle';
+function ConvertSidToStringSidW(Sid: Pointer; var StringSid: PWideChar): BOOL;
+  stdcall; external 'advapi32' name 'ConvertSidToStringSidW';
+function ConvertStringSecurityDescriptorToSecurityDescriptorW(
+  StringSecurityDescriptor: PWideChar; StringSDRevision: DWORD;
+  var SecurityDescriptor: Pointer; SecurityDescriptorSize: PULONG): BOOL;
+  stdcall; external 'advapi32'
+  name 'ConvertStringSecurityDescriptorToSecurityDescriptorW';
+
+const
+  SDDL_REVISION_1_ = 1;
+
+// Un mode que les « autres » ne peuvent pas lire est PRIVE. Windows n'a pas de
+// groupe a qui donner les bits du milieu: les donner a tous elargirait, les
+// retirer ne fait que restreindre.
+function ModeIsPrivate(AMode: LongWord): Boolean;
+begin
+  Result := (AMode and LongWord(&0004)) = 0;
+end;
+
+// Descripteur d'un fichier ou d'un dossier PRIVE: l'utilisateur courant,
+// SYSTEM et les administrateurs, heritage du parent coupe -- le plus proche
+// d'un 0700, root compris. Pose A LA CREATION, par CreateFileW ou
+// CreateDirectoryW: pas d'instant ou le parent decide. nil s'il n'a pas pu
+// etre construit; a liberer par LocalFree.
+function PrivateSecurityDescriptor(AInheritable: Boolean): Pointer;
+var
+  token: THandle;
+  need: DWORD;
+  buf: array of Byte;
+  sidText: PWideChar;
+  flags, sddl: UnicodeString;
+begin
+  Result := nil;
+  if not OpenProcessToken(GetCurrentProcess, TOKEN_QUERY, token) then Exit;
+  try
+    need := 0;
+    GetTokenInformation(token, TokenUser, nil, 0, need);
+    if need = 0 then Exit;
+    SetLength(buf, need);
+    if not GetTokenInformation(token, TokenUser, @buf[0], need, need) then
+      Exit;
+  finally
+    CloseHandle(token);
+  end;
+  sidText := nil;
+  // TOKEN_USER commence par le pointeur vers le SID.
+  if not ConvertSidToStringSidW(PPointer(@buf[0])^, sidText) then Exit;
+  try
+    if AInheritable then flags := 'OICI' else flags := '';
+    sddl := 'D:P(A;' + flags + ';FA;;;' + UnicodeString(sidText) + ')' +
+      '(A;' + flags + ';FA;;;SY)(A;' + flags + ';FA;;;BA)';
+  finally
+    LocalFree(HLOCAL(sidText));
+  end;
+  if not ConvertStringSecurityDescriptorToSecurityDescriptorW(
+     PWideChar(sddl), SDDL_REVISION_1_, Result, nil) then
+    Result := nil;
+end;
 {$ELSE}
 // Non enveloppes par FPC 3.2: appel direct sous Linux, libc ailleurs.
 {$IFDEF LINUX}
@@ -309,6 +367,26 @@ begin
   Result := futimens(AFd, ATimes);
 end;
 {$ENDIF}
+
+// Le nom designe-t-il ENCORE le dossier qu'on a vide? Rouvert et compare par
+// peripherique et inode juste avant unlinkat: un dossier vide glisse a sa
+// place serait sinon supprime. Cela resserre la fenetre sans la fermer --
+// POSIX ne retire pas un dossier par son descripteur, contrairement a la
+// suppression par poignee de Windows.
+function SameDirAt(ADir: cint; const AName: string; const AWant: Stat): Boolean;
+var
+  fd: cint;
+  st: Stat;
+begin
+  fd := OpenDirAt(ADir, AName);
+  if fd < 0 then Exit(False);
+  try
+    Result := (fpFStat(fd, st) = 0) and (st.st_dev = AWant.st_dev) and
+      (st.st_ino = AWant.st_ino);
+  finally
+    fpClose(fd);
+  end;
+end;
 {$ENDIF}
 
 function RandomSuffix: string;
@@ -703,11 +781,35 @@ end;
 
 function TLocalFileSystem.MakeDir(const APath: string; AMode: LongWord;
   out AErr: TScpError): Boolean;
+{$IFDEF WINDOWS}
+var
+  sa: TSecurityAttributes;
+{$ENDIF}
 begin
   AErr := NoScpError;
   {$IFDEF WINDOWS}
-  // Pas de mode ici: le dossier herite de l'ACL de son parent.
-  Result := CreateDirectoryW(PWideChar(NativeW(APath)), nil);
+  // Un mode ouvert herite de l'ACL du parent, comme tout dossier neuf ici; un
+  // mode prive nait avec une DACL privee. Sans elle on ne cree pas.
+  if not ModeIsPrivate(AMode) then
+    Result := CreateDirectoryW(PWideChar(NativeW(APath)), nil)
+  else
+  begin
+    sa.nLength := SizeOf(sa);
+    sa.bInheritHandle := False;
+    sa.lpSecurityDescriptor := PrivateSecurityDescriptor(True);
+    if sa.lpSecurityDescriptor = nil then
+    begin
+      AErr := MakeScpError(sekOther, 'Creating folder', DisplaySafeName(APath),
+        Format('private permissions could not be prepared (Windows error %d)',
+          [GetLastError]));
+      Exit(False);
+    end;
+    try
+      Result := CreateDirectoryW(PWideChar(NativeW(APath)), @sa);
+    finally
+      LocalFree(HLOCAL(sa.lpSecurityDescriptor));
+    end;
+  end;
   {$ELSE}
   Result := fpMkdir(PChar(LocalNormalize(APath)), AMode and LongWord(&0777)) = 0;
   {$ENDIF}
@@ -895,17 +997,45 @@ begin
       FILE_ATTRIBUTE_SYSTEM or FILE_ATTRIBUTE_ARCHIVE or
       FILE_ATTRIBUTE_NOT_CONTENT_INDEXED_);
     if keep = 0 then keep := FILE_ATTRIBUTE_NORMAL;
-    SetFileAttributesW(PWideChar(NativeW(AFrom)), keep);
-    if readOnly then
-      SetFileAttributesW(PWideChar(NativeW(ATo)),
-        tattrs and (not FILE_ATTRIBUTE_READONLY));
+    // Chaque refus arrete AVANT la publication: le nouveau contenu ne prend
+    // pas la place de l'ancien sans ses attributs.
+    if not SetFileAttributesW(PWideChar(NativeW(AFrom)), keep) then
+    begin
+      AErr := MakeScpError(sekAttrRefused, 'Replacing', DisplaySafeName(ATo),
+        Format('the attributes of the existing file could not be applied to ' +
+          'the new content (Windows error %d); the existing file was left ' +
+          'untouched', [GetLastError]));
+      Exit(False);
+    end;
+    if readOnly and (not SetFileAttributesW(PWideChar(NativeW(ATo)),
+       tattrs and (not FILE_ATTRIBUTE_READONLY))) then
+    begin
+      AErr := MakeScpError(sekReadOnlyTarget, 'Replacing',
+        DisplaySafeName(ATo),
+        Format('the existing file is read-only and the attribute could not ' +
+          'be lifted (Windows error %d); it was left untouched',
+          [GetLastError]));
+      // En lecture seule, le temporaire ne s'effacerait plus.
+      SetFileAttributesW(PWideChar(NativeW(AFrom)), FILE_ATTRIBUTE_NORMAL);
+      Exit(False);
+    end;
   end;
   // MOVEFILE_REPLACE_EXISTING sur un meme volume NTFS: pas d'etat
   // intermediaire. WRITE_THROUGH attend le support avant de rendre la main.
   Result := MoveFileExW(PWideChar(NativeW(AFrom)), PWideChar(NativeW(ATo)),
     MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH_);
-  if (not Result) and readOnly then
-    SetFileAttributesW(PWideChar(NativeW(ATo)), tattrs);
+  if not Result then
+  begin
+    AErr := LastErr('Replacing', ATo);
+    SetFileAttributesW(PWideChar(NativeW(AFrom)), FILE_ATTRIBUTE_NORMAL);
+    // La cible est restee, mais sans sa lecture seule si on ne peut la
+    // lui rendre: cela se dit.
+    if readOnly and (not SetFileAttributesW(PWideChar(NativeW(ATo)), tattrs))
+    then
+      AErr.Detail := AErr.Detail + Format('; the existing file could not ' +
+        'be made read-only again (Windows error %d)', [GetLastError]);
+    Exit;
+  end;
   {$ELSE}
   Result := fpRename(PChar(LocalNormalize(AFrom)),
     PChar(LocalNormalize(ATo))) = 0;
@@ -1019,10 +1149,37 @@ var
   h: TLocalHandle;
   attempt: Integer;
   candidate: string;
+  {$IFDEF WINDOWS}
+  sa: TSecurityAttributes;
+  psa: PSecurityAttributes;
+  {$ENDIF}
 begin
   AHandle := nil;
   APath := '';
   AErr := NoScpError;
+  {$IFDEF WINDOWS}
+  // Un temporaire PRIVE le reste pendant la copie et apres une interruption:
+  // sa DACL nait avec lui. Celui qui remplace une cible (demande en 0600)
+  // recoit la DACL de la cible juste avant de prendre sa place.
+  psa := nil;
+  sa.lpSecurityDescriptor := nil;
+  if ModeIsPrivate(AMode) then
+  begin
+    sa.nLength := SizeOf(sa);
+    sa.bInheritHandle := False;
+    sa.lpSecurityDescriptor := PrivateSecurityDescriptor(False);
+    if sa.lpSecurityDescriptor = nil then
+    begin
+      AErr := MakeScpError(sekOther, 'Creating a temporary file in',
+        DisplaySafeName(ADir),
+        Format('private permissions could not be prepared (Windows error %d)',
+          [GetLastError]));
+      Exit(False);
+    end;
+    psa := @sa;
+  end;
+  try
+  {$ENDIF}
   for attempt := 1 to 8 do
   begin
     candidate := LocalJoin(ADir, TEMP_PREFIX + RandomSuffix + TEMP_SUFFIX);
@@ -1032,7 +1189,7 @@ begin
     // CREATE_NEW echoue si QUOI QUE CE SOIT existe sous ce nom, lien compris:
     // c'est ce qui interdit d'ecrire a travers un lien pose d'avance.
     h.H := CreateFileW(PWideChar(NativeW(candidate)), GENERIC_WRITE,
-      0, nil, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, 0);
+      0, psa, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, 0);
     if h.H <> INVALID_HANDLE_VALUE then
     begin
       APath := candidate;
@@ -1060,6 +1217,12 @@ begin
   AErr := MakeScpError(sekOther, 'Creating a temporary file in',
     DisplaySafeName(ADir), 'eight unpredictable names all collided');
   Result := False;
+  {$IFDEF WINDOWS}
+  finally
+    if sa.lpSecurityDescriptor <> nil then
+      LocalFree(HLOCAL(sa.lpSecurityDescriptor));
+  end;
+  {$ENDIF}
 end;
 
 function TLocalFileSystem.OpenAppend(const APath: string; AOffset: Int64;
@@ -1517,6 +1680,7 @@ var
   name: string;
   child: cint;
   code: Integer;
+  cst: Stat;
 begin
   Result := False;
   AErr := NoScpError;
@@ -1548,11 +1712,23 @@ begin
     if child >= 0 then
     begin
       try
+        if fpFStat(child, cst) <> 0 then
+        begin
+          AErr := LastErr('Deleting folder', LocalJoin(APath, name));
+          Exit;
+        end;
         if not EmptyDirByFd(child, LocalJoin(APath, name), ADepth + 1, AErr)
         then
           Exit;
       finally
         fpClose(child);
+      end;
+      if not SameDirAt(ADir, name, cst) then
+      begin
+        AErr := MakeScpError(sekOutsideRoot, 'Deleting folder',
+          DisplaySafeName(LocalJoin(APath, name)),
+          'the folder changed while it was being deleted');
+        Exit;
       end;
       if UnlinkAt(ADir, name, True) <> 0 then
       begin
@@ -1663,6 +1839,12 @@ begin
       if not EmptyDirByFd(fd, APath, 0, AErr) then Exit;
     finally
       fpClose(fd);
+    end;
+    if not SameDirAt(parentFd, base, st) then
+    begin
+      AErr := MakeScpError(sekOutsideRoot, 'Deleting folder',
+        DisplaySafeName(APath), 'the folder changed while it was being deleted');
+      Exit;
     end;
     if UnlinkAt(parentFd, base, True) <> 0 then
     begin

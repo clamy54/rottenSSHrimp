@@ -759,7 +759,8 @@ begin
   FBtnPause.Enabled := (not FQueue.IsPaused) and (s.Pending + s.Running > 0);
   FBtnResume.Enabled := FQueue.IsPaused;
   FBtnRetry.Enabled := s.Failed + s.Interrupted > 0;
-  FBtnClear.Enabled := s.Completed + s.Skipped + s.Failed + s.Canceled > 0;
+  // Les echecs restent a la purge: ils ne suffisent pas a l'activer.
+  FBtnClear.Enabled := s.Completed + s.Skipped + s.Canceled > 0;
   FBtnCancel.Enabled := FList.SelectionCount > 0;
   FList.Invalidate;
 end;

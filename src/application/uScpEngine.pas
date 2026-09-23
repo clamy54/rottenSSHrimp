@@ -29,6 +29,10 @@ const
   // Periode de vidage du tampon, qui confirme l'offset de reprise. Trop petit:
   // le debit s'effondre; trop grand, une coupure fait resservir l'intervalle.
   SCP_CONFIRM_EVERY = Int64(4) * 1024 * 1024;
+  // Elements en file, tous lots confondus. Les bornes par dossier et par
+  // profondeur n'arretent pas un arbre tres large; au-dela, la selection en
+  // cours est ecartee entiere plutot qu'a moitie.
+  SCP_MAX_QUEUE_ITEMS = 500000;
 
 type
   // Empreinte BLAKE2b (libsodium): elle decide si deux contenus sont les memes,
@@ -62,6 +66,14 @@ type
   TScpProgressEvent = procedure(AItem: TTransferItem) of object;
   // Pour le resume: liens ignores, attributs non reposes, replis acceptes.
   TScpNoteEvent = procedure(const AText: string) of object;
+
+  // Bilan d'un changement de droits, dit a la fin: sur une erreur au milieu
+  // d'un dossier, ce qui a DEJA change ne doit pas passer pour intact.
+  TScpChmodTally = record
+    Applied: Integer;      // droits effectivement changes
+    Unchanged: Integer;    // deja au mode demande: rien n'a ete envoye
+    Links: Integer;        // liens laisses tels quels
+  end;
 
   // Un partiel ecrit par CETTE session. Hors de cette liste aucune reprise n'est
   // proposee: un partiel d'origine inconnue produirait un fichier mixte.
@@ -145,6 +157,12 @@ type
     // Derniere erreur qui condamne la session, vue ou que ce soit.
     FFatal: TScpError;
     FHasFatal: Boolean;
+    // Selection en cours d'examen. Son annulation arrete le parcours meme
+    // quand aucun des deux systemes de fichiers ne la voit: une duplication
+    // locale n'a que le disque, que « Cancel selected » ne touche pas.
+    FWalkRoot: TTransferItem;
+    FMaxQueueItems: Integer;
+    FQueueFull: Boolean;
 
     procedure Note(const AText: string);
     procedure NoteFatal(const AErr: TScpError);
@@ -165,6 +183,15 @@ type
       ATargetRoot: string; ADepth, AMaxDepth: Integer; AOwner: TTransferItem;
       AKnown: TStrings; out AErr: TScpError): Boolean;
     procedure MarkScanCut(AOwner: TTransferItem; const AErr: TScpError);
+    // Le parcours doit-il s'arreter AVANT d'aller plus loin? Annulation de la
+    // selection ou du dossier parcouru, ou file pleine; AErr dit laquelle.
+    function WalkMustStop(ASrcFs, ADstFs: TScpFileSystem;
+      AOwner: TTransferItem; const ADir: string;
+      out AErr: TScpError): Boolean;
+    function WalkRootStopped(ASrcFs, ADstFs: TScpFileSystem): Boolean;
+    // Annulation ou file pleine pendant un parcours: l'element s'arrete avec
+    // tout ce qui a deja ete mis en file pour lui. True si c'est le cas.
+    function StopScan(AItem: TTransferItem; const AErr: TScpError): Boolean;
     // Reprend le parcours d'un dossier dont le listing a ete coupe.
     function RescanDir(ASrcFs, ADstFs: TScpFileSystem; AItem: TTransferItem;
       out AErr: TScpError): Boolean;
@@ -243,6 +270,7 @@ type
 
     property Partials: TScpPartialRegistry read FPartials;
     property ConfirmEvery: Int64 read FConfirmEvery write FConfirmEvery;
+    property MaxQueueItems: Integer read FMaxQueueItems write FMaxQueueItems;
     property OnConflict: TScpConflictEvent read FOnConflict write FOnConflict;
     property OnNonAtomic: TScpNonAtomicEvent
       read FOnNonAtomic write FOnNonAtomic;
@@ -252,6 +280,15 @@ type
 
 function FreeCopyName(AFs: TScpFileSystem; const ADir, AName: string;
   out AErr: TScpError): string;
+
+// Pose des droits sur APath et, si ARecursive, sur le contenu des dossiers.
+// Les liens restent tels quels: SETSTAT les traverse. Chaque dossier est relu
+// apres son listing et avant ses propres droits, chaque fichier juste avant:
+// cela RESSERRE la fenetre ou un nom devient lien sans la fermer, le protocole
+// n'ayant ni lchmod ni poignee de dossier. Un mode deja bon n'est pas renvoye.
+function ScpChmodTree(AFs: TScpFileSystem; const APath: string;
+  ABits, AMask: LongWord; ARecursive, ADirX: Boolean; ADepth: Integer;
+  var ATally: TScpChmodTally; out AErr: TScpError): Boolean;
 function ScpDigestMatch(const A, B: TScpDigest): Boolean;
 function ScpDigestOfString(const S: string): TScpDigest;
 
@@ -557,9 +594,10 @@ end;
 // speciaux, et toujours rwx pour le proprietaire -- il faut pouvoir y ecrire ce
 // qui suit. Poses A LA CREATION: un dossier prive l'est des qu'il existe, et
 // non apres que son contenu a ete lisible par tous. Mode inconnu: le defaut.
-function ModeForNewDir(ASourceMode: LongWord): LongWord;
+// Mode connu et nul: 0700, jamais le defaut ouvert.
+function ModeForNewDir(ASourceMode: LongWord; AModeKnown: Boolean): LongWord;
 begin
-  if (ASourceMode and LongWord(&07777)) = 0 then Exit(SCP_DEFAULT_DIR_MODE);
+  if not AModeKnown then Exit(SCP_DEFAULT_DIR_MODE);
   Result := (ASourceMode and LongWord(&0775)) or LongWord(&0700);
 end;
 
@@ -567,6 +605,7 @@ end;
 
 constructor TScpTransferEngine.Create(AQueue: TTransferQueue);
 begin
+  FMaxQueueItems := SCP_MAX_QUEUE_ITEMS;
   FHash := TScpHash.Create;
   inherited Create;
   FQueue := AQueue;
@@ -719,11 +758,7 @@ var
 begin
   Result := False;
   AErr := NoScpError;
-  if ASrcFs.Canceled or ADstFs.Canceled then
-  begin
-    AErr := MakeScpError(sekCanceled, 'Scanning', ASrcDir, '');
-    Exit;
-  end;
+  if WalkMustStop(ASrcFs, ADstFs, AOwner, ASrcDir, AErr) then Exit;
   if ADepth > AMaxDepth then
   begin
     // Profondeur bornee: sans elle une arborescence fabriquee epuise la pile.
@@ -783,11 +818,8 @@ begin
     seen.Duplicates := dupIgnore;
     for i := 0 to High(entries) do
     begin
-      if ASrcFs.Canceled or ADstFs.Canceled then
-      begin
-        AErr := MakeScpError(sekCanceled, 'Scanning', ASrcDir, '');
-        Exit;
-      end;
+      // Avant CHAQUE ajout: une annulation ne laisse entrer personne apres elle.
+      if WalkMustStop(ASrcFs, ADstFs, AOwner, ASrcDir, AErr) then Exit;
       e := entries[i];
       if not NameUsable(ASrcFs, ADstFs, e.Name, why) then
       begin
@@ -896,15 +928,29 @@ begin
               'it was a folder when listed and is not one any more'));
           Continue;
         end;
+        // Le lstat a pu attendre le serveur longtemps.
+        if WalkMustStop(ASrcFs, ADstFs, AOwner, ASrcDir, AErr) then Exit;
         // L'ordre d'insertion EST la garantie que les parents precedent les enfants.
         item := FQueue.Add(ADirection, tikMakeDir, childSrc, childDst,
           DisplaySafeName(e.Name), AOwner.Batch);
         item.Depth := ADepth;
         item.TargetRoot := ATargetRoot;
         item.SourceMode := e2.Mode;
+        item.SourceModeKnown := e2.ModeKnown;
         if not WalkDir(ASrcFs, ADstFs, ADirection, childSrc, childDst,
            ATargetRoot, ADepth + 1, AMaxDepth, item, AKnown, AErr) then
         begin
+          if (AErr.Kind = sekCanceled) and item.CancelRequested and
+             (not WalkRootStopped(ASrcFs, ADstFs)) then
+          begin
+            // Seul ce sous-dossier est annule: ce qui est deja en file sous lui
+            // l'est avec lui, et le parcours continue a cote.
+            FQueue.CancelItem(item);
+            AErr := NoScpError;
+            Continue;
+          end;
+          // Annulation ou file pleine: rien a reprendre, RunItem conclut.
+          if (AErr.Kind = sekCanceled) or FQueueFull then Exit;
           // Coupe dans un sous-dossier: celui-ci non plus n'a pas ete parcouru
           // jusqu'au bout. Sa reprise sautera ce qui est deja en file.
           MarkScanCut(AOwner, AErr);
@@ -919,6 +965,7 @@ begin
       item.TotalBytes := e.Size;
       item.SourceTimeUtc := e.MTimeUtc;
       item.SourceMode := e.Mode;
+      item.SourceModeKnown := e.ModeKnown;
     end;
   finally
     seen.Free;
@@ -937,6 +984,61 @@ begin
     'the folder is scanned again once reconnected');
   AOwner.ScanPending := True;
   FQueue.SetState(AOwner, tsInterrupted);
+end;
+
+function TScpTransferEngine.WalkRootStopped(ASrcFs,
+  ADstFs: TScpFileSystem): Boolean;
+begin
+  Result := ASrcFs.Canceled or ADstFs.Canceled or
+    ((FWalkRoot <> nil) and FWalkRoot.CancelRequested);
+end;
+
+function TScpTransferEngine.WalkMustStop(ASrcFs, ADstFs: TScpFileSystem;
+  AOwner: TTransferItem; const ADir: string; out AErr: TScpError): Boolean;
+begin
+  AErr := NoScpError;
+  if WalkRootStopped(ASrcFs, ADstFs) or
+     ((AOwner <> nil) and AOwner.CancelRequested) then
+  begin
+    AErr := MakeScpError(sekCanceled, 'Scanning', DisplaySafeName(ADir), '');
+    Exit(True);
+  end;
+  if FQueue.Count >= FMaxQueueItems then
+  begin
+    FQueueFull := True;
+    AErr := MakeScpError(sekOther, 'Scanning', DisplaySafeName(ADir),
+      Format('the queue would hold more than %d items', [FMaxQueueItems]));
+    Exit(True);
+  end;
+  Result := False;
+end;
+
+function TScpTransferEngine.StopScan(AItem: TTransferItem;
+  const AErr: TScpError): Boolean;
+begin
+  Result := FQueueFull or AItem.CancelRequested or (AErr.Kind = sekCanceled);
+  if not Result then Exit;
+  // L'etat de l'element d'abord, puis CancelItem balaie ce qui est deja en
+  // file sous lui, y compris ce qu'un ajout concurrent de la demande aurait
+  // laisse passer. Dans l'autre ordre, il serait « annule » avant d'etre dit
+  // ecarte.
+  if FQueueFull then
+  begin
+    FQueueFull := False;
+    // Ecarte, pas en echec: « Retry failed » ne doit pas recreer le dossier
+    // vide et le dire reussi.
+    AItem.Error := MakeScpError(sekOther, 'Scanning', AItem.DisplayName,
+      Format('the queue would hold more than %d items; nothing of this ' +
+        'selection was transferred', [FMaxQueueItems]));
+    FQueue.SetState(AItem, tsSkipped);
+  end
+  else
+  begin
+    AItem.Error := MakeScpError(sekCanceled, 'Scanning', AItem.DisplayName,
+      '');
+    FQueue.SetState(AItem, tsCanceled);
+  end;
+  FQueue.CancelItem(AItem);
 end;
 
 function TScpTransferEngine.RescanDir(ASrcFs, ADstFs: TScpFileSystem;
@@ -988,9 +1090,15 @@ begin
     finally
       FQueue.Unlock;
     end;
-    Result := WalkDir(ASrcFs, ADstFs, AItem.Direction, AItem.SourcePath,
-      AItem.TargetPath, AItem.TargetRoot, AItem.Depth + 1, SCP_MAX_DEPTH,
-      AItem, known, AErr);
+    FWalkRoot := AItem;
+    FQueueFull := False;
+    try
+      Result := WalkDir(ASrcFs, ADstFs, AItem.Direction, AItem.SourcePath,
+        AItem.TargetPath, AItem.TargetRoot, AItem.Depth + 1, SCP_MAX_DEPTH,
+        AItem, known, AErr);
+    finally
+      FWalkRoot := nil;
+    end;
   finally
     known.Free;
   end;
@@ -1015,6 +1123,94 @@ begin
     if not AFs.Exists(AFs.Join(ADir, candidate), found, AErr) then Exit;
     if not found then Exit(candidate);
   end;
+end;
+
+function ScpChmodTree(AFs: TScpFileSystem; const APath: string;
+  ABits, AMask: LongWord; ARecursive, ADirX: Boolean; ADepth: Integer;
+  var ATally: TScpChmodTally; out AErr: TScpError): Boolean;
+const
+  OP = 'Setting the permissions of';
+var
+  entries: TScpEntryArray;
+  e, again: TScpEntry;
+  i: Integer;
+  child: string;
+  newMode: LongWord;
+
+  function Changed: Boolean;
+  begin
+    AErr := MakeScpError(sekOutsideRoot, OP, DisplaySafeName(APath),
+      'the folder changed while its permissions were being set');
+    Result := False;
+  end;
+
+begin
+  Result := False;
+  AErr := NoScpError;
+  if AFs.Canceled then
+  begin
+    AErr := MakeScpError(sekCanceled, OP, DisplaySafeName(APath), '');
+    Exit;
+  end;
+  if ADepth > SCP_MAX_DEPTH then
+  begin
+    AErr := MakeScpError(sekOther, OP, DisplaySafeName(APath),
+      Format('maximum depth of %d reached', [SCP_MAX_DEPTH]));
+    Exit;
+  end;
+  if not AFs.Stat(APath, False, e, AErr) then Exit;
+  if e.IsLink then
+  begin
+    Inc(ATally.Links);
+    Exit(True);
+  end;
+  if e.IsDir and ARecursive then
+  begin
+    if not AFs.List(APath, entries, AErr) then Exit;
+    // Devenu lien entre le lstat et le listing, le dossier aurait fait lister
+    // sa cible.
+    if not AFs.Stat(APath, False, again, AErr) then Exit;
+    if again.IsLink or (not again.IsDir) then Exit(Changed);
+    for i := 0 to High(entries) do
+    begin
+      if AFs.CheckName(entries[i].Name) <> nvOk then
+      begin
+        AErr := MakeScpError(sekInvalidName, OP,
+          DisplaySafeName(entries[i].Name), '');
+        Exit;
+      end;
+      child := AFs.Join(APath, entries[i].Name);
+      if not AFs.IsUnder(APath, child) then
+      begin
+        AErr := MakeScpError(sekOutsideRoot, OP,
+          DisplaySafeName(entries[i].Name), '');
+        Exit;
+      end;
+      if not ScpChmodTree(AFs, child, ABits, AMask, ARecursive, ADirX,
+         ADepth + 1, ATally, AErr) then
+        Exit;
+    end;
+    // Le dossier passe APRES son contenu -- se retirer r ou x d'abord fermerait
+    // la porte sur ce qu'il reste a faire -- et il est relu juste avant.
+    if not AFs.Stat(APath, False, e, AErr) then Exit;
+    if e.IsLink or (not e.IsDir) then Exit(Changed);
+  end;
+  if (not e.ModeKnown) and ((AMask and SCP_MODE_BITS) <> SCP_MODE_BITS) then
+  begin
+    // Sans les droits actuels, les bits hors du masque seraient inventes.
+    AErr := MakeScpError(sekAttrRefused, OP, DisplaySafeName(APath),
+      'the server did not report the current mode');
+    Exit;
+  end;
+  newMode := ScpApplyMode(e.Mode, ABits, AMask, e.IsDir, ADirX);
+  if e.ModeKnown and ((e.Mode and SCP_MODE_BITS) = newMode) then
+  begin
+    Inc(ATally.Unchanged);
+    Exit(True);
+  end;
+  if not AFs.SetModeAt(APath, newMode, AErr) then Exit;
+  Inc(ATally.Applied);
+  Result := True;
 end;
 
 // Une selection encore inconnue: lstat, nom, confinement, puis l'element
@@ -1131,14 +1327,23 @@ begin
   begin
     FQueue.Rekind(AItem, tikMakeDir, DisplaySafeName(targetName));
     AItem.SourceMode := srcEntry.Mode;
+    AItem.SourceModeKnown := srcEntry.ModeKnown;
     // Coupe en route: le dossier est deja interrompu, a reparcourir.
-    Exit(WalkDir(ASrcFs, ADstFs, AItem.Direction, AItem.SourcePath,
-      targetPath, AItem.TargetRoot, 1, AMaxDepth, AItem, nil, AErr));
+    FWalkRoot := AItem;
+    FQueueFull := False;
+    try
+      Result := WalkDir(ASrcFs, ADstFs, AItem.Direction, AItem.SourcePath,
+        targetPath, AItem.TargetRoot, 1, AMaxDepth, AItem, nil, AErr);
+    finally
+      FWalkRoot := nil;
+    end;
+    Exit;
   end;
   FQueue.Rekind(AItem, tikFile, DisplaySafeName(targetName));
   AItem.TotalBytes := srcEntry.Size;
   AItem.SourceTimeUtc := srcEntry.MTimeUtc;
   AItem.SourceMode := srcEntry.Mode;
+  AItem.SourceModeKnown := srcEntry.ModeKnown;
 end;
 
 function TScpTransferEngine.EnumerateInto(ASrcFs, ADstFs: TScpFileSystem;
@@ -1154,6 +1359,7 @@ begin
   it.TargetRoot := ATargetRoot;
   it.ForcedName := ATargetName;
   Result := ScanRoot(ASrcFs, ADstFs, it, AMaxDepth, AErr);
+  if StopScan(it, AErr) then Result := True;
 end;
 
 // --- Conflits -------------------------------------------------------------
@@ -1696,6 +1902,7 @@ var
   digest: TScpDigest;
   partial: TScpPartial;
   outcome: TScpConflictOutcome;
+  scanned: Boolean;
 
   procedure AddWarning(const AText: string);
   begin
@@ -1723,7 +1930,13 @@ begin
   // ou s'ecarte avec sa raison. Une coupure la laisse a reprendre telle quelle.
   if AItem.Kind = tikScanRoot then
   begin
-    if not ScanRoot(ASrcFs, ADstFs, AItem, SCP_MAX_DEPTH, err) then
+    // « Scanning »: une annulation pendant l'examen DEMANDE l'arret, et c'est
+    // le parcours qui s'arrete, au lieu que la ligne passe a « annule » sous
+    // un parcours qui continue d'ajouter des enfants.
+    if not FQueue.SetState(AItem, tsEnumerating) then Exit;
+    scanned := ScanRoot(ASrcFs, ADstFs, AItem, SCP_MAX_DEPTH, err);
+    if StopScan(AItem, err) then Exit;
+    if not scanned then
     begin
       NoteFatal(err);
       Exit;
@@ -1792,12 +2005,36 @@ begin
         Exit;
       end;
     end
-    else if not ADstFs.MakeDir(targetPath, ModeForNewDir(AItem.SourceMode),
-       err) then
+    else
     begin
-      FailItem(AItem, err);
-      FailSubtree(ADstFs, AItem);
-      Exit;
+      // La source est relue ICI: son parcours a pu etre long. Disparue, elle
+      // serait creee vide; passee en 0700, trop ouverte; devenue lien, elle
+      // n'est plus ce qu'on a parcouru.
+      if not ASrcFs.Stat(AItem.SourcePath, False, srcEntry, err) then
+      begin
+        if err.Kind = sekNotFound then
+          err.Kind := sekPathGone;
+        FailItem(AItem, err);
+        FailSubtree(ADstFs, AItem);
+        Exit;
+      end;
+      if srcEntry.IsLink or (not srcEntry.IsDir) then
+      begin
+        AItem.Error := MakeScpError(sekNotADirectory, 'Creating folder',
+          AItem.DisplayName, 'the source is not a folder any more');
+        FQueue.SetState(AItem, tsFailed);
+        FailSubtree(ADstFs, AItem);
+        Exit;
+      end;
+      AItem.SourceMode := srcEntry.Mode;
+      AItem.SourceModeKnown := srcEntry.ModeKnown;
+      if not ADstFs.MakeDir(targetPath,
+         ModeForNewDir(AItem.SourceMode, AItem.SourceModeKnown), err) then
+      begin
+        FailItem(AItem, err);
+        FailSubtree(ADstFs, AItem);
+        Exit;
+      end;
     end;
     // Listing coupe par la session: le dossier existe, son contenu reste a
     // mettre en file. Ce qui y est deja n'y entre pas deux fois.
@@ -1806,9 +2043,11 @@ begin
       AItem.ScanPending := False;
       if not RescanDir(ASrcFs, ADstFs, AItem, err) then
       begin
+        if StopScan(AItem, err) then Exit;
         NoteFatal(err);
         Exit;
       end;
+      if StopScan(AItem, NoScpError) then Exit;
       if AItem.State = tsSkipped then Exit(True);
     end;
     FQueue.SetState(AItem, tsCompleted);
@@ -1847,6 +2086,7 @@ begin
   AItem.TotalBytes := srcEntry.Size;
   AItem.SourceTimeUtc := srcEntry.MTimeUtc;
   AItem.SourceMode := srcEntry.Mode;
+  AItem.SourceModeKnown := srcEntry.ModeKnown;
 
   if not ResolveConflict(ASrcFs, ADstFs, AItem, srcEntry, targetPath,
      outcome, err) then

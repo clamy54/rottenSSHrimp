@@ -104,11 +104,18 @@ toolbar. Right-click for the same actions plus rename, duplicate, delete, and
 its access rights: the nine permission bits, setuid, setgid and the sticky
 bit, as boxes or as an octal number, optionally applied to the contents of a
 folder. On several files at once, a box whose files disagree stays
-undecided and each file keeps the bit it had. Symbolic links keep their own
+undecided, and so does a box for an item whose permissions the server did
+not report; each file keeps the bit it had. Symbolic links keep their own
 permissions, because SFTP has no way to set them through a link without
-landing on its target, and a folder is done after its contents, so a rights
-change cannot lock the walk out halfway. Owner and group are shown as the
-server reports them and are not editable.
+landing on its target. A folder is done after its contents, so a rights
+change cannot lock the walk out halfway, and it is read again after its
+listing and right before its own rights: a folder swapped for a link in the
+meantime stops the walk. That narrows the window without closing it -- SFTP
+knows only paths -- which is worth knowing before a recursive change in a
+folder other people can write to. Rights already in place are not sent again,
+and if something stops the walk, the tab says how many items were already
+changed. Owner and group are shown as the server reports them and are not
+editable.
 Transfers are recursive, and a queue says what is happening; cancelling one
 stops it where it is and leaves the destination as it was. Queue rows select
 like files do -- Shift and Ctrl (Cmd on macOS) with the mouse or the arrows,
@@ -118,7 +125,14 @@ keeps its permissions -- on Windows its ACL; setuid, setgid and sticky bits
 are never carried onto new content -- and a new one gets its source's read
 and write bits, never widened and never executable. A new folder is created
 with its source's permissions from the start, so a private folder is never
-readable by others while it fills. If the connection drops,
+readable by others while it fills, and its source is read again just before
+it is created. Windows has no such bits: there, whatever others could not
+read at the source -- a private file or folder, and any temporary file that
+will replace an existing one -- is created with an ACL for you, SYSTEM and
+Administrators only, and keeps it through an interruption; everything else
+inherits the folder's ACL like any new file. A selection that would take the
+queue past 500,000 items is set aside whole, with the reason, rather than
+half-copied. If the connection drops,
 *Reconnect* replays the same prompts as opening the tab; interrupted
 transfers resume where they were confirmed, once both ends are checked
 against what was written, and a folder whose listing was cut is scanned
@@ -150,6 +164,9 @@ followed during a recursive copy, so a link pointing at `/` cannot turn one
 folder into a copy of the whole disk, and a recursive delete removes the link,
 not what it points at -- on the local disk every step is anchored to the
 folder already opened, a guarantee SFTP, which only knows paths, cannot give.
+On Linux and macOS a folder is also checked to be the same one, by device and
+inode, just before its name is removed; POSIX cannot remove a folder through
+an open descriptor, so this narrows the last window rather than closing it.
 Sockets, pipes and devices are refused
 rather than read as files. A remote filename containing a slash, a `..`, an
 ANSI escape sequence or a Windows reserved device name is refused with the

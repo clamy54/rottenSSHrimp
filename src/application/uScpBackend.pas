@@ -150,6 +150,11 @@ type
       out AErr: TScpError): Boolean; virtual; abstract;
     function SetMode(AHandle: TScpFileHandle; AMode: LongWord;
       out AErr: TScpError): Boolean; virtual; abstract;
+    // Droits par CHEMIN, pour la fenetre de proprietes: un fichier que personne
+    // n'ouvre. Peut suivre un lien -- SETSTAT le fait --, l'appelant les ecarte
+    // par lstat avant. Defaut: sekUnsupported.
+    function SetModeAt(const APath: string; AMode: LongWord;
+      out AErr: TScpError): Boolean; virtual;
 
     // --- Chemins: chaque cote a ses regles, jamais de concatenation nue ---
     function Join(const ABase, AName: string): string; virtual; abstract;
@@ -174,5 +179,13 @@ const
   SCP_DEFAULT_DIR_MODE = &0755;
 
 implementation
+
+function TScpFileSystem.SetModeAt(const APath: string; AMode: LongWord;
+  out AErr: TScpError): Boolean;
+begin
+  AErr := MakeScpError(sekUnsupported, 'Setting the permissions of',
+    DisplaySafeName(APath), '');
+  Result := False;
+end;
 
 end.

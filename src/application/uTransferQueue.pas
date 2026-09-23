@@ -88,6 +88,9 @@ type
     FWarning: string;
     FSourceTimeUtc: Int64;
     FSourceMode: LongWord;
+    // 0 est un mode reel: sans ce drapeau, un dossier 0000 serait pris pour
+    // un dossier dont on ne sait rien, et cree ouvert.
+    FSourceModeKnown: Boolean;
     FAttempts: Integer;
     FDepth: Integer;
     // Dossier de destination CHOISI par l'utilisateur, hors duquel rien ne sera
@@ -132,6 +135,8 @@ type
     property Warning: string read FWarning write SetWarning;
     property SourceTimeUtc: Int64 read FSourceTimeUtc write FSourceTimeUtc;
     property SourceMode: LongWord read FSourceMode write FSourceMode;
+    property SourceModeKnown: Boolean
+      read FSourceModeKnown write FSourceModeKnown;
     property Attempts: Integer read FAttempts write FAttempts;
     property Depth: Integer read FDepth write FDepth;
     property TargetRoot: string read FTargetRoot write FTargetRoot;
@@ -668,8 +673,10 @@ begin
       Result := ATo in [tsEnumerating, tsTransferring, tsPaused, tsSkipped,
         tsFailed, tsCanceled, tsInterrupted];
     tsEnumerating:
-      Result := ATo in [tsCompleted, tsFailed, tsSkipped, tsCanceled,
-        tsInterrupted];
+      // Une selection examinee devient fichier ou dossier et se copie dans la
+      // foulee, sans repasser par l'attente.
+      Result := ATo in [tsTransferring, tsCompleted, tsFailed, tsSkipped,
+        tsCanceled, tsInterrupted];
     tsTransferring:
       Result := ATo in [tsCompleted, tsFailed, tsSkipped, tsCanceled,
         tsPaused, tsInterrupted];

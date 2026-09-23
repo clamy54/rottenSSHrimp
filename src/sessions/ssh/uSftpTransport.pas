@@ -94,11 +94,8 @@ type
       out AErr: TScpError): Boolean; override;
     function SetMode(AHandle: TScpFileHandle; AMode: LongWord;
       out AErr: TScpError): Boolean; override;
-    // Chmod par CHEMIN, pour une demande portant sur un fichier que personne
-    // n'ouvre. Hors du contrat de TScpFileSystem: le moteur de transfert pose
-    // ses attributs par poignee, lui.
     function SetModeAt(const APath: string; AMode: LongWord;
-      out AErr: TScpError): Boolean;
+      out AErr: TScpError): Boolean; override;
     function Join(const ABase, AName: string): string; override;
     function Parent(const APath: string): string; override;
     function BaseName(const APath: string): string; override;
@@ -235,11 +232,6 @@ type
     procedure DoRunQueue;
     procedure FailIfFatal(const AErr: TScpError);
     function RemoveTree(const APath: string; ADepth: Integer;
-      out AErr: TScpError): Boolean;
-    // ASkippedLinks compte les liens laisses tels quels, pour le dire en une
-    // fois a la fin plutot qu'une note par lien.
-    function ChmodTree(const APath: string; ACmd: TSftpCommand;
-      ADepth: Integer; var ASkippedLinks: Integer;
       out AErr: TScpError): Boolean;
     // Octets libres sous APath, thread de transport uniquement. Extension absente:
     // -1 SANS erreur. Coupure ou echeance: -1 AVEC l'erreur, qui tue la session.
@@ -1331,8 +1323,8 @@ begin
 end;
 
 // SETSTAT SUIT les liens: sur un lien, ces droits partiraient sur sa cible,
-// n'importe ou dans l'arborescence. L'appelant a donc deja ecarte les liens
-// par lstat; ce n'est pas verifiable ici, le protocole n'ayant pas de lchmod.
+// n'importe ou dans l'arborescence. L'appelant les a ecartes par lstat juste
+// avant; ce n'est pas verifiable ici, le protocole n'ayant pas de lchmod.
 function TSftpFileSystem.SetModeAt(const APath: string; AMode: LongWord;
   out AErr: TScpError): Boolean;
 var
@@ -2072,74 +2064,6 @@ begin
   Result := FRemote.DeleteDir(APath, AErr);
 end;
 
-function TSftpTransport.ChmodTree(const APath: string; ACmd: TSftpCommand;
-  ADepth: Integer; var ASkippedLinks: Integer;
-  out AErr: TScpError): Boolean;
-var
-  entries: TScpEntryArray;
-  e: TScpEntry;
-  i: Integer;
-  child: string;
-begin
-  AErr := NoScpError;
-  if Terminated then
-  begin
-    AErr := MakeScpError(sekCanceled, 'Setting the permissions of',
-      DisplaySafeName(APath), '');
-    Exit(False);
-  end;
-  if ADepth > SFTP_MAX_TREE_DEPTH then
-  begin
-    AErr := MakeScpError(sekOther, 'Setting the permissions of',
-      DisplaySafeName(APath),
-      Format('maximum depth of %d reached', [SFTP_MAX_TREE_DEPTH]));
-    Exit(False);
-  end;
-  if not FRemote.Stat(APath, False, e, AErr) then Exit(False);
-  // Un lien reste tel quel: le chmod le traverserait pour aller poser ces
-  // droits sur sa cible, que l'utilisateur n'a pas designee.
-  if e.IsLink then
-  begin
-    Inc(ASkippedLinks);
-    Exit(True);
-  end;
-  if e.IsDir and ACmd.Recursive then
-  begin
-    if not FRemote.List(APath, entries, AErr) then Exit(False);
-    for i := 0 to High(entries) do
-    begin
-      if CheckRemoteChildName(entries[i].Name) <> nvOk then
-      begin
-        AErr := MakeScpError(sekInvalidName, 'Setting the permissions of',
-          DisplaySafeName(entries[i].Name), '');
-        Exit(False);
-      end;
-      child := RemoteJoin(APath, entries[i].Name);
-      if not RemoteIsUnder(APath, child) then
-      begin
-        AErr := MakeScpError(sekOutsideRoot, 'Setting the permissions of',
-          DisplaySafeName(entries[i].Name), '');
-        Exit(False);
-      end;
-      if not ChmodTree(child, ACmd, ADepth + 1, ASkippedLinks, AErr) then
-        Exit(False);
-    end;
-  end;
-  // Le dossier passe APRES son contenu: se retirer r ou x d'abord fermerait
-  // la porte sur ce qu'il reste a faire dedans.
-  if (not e.ModeKnown) and ((ACmd.ModeMask and SCP_MODE_BITS)
-     <> SCP_MODE_BITS) then
-  begin
-    // Sans les droits actuels, les bits hors du masque seraient inventes.
-    AErr := MakeScpError(sekAttrRefused, 'Setting the permissions of',
-      DisplaySafeName(APath), 'the server did not report the current mode');
-    Exit(False);
-  end;
-  Result := FRemote.SetModeAt(APath,
-    ScpApplyMode(e.Mode, ACmd.ModeBits, ACmd.ModeMask, e.IsDir, ACmd.DirX),
-    AErr);
-end;
-
 procedure TSftpTransport.DoRunQueue;
 var
   item: TTransferItem;
@@ -2226,7 +2150,7 @@ var
   leftover: TStringArray;
   r: TSftpResult;
   it: TTransferItem;
-  skipped: Integer;
+  tally: TScpChmodTally;
 begin
   err := NoScpError;
   case ACmd.Kind of
@@ -2290,13 +2214,23 @@ begin
       end;
     sckRemoteChmod:
       begin
-        skipped := 0;
+        tally := Default(TScpChmodTally);
         for i := 0 to High(ACmd.Sources) do
-          if not ChmodTree(ACmd.Sources[i], ACmd, 0, skipped, err) then Break;
-        if skipped > 0 then
+          if not ScpChmodTree(FRemote, ACmd.Sources[i], ACmd.ModeBits,
+             ACmd.ModeMask, ACmd.Recursive, ACmd.DirX, 0, tally, err) then
+            Break;
+        if tally.Links > 0 then
           EngineNote(Format('%d symbolic link(s) kept as they are: ' +
             'permissions set through a link would land on its target.',
-            [skipped]));
+            [tally.Links]));
+        // Un arret au milieu d'un dossier laisse le debut modifie: le dire,
+        // plutot que de laisser croire que rien n'a bouge.
+        if (err.Kind <> sekNone) and (tally.Applied > 0) then
+          EngineNote(Format('Permissions were already changed on %d ' +
+            'item(s) before the error.', [tally.Applied]))
+        else if (err.Kind = sekNone) and ACmd.Recursive then
+          EngineNote(Format('Permissions changed on %d item(s); %d already ' +
+            'had them.', [tally.Applied, tally.Unchanged]));
         r := TSftpResult.Create;
         r.Kind := srOpDone;
         r.Error := err;
@@ -2326,7 +2260,14 @@ begin
         end;
         for i := 0 to High(ACmd.Sources) do
         begin
-          name := dstFs.BaseName(ACmd.Sources[i]);
+          // Nom de la SOURCE, par ses regles: la destination prendrait un chemin
+          // Windows entier pour un seul nom.
+          if dir = tdUpload then
+            name := FLocal.BaseName(ACmd.Sources[i])
+          else if dir = tdDownload then
+            name := FRemote.BaseName(ACmd.Sources[i])
+          else
+            name := dstFs.BaseName(ACmd.Sources[i]);
           it := FQueue.Add(dir, tikScanRoot, ACmd.Sources[i], ACmd.TargetDir,
             DisplaySafeName(name), ACmd.Batch);
           it.TargetRoot := ACmd.TargetRoot;
