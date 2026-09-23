@@ -100,7 +100,11 @@ multi-select with Ctrl and Shift. Send a selection across by dragging it into
 the other panel -- drop it on a folder to go straight in -- or with F5, or with
 the arrow at the end of the panel's toolbar. Right-click for the same actions
 plus rename, duplicate and delete. Transfers are recursive, and a queue says
-what is happening.
+what is happening; cancelling one stops it where it is and leaves the
+destination as it was. A replaced file keeps its permissions, a new one gets
+its source's, never widened. If the connection drops, *Reconnect* replays the
+same prompts as opening the tab and interrupted transfers resume where they
+were confirmed.
 
 The menu says `Scp` because that is the word everyone reaches for. What goes
 over the wire is **SFTP over SSH**, which the tab header states in as many

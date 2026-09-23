@@ -21,7 +21,7 @@ interface
 uses
   Classes, SysUtils, ComCtrls,
   uRshDocument, uRshModel, uSessionManager, uSessionTabBase, uScpTab,
-  uSshTransport;
+  uSshTransport, uSshTunnel, uSshTunnelConnect;
 
 // Ouvre un onglet Scp, ou ACTIVE celui qui existe deja pour cette connexion.
 // AErr vide avec un resultat nil = annulation par l'utilisateur.
@@ -37,10 +37,18 @@ function CanOpenScp(AModel: TRshModel; const AConnUuid: string): Boolean;
 function ExistingScpTab(APages: TPageControl;
   const AConnUuid: string): TScpTab;
 
+// Parametres et, s'il en faut un, tunnel de rebond. Sert a l'ouverture ET a
+// la reconnexion, par les memes invites: pas de second chemin a oublier.
+// False + AErr vide = annulation.
+function BuildScpConnection(ADoc: TRshDocument; AModel: TRshModel;
+  const AConnUuid: string; out AParams: TSshConnectParams;
+  out ATunnel: TSshTunnel; out ABroker: TSshTunnelBroker;
+  out ADisplayName: string; out AErr: string): Boolean;
+
 implementation
 
 uses
-  uSshConnect, uSshTunnel, uSshTunnelConnect, uSessionState;
+  uSshConnect, uSessionState;
 
 function CanOpenScp(AModel: TRshModel; const AConnUuid: string): Boolean;
 var
@@ -76,16 +84,56 @@ begin
         Exit(TScpTab(APages.Pages[i]));
 end;
 
+function BuildScpConnection(ADoc: TRshDocument; AModel: TRshModel;
+  const AConnUuid: string; out AParams: TSshConnectParams;
+  out ATunnel: TSshTunnel; out ABroker: TSshTunnelBroker;
+  out ADisplayName: string; out AErr: string): Boolean;
+var
+  params: TSshConnectParams;
+  jumpUuid: string;
+  localPort: Integer;
+begin
+  Result := False;
+  AParams := nil;
+  ATunnel := nil;
+  ABroker := nil;
+  ADisplayName := '';
+  AErr := '';
+  if not BuildSshConnectParams(ADoc, AModel, AConnUuid, params,
+     ADisplayName, AErr) then
+    Exit;
+  try
+    // Ni PTY ni shell: cette session n'ouvrira qu'un sous-systeme SFTP.
+    params.RequestPty := False;
+    params.ExecCommand := '';
+    params.StartupCommand := '';
+
+    jumpUuid := AModel.ResolveJumpVia(AConnUuid);
+    if jumpUuid <> '' then
+    begin
+      if not EstablishJumpTunnel(ADoc, AModel, jumpUuid,
+         params.Host, params.Port, ATunnel, ABroker, localPort, AErr) then
+        Exit;
+      params.ConnectHost := '127.0.0.1';
+      params.ConnectPort := localPort;
+    end;
+    AParams := params;
+    params := nil;
+    Result := True;
+  finally
+    params.Free;           // nil des que rendue a l'appelant
+  end;
+end;
+
 function StartScpSession(APages: TPageControl; ADoc: TRshDocument;
   AModel: TRshModel; AManager: TSessionManager; const AConnUuid: string;
   ANotice: TSessionNoticeEvent; out AErr: string): TScpTab;
 var
   params, handed: TSshConnectParams;
   tab: TScpTab;
-  displayName, jumpUuid: string;
+  displayName: string;
   tun: TSshTunnel;
   broker: TSshTunnelBroker;
-  localPort: Integer;
 begin
   Result := nil;
   AErr := '';
@@ -100,26 +148,12 @@ begin
       [AManager.MaxSessions]);
     Exit;
   end;
-  if not BuildSshConnectParams(ADoc, AModel, AConnUuid, params,
+  if not BuildScpConnection(ADoc, AModel, AConnUuid, params, tun, broker,
      displayName, AErr) then
     Exit;
   try
-    // Ni PTY ni shell: cette session n'ouvrira qu'un sous-systeme SFTP.
-    params.RequestPty := False;
-    params.ExecCommand := '';
-    params.StartupCommand := '';
-
-    jumpUuid := AModel.ResolveJumpVia(AConnUuid);
-    if jumpUuid <> '' then
-    begin
-      if not EstablishJumpTunnel(ADoc, AModel, jumpUuid,
-         params.Host, params.Port, tun, broker, localPort, AErr) then
-        Exit;
-      params.ConnectHost := '127.0.0.1';
-      params.ConnectPort := localPort;
-      if Assigned(ANotice) then
-        ANotice(Format('%s: Scp via the SSH jump host.', [displayName]));
-    end;
+    if (tun <> nil) and Assigned(ANotice) then
+      ANotice(Format('%s: Scp via the SSH jump host.', [displayName]));
 
     // La propriete passe a l'onglet DES l'appel: si le constructeur echoue c'est
     // lui qui libere, et un params.Free ici libererait une seconde fois.
@@ -131,6 +165,8 @@ begin
     tun := nil;
     broker := nil;
     tab.OnNotice := ANotice;
+    // Le bouton « Reconnect » rejoue exactement ce chemin-ci.
+    tab.EnableReconnect(AModel, @BuildScpConnection);
     APages.ActivePage := tab;
     tab.Start;
     Result := tab;

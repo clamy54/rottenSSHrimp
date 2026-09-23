@@ -101,12 +101,12 @@ type
     // --- Fichiers ---
     function OpenRead(const APath: string; out AHandle: TScpFileHandle;
       out AErr: TScpError): Boolean; virtual; abstract;
-    // Cree un fichier NEUF dans ADir, avec un nom imprevisible, en exigeant
-    // l'exclusivite: un lien deja pose a ce nom doit faire echouer la
-    // creation, pas etre suivi.
-    function CreateTemp(const ADir: string; out APath: string;
-      out AHandle: TScpFileHandle; out AErr: TScpError): Boolean;
-      virtual; abstract;
+    // Cree un fichier NEUF dans ADir sous un nom imprevisible et en EXCLUSIF: un
+    // lien deja pose doit faire echouer la creation, pas etre suivi. AMode est
+    // DEMANDE a la creation, donc encore restreignable par l'umask.
+    function CreateTemp(const ADir: string; AMode: LongWord;
+      out APath: string; out AHandle: TScpFileHandle;
+      out AErr: TScpError): Boolean; virtual; abstract;
     // Rouvre un partiel pour y reprendre l'ecriture a AOffset.
     function OpenAppend(const APath: string; AOffset: Int64;
       out AHandle: TScpFileHandle; out AErr: TScpError): Boolean;
@@ -144,9 +144,11 @@ type
     function CollisionKey(const AName: string): string; virtual; abstract;
   end;
 
-// Mode par defaut d'un fichier envoye: lisible par tous, inscriptible par son
-// seul proprietaire, et jamais executable. L'umask du serveur peut encore le
-// restreindre -- il ne peut pas l'elargir.
+// Mode d'un fichier NEUF dont la source n'annonce rien (un disque Windows):
+// lisible par tous, inscriptible par son seul proprietaire, jamais executable.
+// Une source qui en annonce un le voit repris sans ecriture pour tous ni
+// setuid. L'umask peut encore restreindre, jamais elargir. Un fichier REMPLACE
+// garde les droits qu'il avait.
 const
   SCP_DEFAULT_FILE_MODE = &0644;
   SCP_DEFAULT_DIR_MODE = &0755;

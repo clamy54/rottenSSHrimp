@@ -16,7 +16,8 @@ unit uScpEngine;
 interface
 
 uses
-  SysUtils, Classes, uScpBackend, uScpErrors, uScpPaths, uTransferQueue;
+  SysUtils, Classes, SyncObjs, uScpBackend, uScpErrors, uScpPaths,
+  uTransferQueue;
 
 const
   // Tampon FIXE, jamais dimensionne d'apres le reseau.
@@ -46,6 +47,9 @@ type
     // Identite du systeme de fichiers SOURCE: reprendre un partiel de srv-a avec
     // les octets de srv-b donnerait un fichier valide en apparence, faux dedans.
     SourceIdentity: string;
+    // Et celle de la DESTINATION, seule a le nettoyer: un chemin POSIX local peut
+    // exister a l'identique sur le serveur, ou l'homonyme serait supprime.
+    DestIdentity: string;
     SourcePath: string;
     SourceSize: Int64;
     SourceTimeUtc: Int64;
@@ -54,18 +58,22 @@ type
     Active: Boolean;
   end;
 
+  // Lu par l'interface pendant que le fil de transfert ecrit: verrou partout.
   TScpPartialRegistry = class
   private
     FItems: array of TScpPartial;
+    FLock: TCriticalSection;
     function IndexOfTemp(const ATempPath: string): Integer;
   public
+    constructor Create;
+    destructor Destroy; override;
     procedure Note(const ATempPath, ATargetPath, ASourceIdentity,
-      ASourcePath: string; ASourceSize, ASourceTimeUtc: Int64);
+      ADestIdentity, ASourcePath: string; ASourceSize, ASourceTimeUtc: Int64);
     procedure Confirm(const ATempPath: string; AOffset: Int64);
     procedure Forget(const ATempPath: string);
-    // Cherche un partiel reutilisable pour cette source exacte. Refuse des que
-    // le moindre element ne concorde pas.
-    function FindResumable(const ATargetPath, ASourceIdentity,
+    // Cherche un partiel reutilisable pour cette source exacte, sur cette
+    // destination. Refuse des que le moindre element ne concorde pas.
+    function FindResumable(const ATargetPath, ASourceIdentity, ADestIdentity,
       ASourcePath: string; ASourceSize, ASourceTimeUtc: Int64;
       out APartial: TScpPartial): Boolean;
     function ActiveCount: Integer;
@@ -93,10 +101,17 @@ type
       ADstFs: TScpFileSystem; ADstH: TScpFileHandle;
       AItem: TTransferItem; AExpected: Int64; AStartOffset: Int64;
       const ATempPath: string; out AErr: TScpError): Boolean;
+    // Decide du sort d'une cible existante. Rend False si l'element ne doit
+    // pas etre transfere (ignore ou annule). APrevMode: droits de la cible
+    // remplacee, 0 = inconnus ou pas de cible.
     function ResolveConflict(ASrcFs, ADstFs: TScpFileSystem;
       AItem: TTransferItem; const ASrcEntry: TScpEntry;
       var ATargetPath: string; out AResumeFrom: Int64;
-      out AResumeTemp: string; out AErr: TScpError): Boolean;
+      out AResumeTemp: string; out APrevMode: LongWord;
+      out AErr: TScpError): Boolean;
+    // Un dossier n'a pas pu etre cree: tout ce qui devait y aller echoue avec lui,
+    // tout de suite, plutot qu'un par un avec une raison qui egare.
+    procedure FailSubtree(ADstFs: TScpFileSystem; AItem: TTransferItem);
     // Remplace la cible par le temporaire. Gere l'absence de remplacement
     // atomique en DEMANDANT, jamais en supprimant d'office.
     function CommitTemp(ADstFs: TScpFileSystem;
@@ -121,8 +136,8 @@ type
     function RunItem(ASrcFs, ADstFs: TScpFileSystem; AItem: TTransferItem;
       const ATargetRoot: string): Boolean;
 
-    // Supprime les temporaires encore ouverts quand c'est sans risque, et
-    // rend la liste de ceux qu'il a fallu laisser en place.
+    // Supprime les temporaires ouverts SUR CE systeme de fichiers quand c'est sans
+    // risque, et rend ceux qu'il a fallu laisser. Les autres ne sont pas touches.
     function CleanupPartials(ADstFs: TScpFileSystem): TStringArray;
 
     property Partials: TScpPartialRegistry read FPartials;
@@ -137,6 +152,18 @@ implementation
 
 { TScpPartialRegistry }
 
+constructor TScpPartialRegistry.Create;
+begin
+  inherited Create;
+  FLock := TCriticalSection.Create;
+end;
+
+destructor TScpPartialRegistry.Destroy;
+begin
+  FLock.Free;
+  inherited Destroy;
+end;
+
 function TScpPartialRegistry.IndexOfTemp(const ATempPath: string): Integer;
 var
   i: Integer;
@@ -148,24 +175,31 @@ begin
 end;
 
 procedure TScpPartialRegistry.Note(const ATempPath, ATargetPath,
-  ASourceIdentity, ASourcePath: string; ASourceSize, ASourceTimeUtc: Int64);
+  ASourceIdentity, ADestIdentity, ASourcePath: string;
+  ASourceSize, ASourceTimeUtc: Int64);
 var
   i: Integer;
 begin
-  i := IndexOfTemp(ATempPath);
-  if i < 0 then
-  begin
-    SetLength(FItems, Length(FItems) + 1);
-    i := High(FItems);
+  FLock.Acquire;
+  try
+    i := IndexOfTemp(ATempPath);
+    if i < 0 then
+    begin
+      SetLength(FItems, Length(FItems) + 1);
+      i := High(FItems);
+    end;
+    FItems[i].TempPath := ATempPath;
+    FItems[i].TargetPath := ATargetPath;
+    FItems[i].SourceIdentity := ASourceIdentity;
+    FItems[i].DestIdentity := ADestIdentity;
+    FItems[i].SourcePath := ASourcePath;
+    FItems[i].SourceSize := ASourceSize;
+    FItems[i].SourceTimeUtc := ASourceTimeUtc;
+    FItems[i].Confirmed := 0;
+    FItems[i].Active := True;
+  finally
+    FLock.Release;
   end;
-  FItems[i].TempPath := ATempPath;
-  FItems[i].TargetPath := ATargetPath;
-  FItems[i].SourceIdentity := ASourceIdentity;
-  FItems[i].SourcePath := ASourcePath;
-  FItems[i].SourceSize := ASourceSize;
-  FItems[i].SourceTimeUtc := ASourceTimeUtc;
-  FItems[i].Confirmed := 0;
-  FItems[i].Active := True;
 end;
 
 procedure TScpPartialRegistry.Confirm(const ATempPath: string;
@@ -173,24 +207,35 @@ procedure TScpPartialRegistry.Confirm(const ATempPath: string;
 var
   i: Integer;
 begin
-  i := IndexOfTemp(ATempPath);
-  // Un offset qui recule n'a pas de sens: seul le plus grand confirme compte.
-  if (i >= 0) and (AOffset > FItems[i].Confirmed) then
-    FItems[i].Confirmed := AOffset;
+  FLock.Acquire;
+  try
+    i := IndexOfTemp(ATempPath);
+    // Un offset qui recule n'a pas de sens: seul le plus grand confirme
+    // compte.
+    if (i >= 0) and (AOffset > FItems[i].Confirmed) then
+      FItems[i].Confirmed := AOffset;
+  finally
+    FLock.Release;
+  end;
 end;
 
 procedure TScpPartialRegistry.Forget(const ATempPath: string);
 var
   i: Integer;
 begin
-  i := IndexOfTemp(ATempPath);
-  if i >= 0 then
-    FItems[i].Active := False;
+  FLock.Acquire;
+  try
+    i := IndexOfTemp(ATempPath);
+    if i >= 0 then
+      FItems[i].Active := False;
+  finally
+    FLock.Release;
+  end;
 end;
 
 function TScpPartialRegistry.FindResumable(const ATargetPath,
-  ASourceIdentity, ASourcePath: string; ASourceSize, ASourceTimeUtc: Int64;
-  out APartial: TScpPartial): Boolean;
+  ASourceIdentity, ADestIdentity, ASourcePath: string;
+  ASourceSize, ASourceTimeUtc: Int64; out APartial: TScpPartial): Boolean;
 var
   i: Integer;
 begin
@@ -198,19 +243,25 @@ begin
   APartial := Default(TScpPartial);
   // Taille ou date inconnue: la concordance est indemontrable, donc refusee.
   if (ASourceSize < 0) or (ASourceTimeUtc = 0) then Exit;
-  for i := 0 to High(FItems) do
-    if FItems[i].Active and
-       (FItems[i].TargetPath = ATargetPath) and
-       (FItems[i].SourceIdentity = ASourceIdentity) and
-       (FItems[i].SourcePath = ASourcePath) and
-       (FItems[i].SourceSize = ASourceSize) and
-       (FItems[i].SourceTimeUtc = ASourceTimeUtc) and
-       (FItems[i].Confirmed > 0) and
-       (FItems[i].Confirmed < ASourceSize) then
-    begin
-      APartial := FItems[i];
-      Exit(True);
-    end;
+  FLock.Acquire;
+  try
+    for i := 0 to High(FItems) do
+      if FItems[i].Active and
+         (FItems[i].TargetPath = ATargetPath) and
+         (FItems[i].SourceIdentity = ASourceIdentity) and
+         (FItems[i].DestIdentity = ADestIdentity) and
+         (FItems[i].SourcePath = ASourcePath) and
+         (FItems[i].SourceSize = ASourceSize) and
+         (FItems[i].SourceTimeUtc = ASourceTimeUtc) and
+         (FItems[i].Confirmed > 0) and
+         (FItems[i].Confirmed < ASourceSize) then
+      begin
+        APartial := FItems[i];
+        Exit(True);
+      end;
+  finally
+    FLock.Release;
+  end;
 end;
 
 function TScpPartialRegistry.ActiveCount: Integer;
@@ -218,8 +269,13 @@ var
   i: Integer;
 begin
   Result := 0;
-  for i := 0 to High(FItems) do
-    if FItems[i].Active then Inc(Result);
+  FLock.Acquire;
+  try
+    for i := 0 to High(FItems) do
+      if FItems[i].Active then Inc(Result);
+  finally
+    FLock.Release;
+  end;
 end;
 
 function TScpPartialRegistry.ActiveAt(AIndex: Integer): TScpPartial;
@@ -228,17 +284,37 @@ var
 begin
   Result := Default(TScpPartial);
   n := 0;
-  for i := 0 to High(FItems) do
-    if FItems[i].Active then
-    begin
-      if n = AIndex then Exit(FItems[i]);
-      Inc(n);
-    end;
+  FLock.Acquire;
+  try
+    for i := 0 to High(FItems) do
+      if FItems[i].Active then
+      begin
+        if n = AIndex then Exit(FItems[i]);
+        Inc(n);
+      end;
+  finally
+    FLock.Release;
+  end;
 end;
 
 procedure TScpPartialRegistry.Clear;
 begin
-  FItems := nil;
+  FLock.Acquire;
+  try
+    FItems := nil;
+  finally
+    FLock.Release;
+  end;
+end;
+
+// Droits d'un fichier NEUF d'apres ceux de sa source. Jamais d'ecriture
+// pour tous, jamais de setuid/setgid/sticky, quel que soit ce que la source
+// annonce; et un mode inconnu (source Windows) donne le mode par defaut.
+function ModeForNewFile(ASourceMode: LongWord): LongWord;
+begin
+  Result := ASourceMode and LongWord(&0777);
+  if Result = 0 then Result := SCP_DEFAULT_FILE_MODE;
+  Result := Result and LongWord(&0775);
 end;
 
 { TScpTransferEngine }
@@ -302,7 +378,10 @@ var
       AWhy := NameVerdictText(v, DisplaySafeName(AName));
   end;
 
-  function Walk(const ASrcDir, ADstDir: string; ADepth: Integer): Boolean;
+  // AOwner: l'element tikMakeDir du dossier. Un dossier inenumerable ne
+  // disparait pas du bilan, il passe a « ignore » avec sa raison.
+  function Walk(const ASrcDir, ADstDir: string; ADepth: Integer;
+    AOwner: TTransferItem): Boolean;
   var
     entries: TScpEntryArray;
     i: Integer;
@@ -322,14 +401,28 @@ var
     if ADepth > AMaxDepth then
     begin
       // Profondeur bornee: sans elle une arborescence fabriquee epuise la pile.
-      Note(Format('Skipped below %s: maximum depth of %d reached.',
-        [DisplaySafeName(ASrcDir), AMaxDepth]));
+      err := MakeScpError(sekOther, 'Scanning', DisplaySafeName(ASrcDir),
+        Format('maximum depth of %d reached, contents not transferred',
+          [AMaxDepth]));
+      Note(ScpErrorText(err));
+      if AOwner <> nil then
+      begin
+        AOwner.Error := err;
+        FQueue.SetState(AOwner, tsSkipped);
+      end;
       Exit(True);
     end;
     if not ASrcFs.List(ASrcDir, entries, err) then
     begin
-      // Un dossier illisible ne condamne pas le lot: il est note et saute.
+      // Un dossier illisible ne condamne pas le lot: il est note et saute,
+      // et son element dit pourquoi -- « termine » sans lui serait un
+      // mensonge.
       Note(ScpErrorText(err));
+      if AOwner <> nil then
+      begin
+        AOwner.Error := err;
+        FQueue.SetState(AOwner, tsSkipped);
+      end;
       Exit(True);
     end;
     if Length(entries) > SCP_MAX_DIR_ENTRIES then
@@ -423,7 +516,7 @@ var
           item.Depth := ADepth;
           item.TargetRoot := ATargetRoot;
           item.SourceMode := e.Mode;
-          if not Walk(childSrc, childDst, ADepth + 1) then Exit;
+          if not Walk(childSrc, childDst, ADepth + 1, item) then Exit;
           Continue;
         end;
         item := FQueue.Add(ADirection, tikFile, childSrc, childDst,
@@ -507,7 +600,7 @@ begin
       DisplaySafeName(targetName));
     rootItem.TargetRoot := ATargetRoot;
     rootItem.SourceMode := srcEntry.Mode;
-    Exit(Walk(ASourcePath, targetPath, 1));
+    Exit(Walk(ASourcePath, targetPath, 1, rootItem));
   end;
   rootItem := FQueue.Add(ADirection, tikFile, ASourcePath, targetPath,
     DisplaySafeName(targetName));
@@ -523,7 +616,8 @@ end;
 function TScpTransferEngine.ResolveConflict(ASrcFs, ADstFs: TScpFileSystem;
   AItem: TTransferItem; const ASrcEntry: TScpEntry;
   var ATargetPath: string; out AResumeFrom: Int64;
-  out AResumeTemp: string; out AErr: TScpError): Boolean;
+  out AResumeTemp: string; out APrevMode: LongWord;
+  out AErr: TScpError): Boolean;
 var
   found: Boolean;
   dstEntry: TScpEntry;
@@ -537,23 +631,36 @@ begin
   Result := False;
   AResumeFrom := 0;
   AResumeTemp := '';
+  APrevMode := 0;
   AErr := NoScpError;
 
   if not ADstFs.Exists(ATargetPath, found, AErr) then Exit;
-  if not found then Exit(True);      // pas de conflit
+  if not found then
+  begin
+    // Pas de conflit, mais un fichier NEUF interrompu est le cas ordinaire d'une
+    // reprise: l'ignorer ferait tout recommencer a chaque coupure.
+    if FPartials.FindResumable(ATargetPath, ASrcFs.DisplayName,
+       ADstFs.DisplayName, AItem.SourcePath, ASrcEntry.Size,
+       ASrcEntry.MTimeUtc, partial) then
+    begin
+      AResumeFrom := partial.Confirmed;
+      AResumeTemp := partial.TempPath;
+      Note(Format('Resuming %s from %s.',
+        [AItem.DisplayName, FormatBytes(partial.Confirmed)]));
+    end;
+    Exit(True);
+  end;
 
-  // La cible existe: decrire les DEUX cotes, sinon l'utilisateur choisit a
-  // l'aveugle.
+  // La cible existe: decrire les DEUX cotes, sinon le choix est aveugle. lstat
+  // d'abord, un lien ici sera REMPLACE par le rename et non suivi.
   info := Default(TConflictInfo);
   info.SourcePath := AItem.SourcePath;
   info.TargetPath := ATargetPath;
   info.SourceSize := ASrcEntry.Size;
   info.SourceTimeUtc := ASrcEntry.MTimeUtc;
   info.TargetSize := -1;
-  if ADstFs.Stat(ATargetPath, True, dstEntry, statErr) then
+  if ADstFs.Stat(ATargetPath, False, dstEntry, statErr) then
   begin
-    info.TargetSize := dstEntry.Size;
-    info.TargetTimeUtc := dstEntry.MTimeUtc;
     if dstEntry.IsDir then
     begin
       // Ecraser un dossier par un fichier n'est pas un conflit ordinaire.
@@ -562,11 +669,25 @@ begin
         'the destination is a folder, not a file');
       Exit;
     end;
+    if dstEntry.IsLink then
+    begin
+      if ADstFs.Stat(ATargetPath, True, dstEntry, statErr) then
+      begin
+        info.TargetSize := dstEntry.Size;
+        info.TargetTimeUtc := dstEntry.MTimeUtc;
+      end;
+    end
+    else
+    begin
+      info.TargetSize := dstEntry.Size;
+      info.TargetTimeUtc := dstEntry.MTimeUtc;
+      APrevMode := dstEntry.Mode and LongWord(&07777);
+    end;
   end;
 
   info.ResumeAllowed := FPartials.FindResumable(ATargetPath,
-    ASrcFs.DisplayName, AItem.SourcePath, ASrcEntry.Size,
-    ASrcEntry.MTimeUtc, partial);
+    ASrcFs.DisplayName, ADstFs.DisplayName, AItem.SourcePath,
+    ASrcEntry.Size, ASrcEntry.MTimeUtc, partial);
   if info.ResumeAllowed then
   begin
     info.ResumeOffset := partial.Confirmed;
@@ -669,7 +790,9 @@ begin
 
   while True do
   begin
-    if ASrcFs.Canceled or ADstFs.Canceled then
+    // Sans ce test, « Cancel selected » ne serait qu'un changement d'etiquette et
+    // la copie irait jusqu'a remplacer la cible.
+    if ASrcFs.Canceled or ADstFs.Canceled or AItem.CancelRequested then
     begin
       AErr := MakeScpError(sekCanceled, 'Copying', AItem.DisplayName, '');
       Exit;
@@ -690,7 +813,7 @@ begin
     offset := 0;
     while offset < got do
     begin
-      if ASrcFs.Canceled or ADstFs.Canceled then
+      if ASrcFs.Canceled or ADstFs.Canceled or AItem.CancelRequested then
       begin
         AErr := MakeScpError(sekCanceled, 'Copying', AItem.DisplayName, '');
         Exit;
@@ -792,6 +915,30 @@ begin
   if Result then FPartials.Forget(ATempPath);
 end;
 
+procedure TScpTransferEngine.FailSubtree(ADstFs: TScpFileSystem;
+  AItem: TTransferItem);
+var
+  i: Integer;
+  it: TTransferItem;
+begin
+  FQueue.Lock;
+  try
+    for i := 0 to FQueue.Count - 1 do
+    begin
+      it := FQueue.Items[i];
+      if it = AItem then Continue;
+      if not it.IsRunnable then Continue;
+      if it.Direction <> AItem.Direction then Continue;
+      if not ADstFs.IsUnder(AItem.TargetPath, it.TargetPath) then Continue;
+      it.Error := MakeScpError(AItem.Error.Kind, 'Copying', it.DisplayName,
+        Format('its folder "%s" could not be created', [AItem.DisplayName]));
+      FQueue.SetState(it, tsFailed);
+    end;
+  finally
+    FQueue.Unlock;
+  end;
+end;
+
 function TScpTransferEngine.RunItem(ASrcFs, ADstFs: TScpFileSystem;
   AItem: TTransferItem; const ATargetRoot: string): Boolean;
 var
@@ -803,6 +950,7 @@ var
   resumeTemp: string;
   targetExisted, found, okCopy: Boolean;
   v: TNameVerdict;
+  prevMode, newMode: LongWord;
 begin
   Result := False;
   srcH := nil;
@@ -810,7 +958,7 @@ begin
   tempPath := '';
 
   if AItem.IsTerminal then Exit(True);
-  if ASrcFs.Canceled or ADstFs.Canceled then
+  if ASrcFs.Canceled or ADstFs.Canceled or AItem.CancelRequested then
   begin
     AItem.Error := MakeScpError(sekCanceled, 'Copying', AItem.DisplayName, '');
     FQueue.SetState(AItem, tsCanceled);
@@ -838,23 +986,39 @@ begin
 
   if AItem.Kind = tikMakeDir then
   begin
-    FQueue.SetState(AItem, tsTransferring);
+    // Refus = l'interface l'a annule entre-temps: l'etat est deja pose.
+    if not FQueue.SetState(AItem, tsTransferring) then Exit;
     if not ADstFs.Exists(targetPath, found, err) then
     begin
       AItem.Error := err;
       FQueue.SetState(AItem, tsFailed);
+      FailSubtree(ADstFs, AItem);
       Exit;
     end;
     if found then
     begin
-      // Un dossier deja present n'est pas un conflit: on y depose la suite.
-      if ADstFs.Stat(targetPath, True, dstEntry, err) and
-         (not dstEntry.IsDir) then
+      // Un dossier present n'est pas un conflit. lstat et pas stat: un LIEN ici
+      // conduirait le contenu ailleurs, et le controle lexical ne le voit pas.
+      if ADstFs.Stat(targetPath, False, dstEntry, err) then
       begin
-        AItem.Error := MakeScpError(sekAlreadyExists, 'Creating folder',
-          AItem.DisplayName, 'a file of that name already exists');
-        FQueue.SetState(AItem, tsFailed);
-        Exit;
+        if dstEntry.IsLink then
+        begin
+          AItem.Error := MakeScpError(sekOutsideRoot, 'Creating folder',
+            AItem.DisplayName,
+            'the destination folder is a link, and nothing is written ' +
+            'through links');
+          FQueue.SetState(AItem, tsFailed);
+          FailSubtree(ADstFs, AItem);
+          Exit;
+        end;
+        if not dstEntry.IsDir then
+        begin
+          AItem.Error := MakeScpError(sekAlreadyExists, 'Creating folder',
+            AItem.DisplayName, 'a file of that name already exists');
+          FQueue.SetState(AItem, tsFailed);
+          FailSubtree(ADstFs, AItem);
+          Exit;
+        end;
       end;
       FQueue.SetState(AItem, tsCompleted);
       Exit(True);
@@ -863,6 +1027,7 @@ begin
     begin
       AItem.Error := err;
       FQueue.SetState(AItem, tsFailed);
+      FailSubtree(ADstFs, AItem);
       Exit;
     end;
     FQueue.SetState(AItem, tsCompleted);
@@ -904,7 +1069,7 @@ begin
   AItem.SourceMode := srcEntry.Mode;
 
   if not ResolveConflict(ASrcFs, ADstFs, AItem, srcEntry, targetPath,
-     resumeFrom, resumeTemp, err) then
+     resumeFrom, resumeTemp, prevMode, err) then
   begin
     if AItem.State = tsSkipped then Exit(True);
     if err.Kind <> sekNone then
@@ -927,8 +1092,13 @@ begin
     Exit;
   end;
 
-  FQueue.SetState(AItem, tsTransferring);
+  // Refus = annule par l'interface pendant qu'on preparait: rien n'est ecrit.
+  if not FQueue.SetState(AItem, tsTransferring) then Exit;
   parentDir := ADstFs.Parent(targetPath);
+  // Le mode est decide ICI et donne a la creation du temporaire: c'est ce
+  // qui laisse l'umask de la destination le restreindre. Un chmod apres coup
+  // passerait outre.
+  newMode := ModeForNewFile(srcEntry.Mode);
   try
     if not ASrcFs.OpenRead(AItem.SourcePath, srcH, err) then
     begin
@@ -946,22 +1116,27 @@ begin
       tempPath := resumeTemp;
       if not ADstFs.OpenAppend(tempPath, resumeFrom, dstH, err) then
       begin
-        AItem.Error := err;
-        FQueue.SetState(AItem, tsFailed);
-        Exit;
-      end;
-      if not ASrcFs.Seek(srcH, resumeFrom, err) then
+        // Le partiel a disparu ou ne se rouvre pas: il ne vaut plus rien,
+        // et on repart de zero plutot que d'echouer sur un fichier que
+        // personne n'a demande de garder.
+        FPartials.Forget(tempPath);
+        Note(Format('The partial file for %s could not be reopened; ' +
+          'starting over.', [AItem.DisplayName]));
+        tempPath := '';
+        resumeFrom := 0;
+      end
+      else if not ASrcFs.Seek(srcH, resumeFrom, err) then
       begin
         AItem.Error := err;
         FQueue.SetState(AItem, tsFailed);
         Exit;
       end;
-    end
-    else
+    end;
+    if tempPath = '' then
     begin
       // Temporaire DANS le dossier de destination: ailleurs le rename traverserait
       // un systeme de fichiers et cesserait d'etre atomique.
-      if not ADstFs.CreateTemp(parentDir, tempPath, dstH, err) then
+      if not ADstFs.CreateTemp(parentDir, newMode, tempPath, dstH, err) then
       begin
         if err.Kind = sekAccessDeniedRead then
           err.Kind := sekAccessDeniedWrite;
@@ -970,7 +1145,8 @@ begin
         Exit;
       end;
       FPartials.Note(tempPath, targetPath, ASrcFs.DisplayName,
-        AItem.SourcePath, srcEntry.Size, srcEntry.MTimeUtc);
+        ADstFs.DisplayName, AItem.SourcePath, srcEntry.Size,
+        srcEntry.MTimeUtc);
       resumeFrom := 0;
     end;
 
@@ -1006,6 +1182,16 @@ begin
       Exit;
     end;
 
+    // Derniere chance de s'arreter AVANT de toucher la cible: une annulation
+    // arrivee entre la derniere ecriture et ici doit encore compter.
+    if AItem.CancelRequested then
+    begin
+      AItem.Error := MakeScpError(sekCanceled, 'Copying', AItem.DisplayName,
+        '');
+      FQueue.SetState(AItem, tsCanceled);
+      Exit;
+    end;
+
     if not CommitTemp(ADstFs, tempPath, targetPath, targetExisted, err) then
     begin
       AItem.Error := err;
@@ -1019,10 +1205,11 @@ begin
       if not ADstFs.SetMTime(targetPath, srcEntry.MTimeUtc, attrErr) then
         AItem.Warning := ScpErrorText(MakeScpError(sekAttrRefused,
           'Setting the timestamp of', AItem.DisplayName, attrErr.Detail));
-    // Le mode de la source n'est jamais recopie tel quel: un fichier distant
-    // en 0777 ne doit pas arriver inscriptible par tout le monde.
-    if ADstFs.IsRemote then
-      if not ADstFs.SetMode(targetPath, SCP_DEFAULT_FILE_MODE, attrErr) then
+    // Un fichier REMPLACE garde ses droits: c'est son proprietaire qui les
+    // avait choisis, et un 0600 qui devient 0644 est une fuite, pas un
+    // detail. Un fichier neuf a recu les siens a la creation du temporaire.
+    if targetExisted and (prevMode <> 0) then
+      if not ADstFs.SetMode(targetPath, prevMode, attrErr) then
         if AItem.Warning = '' then
           AItem.Warning := ScpErrorText(MakeScpError(sekAttrRefused,
             'Setting the mode of', AItem.DisplayName, attrErr.Detail));
@@ -1052,6 +1239,11 @@ begin
   while i < FPartials.ActiveCount do
   begin
     p := FPartials.ActiveAt(i);
+    if p.DestIdentity <> ADstFs.DisplayName then
+    begin
+      Inc(i);
+      Continue;
+    end;
     if ADstFs.DeleteFile(p.TempPath, err) then
       FPartials.Forget(p.TempPath)
     else

@@ -61,8 +61,9 @@ type
       out AErr: TScpError): Boolean; override;
     function OpenRead(const APath: string; out AHandle: TScpFileHandle;
       out AErr: TScpError): Boolean; override;
-    function CreateTemp(const ADir: string; out APath: string;
-      out AHandle: TScpFileHandle; out AErr: TScpError): Boolean; override;
+    function CreateTemp(const ADir: string; AMode: LongWord;
+      out APath: string; out AHandle: TScpFileHandle;
+      out AErr: TScpError): Boolean; override;
     function OpenAppend(const APath: string; AOffset: Int64;
       out AHandle: TScpFileHandle; out AErr: TScpError): Boolean; override;
     function Read(AHandle: TScpFileHandle; ABuf: PByte; ACount: Integer;
@@ -135,21 +136,21 @@ type
     FRemote: TSftpFileSystem;
     FLocal: TScpFileSystem;      // possede par l'onglet, pas par nous
     FQueue: TTransferQueue;      // idem
+    // Prete par l'onglet, qui survit a une reconnexion avec son registre de
+    // partiels, ou cree ici si personne ne l'a fourni.
     FEngine: TScpTransferEngine;
+    FOwnsEngine: Boolean;
 
     FCmdLock: TCriticalSection;
     FCmds: TFPList;
     FCmdEvent: TEvent;
     FSerial: Int64;
 
-    // Resultats publies vers l'interface. Proteges par FPubLock: le thread
-    // ecrit, l'interface lit dans la methode postee par Queue.
+    // Resultats publies vers l'interface, dans l'ordre: un Queue(@PublishNext)
+    // par resultat. Un champ partage ferait lire au premier rappel le resultat du
+    // second, et au second une liste vide.
     FPubLock: TCriticalSection;
-    FPubPath: string;
-    FPubEntries: TScpEntryArray;
-    FPubError: TScpError;
-    FPubNote: string;
-    FPubFree: Int64;
+    FPub: TFPList;
 
     FOnListed: TSftpListEvent;
     FOnHome: TSftpPathEvent;
@@ -178,14 +179,10 @@ type
     procedure AskConflictOnUi;
     procedure AskNonAtomicOnUi;
 
-    procedure PublishListed;
-    procedure PublishHome;
-    procedure PublishOpDone;
+    procedure PostResult(AResult: TObject);
+    procedure PublishNext;
     procedure PublishQueueChanged;
-    procedure PublishFreeSpace;
-    procedure PublishNote;
     procedure PublishConnected;
-    procedure PublishFailed;
 
     procedure PostCommand(ACmd: TSftpCommand);
     function TakeCommand: TSftpCommand;
@@ -216,10 +213,10 @@ type
     function ErrHandshakeRefused: string; override;
     procedure Execute; override;
   public
-    // Prend possession de AParams. ALocal et AQueue restent a l'appelant et
-    // doivent lui survivre jusqu'a la destruction de ce thread.
+    // Prend possession de AParams. ALocal, AQueue et AEngine restent a l'appelant
+    // et doivent survivre a ce thread. AEngine a nil: le transport cree le sien.
     constructor Create(AParams: TSshConnectParams; ALocal: TScpFileSystem;
-      AQueue: TTransferQueue);
+      AQueue: TTransferQueue; AEngine: TScpTransferEngine = nil);
     destructor Destroy; override;
 
     // --- appelables depuis le thread UI ---
@@ -300,6 +297,18 @@ type
   TSftpHandle = class(TScpFileHandle)
     H: PLIBSSH2_SFTP_HANDLE;
     Path: string;
+  end;
+
+  TSftpResultKind = (srListed, srHome, srOpDone, srFreeSpace, srNote,
+    srFailed);
+
+  TSftpResult = class
+    Kind: TSftpResultKind;
+    Path: string;
+    Entries: TScpEntryArray;
+    Error: TScpError;
+    FreeBytes: Int64;
+    Text: string;
   end;
 
 function RandomSuffix: string;
@@ -788,8 +797,9 @@ begin
   Result := True;
 end;
 
-function TSftpFileSystem.CreateTemp(const ADir: string; out APath: string;
-  out AHandle: TScpFileHandle; out AErr: TScpError): Boolean;
+function TSftpFileSystem.CreateTemp(const ADir: string; AMode: LongWord;
+  out APath: string; out AHandle: TScpFileHandle;
+  out AErr: TScpError): Boolean;
 var
   h: TSftpHandle;
   hnd: PLIBSSH2_SFTP_HANDLE;
@@ -808,12 +818,13 @@ begin
     p := AnsiString(candidate);
     deadline := GetTickCount64 + SFTP_OP_TIMEOUT_MS;
     repeat
-      // EXCL: la creation echoue si le nom existe deja, lien compris. C'est
-      // ce qui interdit d'ecrire a travers un lien pose d'avance, et le nom
-      // imprevisible est ce qui interdit de le poser a temps.
+      // EXCL: la creation echoue si le nom existe, lien compris -- c'est ce qui
+      // interdit d'ecrire a travers un lien pose d'avance, le nom imprevisible
+      // interdisant de le poser a temps. Le mode part dans OPEN, ou le serveur
+      // applique son umask; un SETSTAT apres coup ne le ferait pas.
       hnd := libssh2_sftp_open_ex(FOwner.FSftp, PAnsiChar(p), Length(p),
         LIBSSH2_FXF_WRITE or LIBSSH2_FXF_CREAT or LIBSSH2_FXF_EXCL,
-        &0600, LIBSSH2_SFTP_OPENFILE);
+        clong(AMode and LongWord(&0777)), LIBSSH2_SFTP_OPENFILE);
       if hnd <> nil then Break;
       rc := libssh2_session_last_errno(FOwner.FSession);
       if rc <> LIBSSH2_ERROR_EAGAIN then Break;
@@ -1101,7 +1112,8 @@ end;
 { TSftpTransport }
 
 constructor TSftpTransport.Create(AParams: TSshConnectParams;
-  ALocal: TScpFileSystem; AQueue: TTransferQueue);
+  ALocal: TScpFileSystem; AQueue: TTransferQueue;
+  AEngine: TScpTransferEngine);
 begin
   inherited Create(True);
   FParams := AParams;
@@ -1112,13 +1124,17 @@ begin
   FPubLock := TCriticalSection.Create;
   FErrLock := TCriticalSection.Create;
   FCmds := TFPList.Create;
+  FPub := TFPList.Create;
   FCmdEvent := TEvent.Create(nil, True, False, '');
   FConflictEvent := TEvent.Create(nil, True, False, '');
   FNonAtomicEvent := TEvent.Create(nil, True, False, '');
   FConnIdentity := Format('%s@%s:%d',
     [AParams.Username, AParams.Host, AParams.Port]);
   FRemote := TSftpFileSystem.Create(Self, FConnIdentity);
-  FEngine := TScpTransferEngine.Create(AQueue);
+  FEngine := AEngine;
+  FOwnsEngine := FEngine = nil;
+  if FOwnsEngine then
+    FEngine := TScpTransferEngine.Create(AQueue);
   FEngine.OnConflict := @EngineConflict;
   FEngine.OnNonAtomic := @EngineNonAtomic;
   FEngine.OnProgress := @EngineProgress;
@@ -1126,14 +1142,27 @@ begin
 end;
 
 destructor TSftpTransport.Destroy;
+var
+  i: Integer;
 begin
   inherited Destroy;      // TThread joint le thread AVANT qu'on libere tout
   ClearCommands;
   FCmds.Free;
+  for i := 0 to FPub.Count - 1 do
+    TObject(FPub[i]).Free;
+  FPub.Free;
   FCmdEvent.Free;
   FConflictEvent.Free;
   FNonAtomicEvent.Free;
-  FEngine.Free;
+  if FOwnsEngine then
+    FEngine.Free
+  else
+  begin
+    FEngine.OnConflict := nil;
+    FEngine.OnNonAtomic := nil;
+    FEngine.OnProgress := nil;
+    FEngine.OnNote := nil;
+  end;
   FRemote.Free;
   FErrLock.Free;
   FPubLock.Free;
@@ -1197,6 +1226,8 @@ begin
 end;
 
 procedure TSftpTransport.Fail(const AMessage: string);
+var
+  r: TSftpResult;
 begin
   FErrLock.Acquire;
   try
@@ -1205,14 +1236,10 @@ begin
     FErrLock.Release;
   end;
   SetState(rssFailed);
-  FPubLock.Acquire;
-  try
-    FPubError := MakeScpError(sekConnectionLost, 'Connection', '', AMessage);
-  finally
-    FPubLock.Release;
-  end;
-  if Assigned(FOnFailed) then
-    Queue(@PublishFailed);
+  r := TSftpResult.Create;
+  r.Kind := srFailed;
+  r.Error := MakeScpError(sekConnectionLost, 'Connection', '', AMessage);
+  PostResult(r);
 end;
 
 procedure TSftpTransport.ReportError(const AMessage: string);
@@ -1303,53 +1330,51 @@ end;
 
 // --- Publication vers l'interface -----------------------------------------
 
-procedure TSftpTransport.PublishListed;
-var
-  path: string;
-  entries: TScpEntryArray;
-  err: TScpError;
+procedure TSftpTransport.PostResult(AResult: TObject);
 begin
   FPubLock.Acquire;
   try
-    path := FPubPath;
-    entries := FPubEntries;
-    err := FPubError;
-    FPubEntries := nil;
+    FPub.Add(AResult);
   finally
     FPubLock.Release;
   end;
-  if Assigned(FOnListed) then
-    FOnListed(path, entries, err);
+  Queue(@PublishNext);
 end;
 
-procedure TSftpTransport.PublishHome;
+procedure TSftpTransport.PublishNext;
 var
-  path: string;
-  err: TScpError;
+  r: TSftpResult;
 begin
+  r := nil;
   FPubLock.Acquire;
   try
-    path := FPubPath;
-    err := FPubError;
+    if FPub.Count > 0 then
+    begin
+      r := TSftpResult(FPub[0]);
+      FPub.Delete(0);
+    end;
   finally
     FPubLock.Release;
   end;
-  if Assigned(FOnHome) then
-    FOnHome(path, err);
-end;
-
-procedure TSftpTransport.PublishOpDone;
-var
-  err: TScpError;
-begin
-  FPubLock.Acquire;
+  if r = nil then Exit;
   try
-    err := FPubError;
+    case r.Kind of
+      srListed:
+        if Assigned(FOnListed) then FOnListed(r.Path, r.Entries, r.Error);
+      srHome:
+        if Assigned(FOnHome) then FOnHome(r.Path, r.Error);
+      srOpDone:
+        if Assigned(FOnOpDone) then FOnOpDone(r.Error);
+      srFreeSpace:
+        if Assigned(FOnFreeSpace) then FOnFreeSpace(r.Path, r.FreeBytes);
+      srNote:
+        if Assigned(FOnNote) and (r.Text <> '') then FOnNote(r.Text);
+      srFailed:
+        if Assigned(FOnFailed) then FOnFailed(r.Error);
+    end;
   finally
-    FPubLock.Release;
+    r.Free;
   end;
-  if Assigned(FOnOpDone) then
-    FOnOpDone(err);
 end;
 
 procedure TSftpTransport.PublishQueueChanged;
@@ -1358,55 +1383,10 @@ begin
     FOnQueueChanged();
 end;
 
-procedure TSftpTransport.PublishFreeSpace;
-var
-  path: string;
-  freeBytes: Int64;
-begin
-  FPubLock.Acquire;
-  try
-    path := FPubPath;
-    freeBytes := FPubFree;
-  finally
-    FPubLock.Release;
-  end;
-  if Assigned(FOnFreeSpace) then
-    FOnFreeSpace(path, freeBytes);
-end;
-
-procedure TSftpTransport.PublishNote;
-var
-  s: string;
-begin
-  FPubLock.Acquire;
-  try
-    s := FPubNote;
-    FPubNote := '';
-  finally
-    FPubLock.Release;
-  end;
-  if Assigned(FOnNote) and (s <> '') then
-    FOnNote(s);
-end;
-
 procedure TSftpTransport.PublishConnected;
 begin
   if Assigned(FOnConnected) then
     FOnConnected(Self);
-end;
-
-procedure TSftpTransport.PublishFailed;
-var
-  err: TScpError;
-begin
-  FPubLock.Acquire;
-  try
-    err := FPubError;
-  finally
-    FPubLock.Release;
-  end;
-  if Assigned(FOnFailed) then
-    FOnFailed(err);
 end;
 
 // --- Relais du moteur (thread de transport) -------------------------------
@@ -1492,15 +1472,14 @@ begin
 end;
 
 procedure TSftpTransport.EngineNote(const AText: string);
+var
+  r: TSftpResult;
 begin
   if not Assigned(FOnNote) then Exit;
-  FPubLock.Acquire;
-  try
-    FPubNote := AText;
-  finally
-    FPubLock.Release;
-  end;
-  Queue(@PublishNote);
+  r := TSftpResult.Create;
+  r.Kind := srNote;
+  r.Text := AText;
+  PostResult(r);
 end;
 
 // --- Commandes ------------------------------------------------------------
@@ -1754,6 +1733,8 @@ begin
   while not Terminated do
   begin
     if FPaused then Break;
+    // TENU jusqu'a ReleaseCurrent: « Clear completed » ne peut pas le liberer
+    // sous nos pieds.
     item := FQueue.NextRunnable;
     if item = nil then Break;
     // Le sens de l'element, pose a la mise en file, designe les deux systemes de
@@ -1771,11 +1752,21 @@ begin
     if root = '' then
       // Hors enumeration: le dossier de la cible est la borne la plus stricte.
       root := dstFs.Parent(item.TargetPath);
-    FEngine.RunItem(srcFs, dstFs, item, root);
+    try
+      FEngine.RunItem(srcFs, dstFs, item, root);
+      if item.IsRunnable then
+      begin
+        item.Error := MakeScpError(sekOther, 'Copying', item.DisplayName,
+          'the transfer ended without a result');
+        FQueue.SetState(item, tsFailed);
+      end;
+    finally
+      FQueue.ReleaseCurrent;
+    end;
     if Assigned(FOnQueueChanged) then
       Queue(@PublishQueueChanged);
-    // Entre deux elements seulement: une commande d'interface ne coupe jamais
-    // un fichier en cours, mais elle n'attend pas la fin du lot non plus.
+    // Entre deux elements: une commande d'interface ne coupe pas un fichier, mais
+    // n'attend pas la fin du lot. La boucle REVIENT ici des qu'elle est servie.
     if HasPendingCommand then Break;
   end;
   if Assigned(FOnQueueChanged) then
@@ -1810,6 +1801,7 @@ var
   srcFs, dstFs: TScpFileSystem;
   dir: TTransferDirection;
   leftover: TStringArray;
+  r: TSftpResult;
 begin
   err := NoScpError;
   case ACmd.Kind of
@@ -1817,16 +1809,12 @@ begin
       begin
         if not FRemote.List(ACmd.PathA, entries, err) then
           SetLength(entries, 0);
-        FPubLock.Acquire;
-        try
-          FPubPath := ACmd.PathA;
-          FPubEntries := entries;
-          FPubError := err;
-        finally
-          FPubLock.Release;
-        end;
-        if Assigned(FOnListed) then
-          Queue(@PublishListed);
+        r := TSftpResult.Create;
+        r.Kind := srListed;
+        r.Path := ACmd.PathA;
+        r.Entries := entries;
+        r.Error := err;
+        PostResult(r);
       end;
     sckRemoteHome:
       begin
@@ -1838,51 +1826,35 @@ begin
           else
             path := '';
         end;
-        FPubLock.Acquire;
-        try
-          FPubPath := path;
-          FPubError := err;
-        finally
-          FPubLock.Release;
-        end;
-        if Assigned(FOnHome) then
-          Queue(@PublishHome);
+        r := TSftpResult.Create;
+        r.Kind := srHome;
+        r.Path := path;
+        r.Error := err;
+        PostResult(r);
       end;
     sckRemoteMkdir:
       begin
         FRemote.MakeDir(ACmd.PathA, err);
-        FPubLock.Acquire;
-        try
-          FPubError := err;
-        finally
-          FPubLock.Release;
-        end;
-        if Assigned(FOnOpDone) then
-          Queue(@PublishOpDone);
+        r := TSftpResult.Create;
+        r.Kind := srOpDone;
+        r.Error := err;
+        PostResult(r);
       end;
     sckRemoteRename:
       begin
         FRemote.Rename(ACmd.PathA, ACmd.PathB, err);
-        FPubLock.Acquire;
-        try
-          FPubError := err;
-        finally
-          FPubLock.Release;
-        end;
-        if Assigned(FOnOpDone) then
-          Queue(@PublishOpDone);
+        r := TSftpResult.Create;
+        r.Kind := srOpDone;
+        r.Error := err;
+        PostResult(r);
       end;
     sckRemoteDelete:
       begin
         RemoveTree(ACmd.PathA, 0, err);
-        FPubLock.Acquire;
-        try
-          FPubError := err;
-        finally
-          FPubLock.Release;
-        end;
-        if Assigned(FOnOpDone) then
-          Queue(@PublishOpDone);
+        r := TSftpResult.Create;
+        r.Kind := srOpDone;
+        r.Error := err;
+        PostResult(r);
       end;
     sckEnqueueUpload, sckEnqueueDownload:
       begin
@@ -1953,15 +1925,11 @@ begin
       end;
     sckFreeSpace:
       begin
-        FPubLock.Acquire;
-        try
-          FPubPath := ACmd.PathA;
-          FPubFree := RemoteFreeBytes(ACmd.PathA);
-        finally
-          FPubLock.Release;
-        end;
-        if Assigned(FOnFreeSpace) then
-          Queue(@PublishFreeSpace);
+        r := TSftpResult.Create;
+        r.Kind := srFreeSpace;
+        r.Path := ACmd.PathA;
+        r.FreeBytes := RemoteFreeBytes(ACmd.PathA);
+        PostResult(r);
       end;
     sckCleanupPartials:
       begin
@@ -1986,6 +1954,13 @@ begin
     cmd := TakeCommand;
     if cmd = nil then
     begin
+      // Rien a servir: si une commande a interrompu la file, c'est ici qu'elle
+      // reprend. Sans ce retour, un listing pendant un lot laissait la suite a quai.
+      if (not FPaused) and FQueue.HasRunnable then
+      begin
+        DoRunQueue;
+        Continue;
+      end;
       // Attente REVEILLABLE et bornee: le reveil periodique fait revoir Terminated
       // meme si l'evenement s'est perdu.
       FCmdEvent.WaitFor(200);

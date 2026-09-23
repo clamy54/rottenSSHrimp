@@ -20,14 +20,21 @@ interface
 uses
   Classes, SysUtils, Controls, ComCtrls, Forms, Dialogs, ExtCtrls, StdCtrls,
   Graphics, LCLType,
-  uSessionTabBase, uSessionState, uSessionManager, uRshDocument,
+  uSessionTabBase, uSessionState, uSessionManager, uRshDocument, uRshModel,
   uSshTransport, uSshKnownHosts, uSshTunnel, uSshTunnelConnect, uSecureBytes,
   uScpBackend, uScpErrors, uScpPaths, uTransferQueue, uSftpTransport,
-  uLocalFileSystem, uLocalFsWorker, uFilePanel, uTransferQueueView, uTheme,
-  uThemedSplitter, uScpIcons;
+  uScpEngine, uLocalFileSystem, uLocalFsWorker, uFilePanel,
+  uTransferQueueView, uTheme, uThemedSplitter, uScpIcons;
 
 type
   TScpTab = class;
+
+  // Reconstruit la connexion, invites comprises. Fournie par uScpConnect, seul
+  // a savoir rejouer credentials, rebond et FIDO2. False + AErr vide = annule.
+  TScpReconnectBuilder = function(ADoc: TRshDocument; AModel: TRshModel;
+    const AConnUuid: string; out AParams: TSshConnectParams;
+    out ATunnel: TSshTunnel; out ABroker: TSshTunnelBroker;
+    out ADisplayName: string; out AErr: string): Boolean;
 
   TScpSessionHandle = class(TManagedSession)
   private
@@ -74,9 +81,14 @@ type
     FLocalFs: TLocalFileSystem;
     FLocalWorker: TLocalFsWorker;
     FQueue: TTransferQueue;
+    // Le moteur est a l'onglet, pas au transport: il porte le registre des
+    // partiels, donc la reprise apres reconnexion.
+    FEngine: TScpTransferEngine;
     FTransport: TSftpTransport;
     FTunnel: TSshTunnel;
     FTunnelBroker: TSshTunnelBroker;
+    FModel: TRshModel;
+    FReconnectBuilder: TScpReconnectBuilder;
 
     FHeader: TPanel;
     FHeaderInfo: TLabel;
@@ -90,8 +102,16 @@ type
     FQueueView: TTransferQueueView;
     FNotices: TLabel;
 
+    // Chemins AFFICHES, ceux dont les noms sont a l'ecran: ils ne changent qu'a
+    // l'arrivee d'un listing reussi.
     FLocalPath: string;
     FRemotePath: string;
+    FLocalWanted: string;
+    FRemoteWanted: string;
+    // Inscrite dans l'historique quand elle a REUSSI: un dossier jamais affiche
+    // n'a rien a faire dans « arriere ».
+    FLocalPushPending: Boolean;
+    FRemotePushPending: Boolean;
     FLocalHistory: TNavHistory;
     FRemoteHistory: TNavHistory;
     FActiveSide: TFilePanelSide;
@@ -106,6 +126,8 @@ type
     FRemoteSavedTop: Integer;
 
     procedure BuildUi;
+    procedure HookTransport;
+    procedure DropTransport;
     procedure UpdateCaption;
     procedure UpdateHeader;
     procedure Note(const AText: string);
@@ -168,6 +190,10 @@ type
 
     procedure Start;
     procedure AttachTunnel(ATunnel: TSshTunnel; ABroker: TSshTunnelBroker);
+    // Rend « Reconnect » capable de reconnecter. Sans cet appel il explique
+    // comment faire, il ne pretend pas le faire.
+    procedure EnableReconnect(AModel: TRshModel;
+      ABuilder: TScpReconnectBuilder);
     procedure RefreshTheme;
 
     function ConfirmClose: Boolean; override;
@@ -300,27 +326,15 @@ begin
     FActiveSide := fpsLocal;
 
     FQueue := TTransferQueue.Create;
+    FEngine := TScpTransferEngine.Create(FQueue);
     FLocalFs := TLocalFileSystem.Create;
     FLocalWorker := TLocalFsWorker.Create(FLocalFs);
     FLocalWorker.OnListed := @LocalListed;
     FLocalWorker.OnOpDone := @LocalOpDone;
     FLocalWorker.OnVolumes := @LocalVolumes;
 
-    FTransport := TSftpTransport.Create(AParams, FLocalFs, FQueue);
-    FTransport.OnListed := @RemoteListed;
-    FTransport.OnHome := @RemoteHomeReady;
-    FTransport.OnOpDone := @RemoteOpDone;
-    FTransport.OnQueueChanged := @TransportQueueChanged;
-    FTransport.OnNote := @TransportNote;
-    FTransport.OnConnected := @TransportConnected;
-    FTransport.OnFailed := @TransportFailed;
-    FTransport.OnConflict := @TransportConflict;
-    FTransport.OnNonAtomic := @TransportNonAtomic;
-    FTransport.OnHostKey := @HostKeyAsk;
-    FTransport.OnHostKeyLookup := @HostKeyLookup;
-    FTransport.OnHostKeySave := @HostKeySave;
-    FTransport.OnSkNotice := @SkNotice;
-    FTransport.OnSkPin := @SkPin;
+    FTransport := TSftpTransport.Create(AParams, FLocalFs, FQueue, FEngine);
+    HookTransport;
 
     BuildUi;
 
@@ -344,8 +358,65 @@ begin
   if (FManager <> nil) and (FHandle <> nil) then
     FManager.UnregisterSession(FHandle);
 
-  // 2. Detacher les callbacks AVANT de couper: un resultat deja en vol ne
-  //    doit pas trouver de destinataire.
+  // 2. Detacher les callbacks du worker local AVANT de le couper: un
+  //    resultat deja en vol ne doit pas trouver de destinataire.
+  if FLocalWorker <> nil then
+  begin
+    FLocalWorker.OnListed := nil;
+    FLocalWorker.OnOpDone := nil;
+    FLocalWorker.OnVolumes := nil;
+  end;
+
+  // 3. Couper puis JOINDRE les deux threads: TThread attend la fin d'Execute,
+  //    d'ou l'importance que toute attente reseau soit reveillable.
+  DropTransport;
+  if FLocalWorker <> nil then
+  begin
+    FLocalWorker.Shutdown;
+    FLocalWorker.Free;
+    FLocalWorker := nil;
+  end;
+
+  // 4. Retirer ce qui attendait encore dans la file asynchrone de la LCL.
+  Application.RemoveAsyncCalls(Self);
+  FreeAndNil(FSkNotice);
+
+  FreeAndNil(FHandle);
+  FreeAndNil(FKnownHosts);
+  FreeAndNil(FEngine);
+  FreeAndNil(FQueue);
+  FreeAndNil(FLocalFs);
+  FreeAndNil(FLocalHistory);
+  FreeAndNil(FRemoteHistory);
+
+  cb := FOnDestroyed;
+  inherited Destroy;
+  if Assigned(cb) then
+    cb(nil);
+end;
+
+procedure TScpTab.HookTransport;
+begin
+  FTransport.OnListed := @RemoteListed;
+  FTransport.OnHome := @RemoteHomeReady;
+  FTransport.OnOpDone := @RemoteOpDone;
+  FTransport.OnQueueChanged := @TransportQueueChanged;
+  FTransport.OnNote := @TransportNote;
+  FTransport.OnConnected := @TransportConnected;
+  FTransport.OnFailed := @TransportFailed;
+  FTransport.OnConflict := @TransportConflict;
+  FTransport.OnNonAtomic := @TransportNonAtomic;
+  FTransport.OnHostKey := @HostKeyAsk;
+  FTransport.OnHostKeyLookup := @HostKeyLookup;
+  FTransport.OnHostKeySave := @HostKeySave;
+  FTransport.OnSkNotice := @SkNotice;
+  FTransport.OnSkPin := @SkPin;
+end;
+
+// Detache, coupe, joint et libere le transport puis son tunnel. Fermeture et
+// reconnexion: dans les deux cas aucun rappel de l'ancien fil ne doit venir.
+procedure TScpTab.DropTransport;
+begin
   if FTransport <> nil then
   begin
     FTransport.OnListed := nil;
@@ -359,36 +430,10 @@ begin
     FTransport.OnNonAtomic := nil;
     FTransport.OnSkNotice := nil;
     FTransport.OnSkPin := nil;
-  end;
-  if FLocalWorker <> nil then
-  begin
-    FLocalWorker.OnListed := nil;
-    FLocalWorker.OnOpDone := nil;
-    FLocalWorker.OnVolumes := nil;
-  end;
-
-  // 3. Couper puis JOINDRE les deux threads. Le destructeur de TThread
-  //    attend la fin de Execute, d'ou l'importance que toute attente reseau
-  //    soit reveillable.
-  if FTransport <> nil then
-  begin
     FTransport.Shutdown;
     FTransport.Free;
     FTransport := nil;
   end;
-  if FLocalWorker <> nil then
-  begin
-    FLocalWorker.Shutdown;
-    FLocalWorker.Free;
-    FLocalWorker := nil;
-  end;
-
-  // 4. Retirer ce qui attendait encore dans la file asynchrone de la LCL.
-  Application.RemoveAsyncCalls(Self);
-  FreeAndNil(FSkNotice);
-
-  // 5. Tunnel et courtier APRES le transport: le transport s'appuie sur le
-  //    port local du tunnel.
   if FTunnel <> nil then
   begin
     FTunnel.Shutdown;
@@ -396,18 +441,13 @@ begin
     FTunnel := nil;
   end;
   FreeAndNil(FTunnelBroker);
+end;
 
-  FreeAndNil(FHandle);
-  FreeAndNil(FKnownHosts);
-  FreeAndNil(FQueue);
-  FreeAndNil(FLocalFs);
-  FreeAndNil(FLocalHistory);
-  FreeAndNil(FRemoteHistory);
-
-  cb := FOnDestroyed;
-  inherited Destroy;
-  if Assigned(cb) then
-    cb(nil);
+procedure TScpTab.EnableReconnect(AModel: TRshModel;
+  ABuilder: TScpReconnectBuilder);
+begin
+  FModel := AModel;
+  FReconnectBuilder := ABuilder;
 end;
 
 procedure TScpTab.BuildUi;
@@ -599,15 +639,17 @@ begin
       FRemoteSavedTop);
 end;
 
+// Le chemin AFFICHE ne change qu'a l'arrivee d'un listing REUSSI: entre les
+// deux l'ancien contenu reste a l'ecran, et toute operation le vise.
 procedure TScpTab.NavigateTo(ASide: TFilePanelSide; const APath: string;
   APushHistory: Boolean);
 var
   norm: string;
 begin
   if FClosing then Exit;
+  if APath = '' then Exit;
   if ASide = fpsLocal then
   begin
-    if APath = '' then Exit;
     norm := LocalNormalize(APath);
     if norm <> FLocalPath then
     begin
@@ -617,16 +659,21 @@ begin
     end
     else
       CaptureSide(fpsLocal);
-    FLocalPath := norm;
-    if APushHistory then FLocalHistory.Push(norm);
+    FLocalWanted := norm;
+    FLocalPushPending := APushHistory;
     FLocalPanel.SetBusy(True, 'Reading ' + DisplaySafeName(norm) + '...');
-    FLocalPanel.SelectVolumeFor(norm);
     FLocalWorker.RequestList(norm);
   end
   else
   begin
-    if APath = '' then Exit;
     norm := RemoteNormalize(APath);
+    if (FTransport = nil) or (FState <> rssConnected) then
+    begin
+      // Poser la commande a un fil mort laisserait « Reading... » pour toujours.
+      FRemotePanel.ShowError(MakeScpError(sekConnectionLost, 'Listing',
+        DisplaySafeName(norm), 'not connected'));
+      Exit;
+    end;
     if norm <> FRemotePath then
     begin
       FRemoteSavedSel := nil;
@@ -635,8 +682,8 @@ begin
     end
     else
       CaptureSide(fpsRemote);
-    FRemotePath := norm;
-    if APushHistory then FRemoteHistory.Push(norm);
+    FRemoteWanted := norm;
+    FRemotePushPending := APushHistory;
     FRemotePanel.SetBusy(True, 'Reading ' + DisplaySafeName(norm) + '...');
     FTransport.RequestList(norm);
   end;
@@ -662,16 +709,18 @@ procedure TScpTab.RefreshTick(Sender: TObject);
 begin
   FRefreshTimer.Enabled := False;
   if FClosing then Exit;
+  // On recharge ce qui est AFFICHE, et le resultat est attendu comme tel: sans
+  // NavigateTo il arriverait pour un chemin que personne n'attend.
   if FPendingLocalRefresh then
   begin
     FPendingLocalRefresh := False;
-    if FLocalPath <> '' then FLocalWorker.RequestList(FLocalPath);
+    if FLocalPath <> '' then NavigateTo(fpsLocal, FLocalPath, False);
   end;
   if FPendingRemoteRefresh then
   begin
     FPendingRemoteRefresh := False;
-    if (FRemotePath <> '') and (FTransport <> nil) then
-      FTransport.RequestList(FRemotePath);
+    if (FRemotePath <> '') and (FState = rssConnected) then
+      NavigateTo(fpsRemote, FRemotePath, False);
   end;
 end;
 
@@ -725,6 +774,9 @@ begin
   FLocalPanel.List.SetPanelActive(ASide = fpsLocal);
   FRemotePanel.List.SetPanelActive(ASide = fpsRemote);
 
+  if (cur = '') and (AAction in [fpaParent, fpaNewFolder, fpaRename,
+     fpaDelete, fpaTransfer, fpaDuplicate, fpaCopyPath]) then Exit;
+
   case AAction of
     fpaNavigate:
       begin
@@ -764,7 +816,7 @@ begin
     fpaHome:
       if ASide = fpsLocal then
         NavigateTo(ASide, LocalHomePath, True)
-      else
+      else if (FTransport <> nil) and (FState = rssConnected) then
         FTransport.RequestHome;
     fpaRefresh:
       begin
@@ -1044,19 +1096,64 @@ begin
           end;
       end;
     qcClearCompleted:
-      FQueue.ClearFinished;
+      begin
+        FQueue.ClearFinished;
+        // Les indices ont bouge: une selection par position viserait
+        // d'autres lignes.
+        FQueueView.ClearSelection;
+      end;
     qcRetryFailed:
-      FTransport.RequestRetryFailed;
+      if FState = rssConnected then
+        FTransport.RequestRetryFailed
+      else
+        Note('Not connected: reconnect first, interrupted transfers ' +
+          'resume on their own.');
   end;
   FQueueView.Refresh;
 end;
 
+// Reconstruire la session passe par le chemin de l'ouverture, fourni par
+// EnableReconnect. Le moteur, la file et le registre des partiels restent:
+// c'est ce qui permet a un element interrompu de reprendre a son offset.
 procedure TScpTab.ReconnectClick(Sender: TObject);
+var
+  params: TSshConnectParams;
+  tun: TSshTunnel;
+  broker: TSshTunnelBroker;
+  displayName, err: string;
 begin
-  // Une reconnexion demande de reconstruire une session complete, avec ses
-  // invites: c'est le role de uScpConnect, pas de l'onglet. On demande donc
-  // la fermeture et on le dit clairement plutot que de reconnecter a moitie.
-  Note('Close this tab and open Scp again on the host to reconnect.');
+  if FClosing then Exit;
+  if not (FState in [rssFailed, rssDisconnected]) then Exit;
+  if (not Assigned(FReconnectBuilder)) or (FModel = nil) then
+  begin
+    Note('Close this tab and open Scp again on the host to reconnect.');
+    Exit;
+  end;
+  params := nil;
+  tun := nil;
+  broker := nil;
+  if not FReconnectBuilder(FDoc, FModel, FConnUuid, params, tun, broker,
+     displayName, err) then
+  begin
+    if err <> '' then Note(err);     // vide = l'utilisateur a renonce
+    Exit;
+  end;
+  // On joint l'ancien transport avant de brancher le neuf, sinon deux fils se
+  // disputeraient la file.
+  DropTransport;
+  FTunnel := tun;
+  FTunnelBroker := broker;
+  FTransport := TSftpTransport.Create(params, FLocalFs, FQueue, FEngine);
+  HookTransport;
+  if displayName <> '' then FDisplayName := displayName;
+  FState := rssConnecting;
+  FErrorMsg := '';
+  FUserAbort := False;
+  FRemotePanel.ClearError;
+  UpdateCaption;
+  UpdateHeader;
+  Note('Reconnecting...');
+  FTransport.Start;
 end;
 
 procedure TScpTab.CloseClick(Sender: TObject);
@@ -1069,19 +1166,30 @@ end;
 
 procedure TScpTab.LocalListed(const APath: string;
   const AEntries: TScpEntryArray; const AError: TScpError);
+var
+  norm: string;
 begin
   if FClosing then Exit;
+  norm := LocalNormalize(APath);
+  // En retard pour un dossier qu'on ne veut plus: un autre listing est en
+  // route, c'est lui qui aura le dernier mot.
+  if norm <> FLocalWanted then Exit;
   FLocalPanel.SetBusy(False, '');
   if AError.Kind <> sekNone then
   begin
-    // L'ancien contenu RESTE affiche: vider la vue sur une erreur ferait
-    // croire a un dossier vide.
+    // L'ancien contenu RESTE affiche, chemin compris: vider ferait croire a un
+    // dossier vide, et changer le chemin ferait agir sur ce que nul ne voit.
     FLocalPanel.ShowError(AError);
+    FLocalPanel.SetPathText(FLocalPath);
+    FLocalWanted := FLocalPath;
     Exit;
   end;
   FLocalPanel.ClearError;
-  FLocalPanel.SetEntries(APath, AEntries,
-    LocalParent(APath) <> LocalNormalize(APath));
+  FLocalPath := norm;
+  if FLocalPushPending then FLocalHistory.Push(norm);
+  FLocalPushPending := False;
+  FLocalPanel.SelectVolumeFor(norm);
+  FLocalPanel.SetEntries(norm, AEntries, LocalParent(norm) <> norm);
   FLocalPanel.List.RestoreView(FLocalSavedSel, FLocalSavedFocus,
     FLocalSavedTop);
 end;
@@ -1116,19 +1224,27 @@ end;
 
 procedure TScpTab.RemoteListed(const APath: string;
   const AEntries: TScpEntryArray; const AError: TScpError);
+var
+  norm: string;
 begin
   if FClosing then Exit;
+  norm := RemoteNormalize(APath);
+  if norm <> FRemoteWanted then Exit;      // en retard, un autre suit
   FRemotePanel.SetBusy(False, '');
   if AError.Kind <> sekNone then
   begin
     FRemotePanel.ShowError(AError);
+    FRemotePanel.SetPathText(FRemotePath);
+    FRemoteWanted := FRemotePath;
     // Une erreur de listing n'invalide pas la connexion: seule une perte reseau
     // le fait, par TransportFailed.
     Exit;
   end;
   FRemotePanel.ClearError;
-  FRemotePanel.SetEntries(APath, AEntries,
-    RemoteParent(APath) <> RemoteNormalize(APath));
+  FRemotePath := norm;
+  if FRemotePushPending then FRemoteHistory.Push(norm);
+  FRemotePushPending := False;
+  FRemotePanel.SetEntries(norm, AEntries, RemoteParent(norm) <> norm);
   FRemotePanel.List.RestoreView(FRemoteSavedSel, FRemoteSavedFocus,
     FRemoteSavedTop);
 end;
@@ -1172,13 +1288,27 @@ begin
 end;
 
 procedure TScpTab.TransportConnected(Sender: TObject);
+var
+  resumed: Integer;
 begin
   if FClosing then Exit;
   FState := rssConnected;
   FEverConnected := True;
   UpdateCaption;
   UpdateHeader;
-  FTransport.RequestHome;
+  if FRemotePath <> '' then
+  begin
+    NavigateTo(fpsRemote, FRemotePath, False);
+    resumed := FQueue.RetryInterrupted;
+    if resumed > 0 then
+    begin
+      Note(Format('Reconnected: resuming %d interrupted transfer(s).',
+        [resumed]));
+      FTransport.RequestRunQueue;
+    end;
+  end
+  else
+    FTransport.RequestHome;
 end;
 
 procedure TScpTab.TransportFailed(const AError: TScpError);
@@ -1296,8 +1426,8 @@ var
 begin
   s := FQueue.Summary;
   partials := 0;
-  if FTransport <> nil then
-    partials := FTransport.ActivePartialCount;
+  if FEngine <> nil then
+    partials := FEngine.Partials.ActiveCount;
   if (s.Pending + s.Running + s.Interrupted = 0) and (partials = 0) then
     Exit(True);
 
@@ -1330,20 +1460,32 @@ var
   waited: Integer;
   remaining: Integer;
 begin
-  if (FTransport = nil) or FCleaningPartials then Exit;
+  if (FTransport = nil) or (FEngine = nil) or FCleaningPartials then Exit;
   FCleaningPartials := True;
   Screen.Cursor := crHourGlass;
   try
+    if FState <> rssConnected then
+    begin
+      // Fil de transport mort: les partiels locaux se retirent d'ici, les distants
+      // attendront une session vivante, et on le dit.
+      FEngine.CleanupPartials(FLocalFs);
+      remaining := FEngine.Partials.ActiveCount;
+      if remaining > 0 then
+        EmitNotice(Format('%s: %d partial file(s) are still on the server ' +
+          '(not connected); they are named ".rssh-*.part".',
+          [FDisplayName, remaining]));
+      Exit;
+    end;
     FTransport.RequestCleanupPartials;
     waited := 0;
     while waited < PARTIAL_CLEANUP_GRACE_MS do
     begin
       Application.ProcessMessages;
-      if FTransport.ActivePartialCount = 0 then Break;
+      if FEngine.Partials.ActiveCount = 0 then Break;
       Sleep(20);
       Inc(waited, 20);
     end;
-    remaining := FTransport.ActivePartialCount;
+    remaining := FEngine.Partials.ActiveCount;
     if remaining > 0 then
       // Pas de silence: un partiel tu se decouvre des semaines plus tard.
       EmitNotice(Format('%s: %d partial file(s) could not be removed in ' +

@@ -14,9 +14,11 @@ unit uTransferQueue;
 interface
 
 uses
-  SysUtils, Classes, uScpErrors;
+  SysUtils, Classes, SyncObjs, uScpErrors;
 
 type
+  TTransferQueue = class;
+
   // Le sens designe aussi les deux systemes de fichiers, et rien d'autre ne les
   // choisit. Une duplication a le meme des deux cotes, d'ou DEUX valeurs:
   // « ni envoi ni reception » ne dirait pas lequel.
@@ -89,25 +91,32 @@ type
     // ecrit. Pose une fois a la mise en file: le rededuire a l'execution donnerait
     // une garantie differente selon la profondeur.
     FTargetRoot: string;
+    FOwner: TTransferQueue;
+    // Annulation posee par l'interface, lue a chaque tour de la boucle de copie.
+    FCancelRequested: Boolean;
+    procedure SetTargetPath(const AValue: string);
+    procedure SetError(const AValue: TScpError);
+    procedure SetWarning(const AValue: string);
   public
     constructor Create(AId: Integer; ADirection: TTransferDirection;
       AKind: TTransferItemKind; const ASourcePath, ATargetPath,
       ADisplayName: string);
     function IsTerminal: Boolean;
     function IsRunnable: Boolean;
+    function CancelRequested: Boolean;
     function PercentDone: Integer;
 
     property Id: Integer read FId;
     property Direction: TTransferDirection read FDirection;
     property Kind: TTransferItemKind read FKind;
     property SourcePath: string read FSourcePath;
-    property TargetPath: string read FTargetPath write FTargetPath;
+    property TargetPath: string read FTargetPath write SetTargetPath;
     property DisplayName: string read FDisplayName;
     property TotalBytes: Int64 read FTotalBytes write FTotalBytes;
     property DoneBytes: Int64 read FDoneBytes write FDoneBytes;
     property State: TTransferState read FState;
-    property Error: TScpError read FError write FError;
-    property Warning: string read FWarning write FWarning;
+    property Error: TScpError read FError write SetError;
+    property Warning: string read FWarning write SetWarning;
     property SourceTimeUtc: Int64 read FSourceTimeUtc write FSourceTimeUtc;
     property SourceMode: LongWord read FSourceMode write FSourceMode;
     property Attempts: Integer read FAttempts write FAttempts;
@@ -153,18 +162,27 @@ type
     FNextIndex: Integer;
     FConflictPolicy: TConflictAction;   // cnAsk = pas de decision globale
     FSkipAllKinds: set of TScpErrorKind;
+    FLock: TCriticalSection;
+    // Element rendu par NextRunnable et pas encore rendu par ReleaseCurrent:
+    // le fil de transfert le tient, personne ne le libere.
+    FCurrent: TTransferItem;
     function GetItem(AIndex: Integer): TTransferItem;
     function GetCount: Integer;
+    procedure CancelLocked(AItem: TTransferItem);
   public
     constructor Create;
     destructor Destroy; override;
 
+    // Verrou de la file, recursif: Count et Items ne sont coherents entre eux que
+    // sous lui, et l'affichage le prend le temps de son parcours.
+    procedure Lock;
+    procedure Unlock;
+
     function Add(ADirection: TTransferDirection; AKind: TTransferItemKind;
       const ASourcePath, ATargetPath, ADisplayName: string): TTransferItem;
     procedure Clear;
-    // Retire les elements finis SANS toucher au reste: le curseur de parcours
-    // est recalcule, sinon un « Clear completed » en pleine file ferait sauter
-    // un element.
+    // Retire les elements finis: le curseur est recalcule, sinon un « Clear
+    // completed » ferait sauter un element. L'element TENU reste, meme fini.
     procedure ClearFinished;
     function FindById(AId: Integer): TTransferItem;
 
@@ -173,21 +191,26 @@ type
     function SetState(AItem: TTransferItem; ANext: TTransferState): Boolean;
     class function IsLegalTransition(AFrom, ATo: TTransferState): Boolean;
 
-    // Prochain element a traiter, nil s'il n'y a rien a faire maintenant
-    // (file en pause, ou plus rien d'executable).
+    // Prochain element a traiter, nil s'il n'y a rien a faire maintenant. Ce
+    // qu'il rend est TENU jusqu'a ReleaseCurrent.
     function NextRunnable: TTransferItem;
+    procedure ReleaseCurrent;
+    function HasRunnable: Boolean;
     procedure RewindCursor;
 
     procedure PauseQueue;
     procedure ResumeQueue;
     function IsPaused: Boolean;
 
-    // Annule tout ce qui n'est pas deja fini. Idempotent: rappeler la methode
-    // sur une file deja annulee ne change rien et ne leve rien.
+    // Annule ce qui n'est pas fini. Idempotent. Un element en cours recoit une
+    // DEMANDE; c'est le fil qui le traite qui conclut.
     procedure CancelAll;
     procedure CancelItem(AItem: TTransferItem);
     function RetryItem(AItem: TTransferItem): Boolean;
     function RetryAllFailed: Integer;
+    // Les INTERROMPUS seuls: une reconnexion les relance, un echec attend un
+    // geste.
+    function RetryInterrupted: Integer;
 
     procedure SetConflictPolicy(AAction: TConflictAction);
     function ConflictPolicy: TConflictAction;
@@ -308,6 +331,41 @@ begin
   Result := FState in [tsPending, tsRetrying];
 end;
 
+function TTransferItem.CancelRequested: Boolean;
+begin
+  Result := FCancelRequested;
+end;
+
+procedure TTransferItem.SetTargetPath(const AValue: string);
+begin
+  if FOwner <> nil then FOwner.Lock;
+  try
+    FTargetPath := AValue;
+  finally
+    if FOwner <> nil then FOwner.Unlock;
+  end;
+end;
+
+procedure TTransferItem.SetError(const AValue: TScpError);
+begin
+  if FOwner <> nil then FOwner.Lock;
+  try
+    FError := AValue;
+  finally
+    if FOwner <> nil then FOwner.Unlock;
+  end;
+end;
+
+procedure TTransferItem.SetWarning(const AValue: string);
+begin
+  if FOwner <> nil then FOwner.Lock;
+  try
+    FWarning := AValue;
+  finally
+    if FOwner <> nil then FOwner.Unlock;
+  end;
+end;
+
 function TTransferItem.PercentDone: Integer;
 begin
   if FState in [tsCompleted] then Exit(100);
@@ -398,6 +456,7 @@ constructor TTransferQueue.Create;
 begin
   inherited Create;
   FItems := TFPList.Create;
+  FLock := TCriticalSection.Create;
   FNextId := 1;
   FNextIndex := 0;
   FConflictPolicy := cnAsk;
@@ -408,7 +467,18 @@ destructor TTransferQueue.Destroy;
 begin
   Clear;
   FItems.Free;
+  FLock.Free;
   inherited Destroy;
+end;
+
+procedure TTransferQueue.Lock;
+begin
+  FLock.Acquire;
+end;
+
+procedure TTransferQueue.Unlock;
+begin
+  FLock.Release;
 end;
 
 function TTransferQueue.GetItem(AIndex: Integer): TTransferItem;
@@ -425,20 +495,32 @@ function TTransferQueue.Add(ADirection: TTransferDirection;
   AKind: TTransferItemKind;
   const ASourcePath, ATargetPath, ADisplayName: string): TTransferItem;
 begin
-  Result := TTransferItem.Create(FNextId, ADirection, AKind,
-    ASourcePath, ATargetPath, ADisplayName);
-  Inc(FNextId);
-  FItems.Add(Result);
+  Lock;
+  try
+    Result := TTransferItem.Create(FNextId, ADirection, AKind,
+      ASourcePath, ATargetPath, ADisplayName);
+    Result.FOwner := Self;
+    Inc(FNextId);
+    FItems.Add(Result);
+  finally
+    Unlock;
+  end;
 end;
 
 procedure TTransferQueue.Clear;
 var
   i: Integer;
 begin
-  for i := 0 to FItems.Count - 1 do
-    TTransferItem(FItems[i]).Free;
-  FItems.Clear;
-  FNextIndex := 0;
+  Lock;
+  try
+    for i := 0 to FItems.Count - 1 do
+      TTransferItem(FItems[i]).Free;
+    FItems.Clear;
+    FNextIndex := 0;
+    FCurrent := nil;
+  finally
+    Unlock;
+  end;
 end;
 
 procedure TTransferQueue.ClearFinished;
@@ -446,28 +528,41 @@ var
   i: Integer;
   it: TTransferItem;
 begin
-  for i := FItems.Count - 1 downto 0 do
-  begin
-    it := TTransferItem(FItems[i]);
-    if it.IsTerminal or (it.State = tsFailed) then
+  Lock;
+  try
+    for i := FItems.Count - 1 downto 0 do
     begin
-      it.Free;
-      FItems.Delete(i);
+      it := TTransferItem(FItems[i]);
+      // L'element TENU peut etre fini de son point de vue et encore lu de l'autre:
+      // il attend le prochain nettoyage.
+      if it = FCurrent then Continue;
+      if it.IsTerminal or (it.State = tsFailed) then
+      begin
+        it.Free;
+        FItems.Delete(i);
+      end;
     end;
+    // Le curseur designait l'ancienne liste: le garder ferait sauter des
+    // elements encore a traiter.
+    RewindCursor;
+  finally
+    Unlock;
   end;
-  // Le curseur designait une position dans l'ancienne liste: le garder ferait
-  // sauter des elements encore a traiter.
-  RewindCursor;
 end;
 
 function TTransferQueue.FindById(AId: Integer): TTransferItem;
 var
   i: Integer;
 begin
-  for i := 0 to FItems.Count - 1 do
-    if TTransferItem(FItems[i]).Id = AId then
-      Exit(TTransferItem(FItems[i]));
   Result := nil;
+  Lock;
+  try
+    for i := 0 to FItems.Count - 1 do
+      if TTransferItem(FItems[i]).Id = AId then
+        Exit(TTransferItem(FItems[i]));
+  finally
+    Unlock;
+  end;
 end;
 
 class function TTransferQueue.IsLegalTransition(AFrom,
@@ -507,9 +602,14 @@ function TTransferQueue.SetState(AItem: TTransferItem;
 begin
   Result := False;
   if AItem = nil then Exit;
-  if not IsLegalTransition(AItem.FState, ANext) then Exit;
-  AItem.FState := ANext;
-  Result := True;
+  Lock;
+  try
+    if not IsLegalTransition(AItem.FState, ANext) then Exit;
+    AItem.FState := ANext;
+    Result := True;
+  finally
+    Unlock;
+  end;
 end;
 
 function TTransferQueue.NextRunnable: TTransferItem;
@@ -517,19 +617,59 @@ var
   it: TTransferItem;
 begin
   Result := nil;
-  if FPaused then Exit;
-  while FNextIndex < FItems.Count do
-  begin
-    it := TTransferItem(FItems[FNextIndex]);
-    if it.IsRunnable then
-      Exit(it);
-    Inc(FNextIndex);
+  Lock;
+  try
+    FCurrent := nil;
+    if FPaused then Exit;
+    while FNextIndex < FItems.Count do
+    begin
+      it := TTransferItem(FItems[FNextIndex]);
+      if it.IsRunnable then
+      begin
+        FCurrent := it;
+        Exit(it);
+      end;
+      Inc(FNextIndex);
+    end;
+  finally
+    Unlock;
+  end;
+end;
+
+procedure TTransferQueue.ReleaseCurrent;
+begin
+  Lock;
+  try
+    FCurrent := nil;
+  finally
+    Unlock;
+  end;
+end;
+
+function TTransferQueue.HasRunnable: Boolean;
+var
+  i: Integer;
+begin
+  Result := False;
+  Lock;
+  try
+    if FPaused then Exit;
+    for i := FNextIndex to FItems.Count - 1 do
+      if TTransferItem(FItems[i]).IsRunnable then
+        Exit(True);
+  finally
+    Unlock;
   end;
 end;
 
 procedure TTransferQueue.RewindCursor;
 begin
-  FNextIndex := 0;
+  Lock;
+  try
+    FNextIndex := 0;
+  finally
+    Unlock;
+  end;
 end;
 
 procedure TTransferQueue.PauseQueue;
@@ -548,36 +688,57 @@ begin
   Result := FPaused;
 end;
 
+// Sous verrou. Un element que personne ne traite passe a tsCanceled; un
+// element en cours recoit la demande et garde son etat, car seul le fil qui
+// ecrit peut dire « je me suis arrete ».
+procedure TTransferQueue.CancelLocked(AItem: TTransferItem);
+begin
+  if AItem.IsTerminal then Exit;
+  AItem.FCancelRequested := True;
+  if AItem.FState in [tsTransferring, tsEnumerating] then Exit;
+  SetState(AItem, tsCanceled);
+end;
+
 procedure TTransferQueue.CancelAll;
 var
   i: Integer;
-  it: TTransferItem;
 begin
-  for i := 0 to FItems.Count - 1 do
-  begin
-    it := TTransferItem(FItems[i]);
-    if not it.IsTerminal then
-      SetState(it, tsCanceled);
+  Lock;
+  try
+    for i := 0 to FItems.Count - 1 do
+      CancelLocked(TTransferItem(FItems[i]));
+  finally
+    Unlock;
   end;
 end;
 
 procedure TTransferQueue.CancelItem(AItem: TTransferItem);
 begin
   if AItem = nil then Exit;
-  if AItem.IsTerminal then Exit;     // idempotent, silencieux
-  SetState(AItem, tsCanceled);
+  Lock;
+  try
+    CancelLocked(AItem);      // idempotent, silencieux
+  finally
+    Unlock;
+  end;
 end;
 
 function TTransferQueue.RetryItem(AItem: TTransferItem): Boolean;
 begin
   Result := False;
   if AItem = nil then Exit;
-  if not (AItem.State in [tsFailed, tsInterrupted]) then Exit;
-  if not SetState(AItem, tsRetrying) then Exit;
-  AItem.Attempts := AItem.Attempts + 1;
-  AItem.Error := NoScpError;
-  RewindCursor;
-  Result := True;
+  Lock;
+  try
+    if not (AItem.State in [tsFailed, tsInterrupted]) then Exit;
+    if not SetState(AItem, tsRetrying) then Exit;
+    AItem.Attempts := AItem.Attempts + 1;
+    AItem.FError := NoScpError;
+    AItem.FCancelRequested := False;
+    RewindCursor;
+    Result := True;
+  finally
+    Unlock;
+  end;
 end;
 
 function TTransferQueue.RetryAllFailed: Integer;
@@ -585,9 +746,30 @@ var
   i: Integer;
 begin
   Result := 0;
-  for i := 0 to FItems.Count - 1 do
-    if RetryItem(TTransferItem(FItems[i])) then
-      Inc(Result);
+  Lock;
+  try
+    for i := 0 to FItems.Count - 1 do
+      if RetryItem(TTransferItem(FItems[i])) then
+        Inc(Result);
+  finally
+    Unlock;
+  end;
+end;
+
+function TTransferQueue.RetryInterrupted: Integer;
+var
+  i: Integer;
+begin
+  Result := 0;
+  Lock;
+  try
+    for i := 0 to FItems.Count - 1 do
+      if (TTransferItem(FItems[i]).State = tsInterrupted) and
+         RetryItem(TTransferItem(FItems[i])) then
+        Inc(Result);
+  finally
+    Unlock;
+  end;
 end;
 
 procedure TTransferQueue.SetConflictPolicy(AAction: TConflictAction);
@@ -627,43 +809,49 @@ var
   it: TTransferItem;
 begin
   Result := Default(TQueueSummary);
-  Result.Total := FItems.Count;
-  for i := 0 to FItems.Count - 1 do
-  begin
-    it := TTransferItem(FItems[i]);
-    case it.State of
-      tsCompleted: Inc(Result.Completed);
-      tsSkipped: Inc(Result.Skipped);
-      tsFailed: Inc(Result.Failed);
-      tsCanceled: Inc(Result.Canceled);
-      tsInterrupted: Inc(Result.Interrupted);
-      tsPending, tsPaused, tsRetrying: Inc(Result.Pending);
-      tsTransferring, tsEnumerating: Inc(Result.Running);
-    end;
-    if it.Kind = tikFile then
+  Lock;
+  try
+    Result.Total := FItems.Count;
+    for i := 0 to FItems.Count - 1 do
     begin
-      Inc(Result.BytesDone, it.DoneBytes);
-      if it.TotalBytes >= 0 then
-        Inc(Result.BytesTotal, it.TotalBytes)
-      else if not it.IsTerminal then
-        // Une taille inconnue rend le total incomplet: le dire evite une barre qui
-        // depasse 100 % quand elle se decouvre.
-        Result.BytesTotalIsPartial := True;
+      it := TTransferItem(FItems[i]);
+      case it.State of
+        tsCompleted: Inc(Result.Completed);
+        tsSkipped: Inc(Result.Skipped);
+        tsFailed: Inc(Result.Failed);
+        tsCanceled: Inc(Result.Canceled);
+        tsInterrupted: Inc(Result.Interrupted);
+        tsPending, tsPaused, tsRetrying: Inc(Result.Pending);
+        tsTransferring, tsEnumerating: Inc(Result.Running);
+      end;
+      if it.Kind = tikFile then
+      begin
+        Inc(Result.BytesDone, it.DoneBytes);
+        if it.TotalBytes >= 0 then
+          Inc(Result.BytesTotal, it.TotalBytes)
+        else if not it.IsTerminal then
+          // Une taille inconnue rend le total incomplet: le dire evite une barre qui
+          // depasse 100 % quand elle se decouvre.
+          Result.BytesTotalIsPartial := True;
+      end;
     end;
+  finally
+    Unlock;
   end;
 end;
 
 function TTransferQueue.AllSucceeded: Boolean;
 var
   i: Integer;
-  st: TTransferState;
 begin
   Result := True;
-  for i := 0 to FItems.Count - 1 do
-  begin
-    st := TTransferItem(FItems[i]).State;
-    if st <> tsCompleted then
-      Exit(False);
+  Lock;
+  try
+    for i := 0 to FItems.Count - 1 do
+      if TTransferItem(FItems[i]).State <> tsCompleted then
+        Exit(False);
+  finally
+    Unlock;
   end;
 end;
 
@@ -671,11 +859,16 @@ function TTransferQueue.IsFinished: Boolean;
 var
   i: Integer;
 begin
-  for i := 0 to FItems.Count - 1 do
-    if not (TTransferItem(FItems[i]).State in
-       [tsCompleted, tsSkipped, tsCanceled, tsFailed]) then
-      Exit(False);
   Result := True;
+  Lock;
+  try
+    for i := 0 to FItems.Count - 1 do
+      if not (TTransferItem(FItems[i]).State in
+         [tsCompleted, tsSkipped, tsCanceled, tsFailed]) then
+        Exit(False);
+  finally
+    Unlock;
+  end;
 end;
 
 function TTransferQueue.SummaryText: string;

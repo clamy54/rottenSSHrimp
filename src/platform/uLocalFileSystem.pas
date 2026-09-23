@@ -60,8 +60,9 @@ type
       out AErr: TScpError): Boolean; override;
     function OpenRead(const APath: string; out AHandle: TScpFileHandle;
       out AErr: TScpError): Boolean; override;
-    function CreateTemp(const ADir: string; out APath: string;
-      out AHandle: TScpFileHandle; out AErr: TScpError): Boolean; override;
+    function CreateTemp(const ADir: string; AMode: LongWord;
+      out APath: string; out AHandle: TScpFileHandle;
+      out AErr: TScpError): Boolean; override;
     function OpenAppend(const APath: string; AOffset: Int64;
       out AHandle: TScpFileHandle; out AErr: TScpError): Boolean; override;
     function Read(AHandle: TScpFileHandle; ABuf: PByte; ACount: Integer;
@@ -618,8 +619,9 @@ begin
   Result := True;
 end;
 
-function TLocalFileSystem.CreateTemp(const ADir: string; out APath: string;
-  out AHandle: TScpFileHandle; out AErr: TScpError): Boolean;
+function TLocalFileSystem.CreateTemp(const ADir: string; AMode: LongWord;
+  out APath: string; out AHandle: TScpFileHandle;
+  out AErr: TScpError): Boolean;
 var
   h: TLocalHandle;
   attempt: Integer;
@@ -648,8 +650,9 @@ begin
     h.Free;
     if AErr.Kind <> sekAlreadyExists then Exit(False);
     {$ELSE}
+    // Le mode demande passe par l'umask: seul moment ou le systeme le restreint.
     h.Fd := fpOpen(PChar(LocalNormalize(candidate)),
-      O_WRONLY or O_CREAT or O_EXCL, &0600);
+      O_WRONLY or O_CREAT or O_EXCL, AMode and LongWord(&0777));
     if h.Fd >= 0 then
     begin
       APath := candidate;

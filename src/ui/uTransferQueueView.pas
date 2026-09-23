@@ -45,6 +45,7 @@ type
     procedure ApplyTheme;
     procedure Refresh;
     function SelectedItemIds: TStringArray;
+    procedure ClearSelection;
     property OnCommand: TQueueCommandEvent read FOnCommand write FOnCommand;
     property List: TQueueListView read FList;
   end;
@@ -68,6 +69,7 @@ type
     constructor CreateFor(AOwner: TComponent; AQueue: TTransferQueue);
     procedure SyncSelection;
     function SelectedIds: TStringArray;
+    procedure ClearSelection;
     procedure RecomputeMetrics;
 
     function ScrollViewportHeight: Integer;
@@ -152,13 +154,26 @@ var
 begin
   Result := nil;
   n := 0;
-  for i := 0 to Min(High(FSelected), FQueue.Count - 1) do
-    if FSelected[i] then
-    begin
-      SetLength(Result, n + 1);
-      Result[n] := IntToStr(FQueue.Items[i].Id);
-      Inc(n);
-    end;
+  FQueue.Lock;
+  try
+    for i := 0 to Min(High(FSelected), FQueue.Count - 1) do
+      if FSelected[i] then
+      begin
+        SetLength(Result, n + 1);
+        Result[n] := IntToStr(FQueue.Items[i].Id);
+        Inc(n);
+      end;
+  finally
+    FQueue.Unlock;
+  end;
+end;
+
+procedure TQueueListView.ClearSelection;
+var
+  i: Integer;
+begin
+  for i := 0 to High(FSelected) do FSelected[i] := False;
+  Invalidate;
 end;
 
 procedure TQueueListView.DrawRow(AIndex, AY: Integer);
@@ -270,20 +285,27 @@ begin
   Canvas.Brush.Style := bsSolid;
   Canvas.FillRect(ClientRect);
   Canvas.Brush.Style := bsClear;
-  if FQueue.Count = 0 then
-  begin
-    Canvas.Font.Color := clTextSecondary;
-    Canvas.TextOut(PAD * 2, PAD, 'No transfers queued.');
-    Exit;
-  end;
-  firstRow := FTop div FRowHeight;
-  lastRow := (FTop + ClientHeight) div FRowHeight;
-  if lastRow > FQueue.Count - 1 then lastRow := FQueue.Count - 1;
-  for i := firstRow to lastRow do
-  begin
-    y := i * FRowHeight - FTop;
-    if y > ClientHeight then Break;
-    DrawRow(i, y);
+  // Sous verrou le temps du dessin: le fil de transfert y ecrit pendant qu'on
+  // lit.
+  FQueue.Lock;
+  try
+    if FQueue.Count = 0 then
+    begin
+      Canvas.Font.Color := clTextSecondary;
+      Canvas.TextOut(PAD * 2, PAD, 'No transfers queued.');
+      Exit;
+    end;
+    firstRow := FTop div FRowHeight;
+    lastRow := (FTop + ClientHeight) div FRowHeight;
+    if lastRow > FQueue.Count - 1 then lastRow := FQueue.Count - 1;
+    for i := firstRow to lastRow do
+    begin
+      y := i * FRowHeight - FTop;
+      if y > ClientHeight then Break;
+      DrawRow(i, y);
+    end;
+  finally
+    FQueue.Unlock;
   end;
 end;
 
@@ -490,6 +512,11 @@ end;
 function TTransferQueueView.SelectedItemIds: TStringArray;
 begin
   Result := FList.SelectedIds;
+end;
+
+procedure TTransferQueueView.ClearSelection;
+begin
+  FList.ClearSelection;
 end;
 
 end.

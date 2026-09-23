@@ -12,6 +12,10 @@
   systeme deja parti, mais on cesse d'en emettre, et l'onglet ne l'attend pas
   pour se fermer.
 
+  Ses resultats partent dans une file, un objet par resultat, comme ceux du
+  transport: deux listings finis avant que l'interface ait lu le premier ne
+  s'ecrasent pas.
+
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
 unit uLocalFsWorker;
@@ -38,19 +42,15 @@ type
     FWake: TEvent;
     FOps: TFPList;
 
-    FPubPath: string;
-    FPubEntries: TScpEntryArray;
-    FPubError: TScpError;
-    FPubVolumes: TLocalVolumeArray;
+    FPub: TFPList;               // resultats en attente, dans l'ordre
     FPubLock: TCriticalSection;
 
     FOnListed: TLocalListEvent;
     FOnOpDone: TLocalOpEvent;
     FOnVolumes: TLocalVolumesEvent;
 
-    procedure PublishListed;
-    procedure PublishOpDone;
-    procedure PublishVolumes;
+    procedure PostResult(AResult: TObject);
+    procedure PublishNext;
     procedure Post(AKind: TLocalOpKind; const AArg1: string = '';
       const AArg2: string = '');
     function RemoveTree(const APath: string; ADepth: Integer;
@@ -87,6 +87,16 @@ type
     Arg1, Arg2: string;
   end;
 
+  TLocalResultKind = (lrListed, lrOpDone, lrVolumes);
+
+  TLocalResult = class
+    Kind: TLocalResultKind;
+    Path: string;
+    Entries: TScpEntryArray;
+    Error: TScpError;
+    Volumes: TLocalVolumeArray;
+  end;
+
 constructor TLocalFsWorker.Create(AFs: TLocalFileSystem);
 begin
   inherited Create(True);
@@ -95,6 +105,7 @@ begin
   FLock := TCriticalSection.Create;
   FPubLock := TCriticalSection.Create;
   FOps := TFPList.Create;
+  FPub := TFPList.Create;
   FWake := TEvent.Create(nil, True, False, '');
 end;
 
@@ -106,6 +117,9 @@ begin
   for i := 0 to FOps.Count - 1 do
     TLocalOp(FOps[i]).Free;
   FOps.Free;
+  for i := 0 to FPub.Count - 1 do
+    TObject(FPub[i]).Free;
+  FPub.Free;
   FWake.Free;
   FPubLock.Free;
   FLock.Free;
@@ -164,52 +178,47 @@ begin
   Post(lokDelete, APath);
 end;
 
-procedure TLocalFsWorker.PublishListed;
-var
-  path: string;
-  entries: TScpEntryArray;
-  err: TScpError;
+// Thread de travail: le resultat appartient a la file des cet appel.
+procedure TLocalFsWorker.PostResult(AResult: TObject);
 begin
   FPubLock.Acquire;
   try
-    path := FPubPath;
-    entries := FPubEntries;
-    err := FPubError;
-    FPubEntries := nil;
+    FPub.Add(AResult);
   finally
     FPubLock.Release;
   end;
-  if Assigned(FOnListed) then
-    FOnListed(path, entries, err);
+  Queue(@PublishNext);
 end;
 
-procedure TLocalFsWorker.PublishOpDone;
+// Thread UI: un appel poste par resultat, dans l'ordre.
+procedure TLocalFsWorker.PublishNext;
 var
-  err: TScpError;
+  r: TLocalResult;
 begin
+  r := nil;
   FPubLock.Acquire;
   try
-    err := FPubError;
+    if FPub.Count > 0 then
+    begin
+      r := TLocalResult(FPub[0]);
+      FPub.Delete(0);
+    end;
   finally
     FPubLock.Release;
   end;
-  if Assigned(FOnOpDone) then
-    FOnOpDone(err);
-end;
-
-procedure TLocalFsWorker.PublishVolumes;
-var
-  vols: TLocalVolumeArray;
-begin
-  FPubLock.Acquire;
+  if r = nil then Exit;
   try
-    vols := FPubVolumes;
-    FPubVolumes := nil;
+    case r.Kind of
+      lrListed:
+        if Assigned(FOnListed) then FOnListed(r.Path, r.Entries, r.Error);
+      lrOpDone:
+        if Assigned(FOnOpDone) then FOnOpDone(r.Error);
+      lrVolumes:
+        if Assigned(FOnVolumes) then FOnVolumes(r.Volumes);
+    end;
   finally
-    FPubLock.Release;
+    r.Free;
   end;
-  if Assigned(FOnVolumes) then
-    FOnVolumes(vols);
 end;
 
 function TLocalFsWorker.RemoveTree(const APath: string; ADepth: Integer;
@@ -276,7 +285,7 @@ var
   op: TLocalOp;
   entries: TScpEntryArray;
   err: TScpError;
-  vols: TLocalVolumeArray;
+  r: TLocalResult;
 begin
   while not Terminated do
   begin
@@ -309,72 +318,53 @@ begin
             begin
               if not FFs.List(op.Arg1, entries, err) then
                 SetLength(entries, 0);
-              FPubLock.Acquire;
-              try
-                FPubPath := op.Arg1;
-                FPubEntries := entries;
-                FPubError := err;
-              finally
-                FPubLock.Release;
-              end;
-              if Assigned(FOnListed) then Queue(@PublishListed);
+              r := TLocalResult.Create;
+              r.Kind := lrListed;
+              r.Path := op.Arg1;
+              r.Entries := entries;
+              r.Error := err;
+              PostResult(r);
             end;
           lokVolumes:
             begin
-              vols := EnumerateLocalVolumes;
-              FPubLock.Acquire;
-              try
-                FPubVolumes := vols;
-              finally
-                FPubLock.Release;
-              end;
-              if Assigned(FOnVolumes) then Queue(@PublishVolumes);
+              r := TLocalResult.Create;
+              r.Kind := lrVolumes;
+              r.Volumes := EnumerateLocalVolumes;
+              PostResult(r);
             end;
           lokMkdir:
             begin
               FFs.MakeDir(op.Arg1, err);
-              FPubLock.Acquire;
-              try
-                FPubError := err;
-              finally
-                FPubLock.Release;
-              end;
-              if Assigned(FOnOpDone) then Queue(@PublishOpDone);
+              r := TLocalResult.Create;
+              r.Kind := lrOpDone;
+              r.Error := err;
+              PostResult(r);
             end;
           lokRename:
             begin
               FFs.Rename(op.Arg1, op.Arg2, err);
-              FPubLock.Acquire;
-              try
-                FPubError := err;
-              finally
-                FPubLock.Release;
-              end;
-              if Assigned(FOnOpDone) then Queue(@PublishOpDone);
+              r := TLocalResult.Create;
+              r.Kind := lrOpDone;
+              r.Error := err;
+              PostResult(r);
             end;
           lokDelete:
             begin
               RemoveTree(op.Arg1, 0, err);
-              FPubLock.Acquire;
-              try
-                FPubError := err;
-              finally
-                FPubLock.Release;
-              end;
-              if Assigned(FOnOpDone) then Queue(@PublishOpDone);
+              r := TLocalResult.Create;
+              r.Kind := lrOpDone;
+              r.Error := err;
+              PostResult(r);
             end;
         end;
       except
         on E: Exception do
         begin
-          FPubLock.Acquire;
-          try
-            FPubError := MakeScpError(sekOther, 'Local operation', '',
-              E.Message);
-          finally
-            FPubLock.Release;
-          end;
-          if Assigned(FOnOpDone) then Queue(@PublishOpDone);
+          r := TLocalResult.Create;
+          r.Kind := lrOpDone;
+          r.Error := MakeScpError(sekOther, 'Local operation', '',
+            E.Message);
+          PostResult(r);
         end;
       end;
     finally
