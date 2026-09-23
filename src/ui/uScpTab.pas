@@ -164,7 +164,6 @@ type
     // designe, et il devient la racine de confinement du lot.
     procedure StartTransfer(ASide: TFilePanelSide; const ADestDir: string);
     procedure StartDuplicate(ASide: TFilePanelSide);
-    procedure ForgetBatchDecisions;
     procedure PanelDrop(ASourceSide: TFilePanelSide; const ASubFolder: string);
     procedure QueueCommand(ACommand: TQueueCommand);
     procedure RefreshTick(Sender: TObject);
@@ -1002,21 +1001,15 @@ begin
       Note('Select what you want to send first.');
       Exit;
     end;
-    n := 0;
+    // Aucun filtre ici: un nom refuse entre en file avec sa raison, sinon il
+    // disparait du bilan.
     SetLength(sources, Length(names));
     for i := 0 to High(names) do
-    begin
-      if CheckRemoteChildName(names[i]) <> nvOk then Continue;
-      sources[n] := LocalJoin(FLocalPath, names[i]);
-      Inc(n);
-    end;
-    SetLength(sources, n);
-    if n = 0 then Exit;
+      sources[i] := LocalJoin(FLocalPath, names[i]);
     dest := ADestDir;
     if dest = '' then dest := FRemotePath;
     // La RACINE de confinement est le dossier distant VISE: rien de ce lot
     // ne pourra etre ecrit en dehors.
-    ForgetBatchDecisions;
     FTransport.RequestUpload(sources, dest, dest);
   end
   else
@@ -1027,30 +1020,14 @@ begin
       Note('Select what you want to fetch first.');
       Exit;
     end;
-    n := 0;
     SetLength(sources, Length(names));
     for i := 0 to High(names) do
-    begin
-      if CheckRemoteChildName(names[i]) <> nvOk then Continue;
-      sources[n] := RemoteJoin(FRemotePath, names[i]);
-      Inc(n);
-    end;
-    SetLength(sources, n);
-    if n = 0 then Exit;
+      sources[i] := RemoteJoin(FRemotePath, names[i]);
     dest := ADestDir;
     if dest = '' then dest := FLocalPath;
-    ForgetBatchDecisions;
     FTransport.RequestDownload(sources, dest, dest);
   end;
   FQueueView.Refresh;
-end;
-
-// « Apply to all » et « Skip all similar » ne valent que pour leur propre lot:
-// chaque lot recoit son numero AVANT d'etre poste, et une decision prise plus
-// tard pour un lot encore en cours ne s'applique pas a celui-ci.
-procedure TScpTab.ForgetBatchDecisions;
-begin
-  FQueue.BeginBatch;
 end;
 
 // Duplication sur place. Le nom libre n'est PAS choisi ici: le dossier peut
@@ -1084,20 +1061,12 @@ begin
     Note('Select what you want to duplicate first.');
     Exit;
   end;
-  n := 0;
   SetLength(sources, Length(names));
   for i := 0 to High(names) do
-  begin
-    if CheckRemoteChildName(names[i]) <> nvOk then Continue;
     if ASide = fpsLocal then
-      sources[n] := LocalJoin(cur, names[i])
+      sources[i] := LocalJoin(cur, names[i])
     else
-      sources[n] := RemoteJoin(cur, names[i]);
-    Inc(n);
-  end;
-  SetLength(sources, n);
-  if n = 0 then Exit;
-  ForgetBatchDecisions;
+      sources[i] := RemoteJoin(cur, names[i]);
   FTransport.RequestDuplicate(sources, cur, ASide = fpsRemote);
   FQueueView.Refresh;
 end;

@@ -26,7 +26,10 @@ type
     tdDuplicateLocal, tdDuplicateRemote);
 
   // tikMakeDir precede ses enfants: c'est l'ordre d'insertion qui le garantit.
-  TTransferItemKind = (tikFile, tikMakeDir);
+  // tikScanRoot: une selection pas encore examinee; le moteur en fait un
+  // fichier ou un dossier quand il la traite, et une coupure la laisse telle
+  // quelle, a reprendre.
+  TTransferItemKind = (tikFile, tikMakeDir, tikScanRoot);
 
   TTransferState = (
     tsPending,
@@ -99,6 +102,8 @@ type
     // Dossier dont le contenu reste a enumerer: le listing a ete coupe par la
     // session, et une reconnexion doit le reprendre au lieu de l'oublier.
     FScanPending: Boolean;
+    // Nom impose a la racine d'un lot (duplication); vide = celui de la source.
+    FForcedName: string;
     procedure SetTargetPath(const AValue: string);
     procedure SetError(const AValue: TScpError);
     procedure SetWarning(const AValue: string);
@@ -132,6 +137,7 @@ type
     property TargetRoot: string read FTargetRoot write FTargetRoot;
     property Batch: Integer read FBatch;
     property ScanPending: Boolean read FScanPending write SetScanPending;
+    property ForcedName: string read FForcedName write FForcedName;
   end;
 
   // Debit lisse: une moyenne sur la duree ment apres une pause, une mesure
@@ -175,8 +181,6 @@ type
     FBatch: Integer;
     FConflictPolicy: TConflictAction;   // cnAsk = pas de decision globale
     FPolicyBatch: Integer;
-    FSkipAllKinds: set of TScpErrorKind;
-    FSkipBatch: Integer;
     FLock: TCriticalSection;
     // Element rendu par NextRunnable et pas encore rendu par ReleaseCurrent:
     // le fil de transfert le tient, personne ne le libere.
@@ -193,8 +197,14 @@ type
     procedure Lock;
     procedure Unlock;
 
+    // ABatch: le lot de l'element; 0 = le lot courant, pour un appelant qui n'en
+    // tient pas. Le fil de transfert passe celui de sa commande.
     function Add(ADirection: TTransferDirection; AKind: TTransferItemKind;
-      const ASourcePath, ATargetPath, ADisplayName: string): TTransferItem;
+      const ASourcePath, ATargetPath, ADisplayName: string;
+      ABatch: Integer = 0): TTransferItem;
+    // Une selection examinee devient ce qu'elle est: fichier ou dossier.
+    procedure Rekind(AItem: TTransferItem; AKind: TTransferItemKind;
+      const ADisplayName: string);
     procedure Clear;
     // Retire les elements finis: le curseur est recalcule, sinon un « Clear
     // completed » ferait sauter un element. L'element TENU reste, meme fini.
@@ -230,16 +240,12 @@ type
     // geste.
     function RetryInterrupted: Integer;
 
-    // Nouveau lot: ce que Add mettra en file ensuite ne prend aucune decision
-    // des lots precedents, meme prise plus tard.
-    procedure BeginBatch;
+    // Nouveau lot, dont le numero est RENDU: c'est la commande qui le porte
+    // jusqu'a la mise en file, pas un compteur lu plus tard par un autre fil.
+    function BeginBatch: Integer;
     procedure SetConflictPolicy(ABatch: Integer; AAction: TConflictAction);
     function ConflictPolicy(ABatch: Integer): TConflictAction;
     procedure ClearConflictPolicy;
-    // « Skip all similar errors »: la CLASSE d'erreur est ignoree ensuite.
-    procedure SkipAllOfKind(ABatch: Integer; AKind: TScpErrorKind);
-    function IsSkippedKind(ABatch: Integer; AKind: TScpErrorKind): Boolean;
-    procedure ClearSkipKinds;
 
     function Summary: TQueueSummary;
     function AllSucceeded: Boolean;
@@ -521,7 +527,6 @@ begin
   FNextIndex := 0;
   FBatch := 1;
   FConflictPolicy := cnAsk;
-  FSkipAllKinds := [];
 end;
 
 destructor TTransferQueue.Destroy;
@@ -560,16 +565,32 @@ end;
 
 function TTransferQueue.Add(ADirection: TTransferDirection;
   AKind: TTransferItemKind;
-  const ASourcePath, ATargetPath, ADisplayName: string): TTransferItem;
+  const ASourcePath, ATargetPath, ADisplayName: string;
+  ABatch: Integer): TTransferItem;
 begin
   Lock;
   try
     Result := TTransferItem.Create(FNextId, ADirection, AKind,
       ASourcePath, ATargetPath, ADisplayName);
     Result.FOwner := Self;
-    Result.FBatch := FBatch;
+    if ABatch > 0 then
+      Result.FBatch := ABatch
+    else
+      Result.FBatch := FBatch;
     Inc(FNextId);
     FItems.Add(Result);
+  finally
+    Unlock;
+  end;
+end;
+
+procedure TTransferQueue.Rekind(AItem: TTransferItem;
+  AKind: TTransferItemKind; const ADisplayName: string);
+begin
+  Lock;
+  try
+    AItem.FKind := AKind;
+    AItem.FDisplayName := ADisplayName;
   finally
     Unlock;
   end;
@@ -911,11 +932,12 @@ begin
   end;
 end;
 
-procedure TTransferQueue.BeginBatch;
+function TTransferQueue.BeginBatch: Integer;
 begin
   Lock;
   try
     Inc(FBatch);
+    Result := FBatch;
   finally
     Unlock;
   end;
@@ -951,42 +973,6 @@ begin
   try
     FConflictPolicy := cnAsk;
     FPolicyBatch := 0;
-  finally
-    Unlock;
-  end;
-end;
-
-procedure TTransferQueue.SkipAllOfKind(ABatch: Integer; AKind: TScpErrorKind);
-begin
-  if AKind = sekNone then Exit;
-  Lock;
-  try
-    if ABatch <> FSkipBatch then FSkipAllKinds := [];
-    FSkipBatch := ABatch;
-    Include(FSkipAllKinds, AKind);
-  finally
-    Unlock;
-  end;
-end;
-
-function TTransferQueue.IsSkippedKind(ABatch: Integer;
-  AKind: TScpErrorKind): Boolean;
-begin
-  Lock;
-  try
-    Result := (AKind <> sekNone) and (ABatch = FSkipBatch) and
-      (AKind in FSkipAllKinds);
-  finally
-    Unlock;
-  end;
-end;
-
-procedure TTransferQueue.ClearSkipKinds;
-begin
-  Lock;
-  try
-    FSkipAllKinds := [];
-    FSkipBatch := 0;
   finally
     Unlock;
   end;

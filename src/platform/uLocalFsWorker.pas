@@ -282,7 +282,7 @@ begin
             end;
           lokMkdir:
             begin
-              FFs.MakeDir(op.Arg1, err);
+              FFs.MakeDir(op.Arg1, SCP_DEFAULT_DIR_MODE, err);
               r := TLocalResult.Create;
               r.Kind := lrOpDone;
               r.Error := err;

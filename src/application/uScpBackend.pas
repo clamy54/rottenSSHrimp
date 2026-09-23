@@ -91,8 +91,10 @@ type
       out AErr: TScpError): Boolean; virtual; abstract;
 
     // --- Operations ---
-    function MakeDir(const APath: string; out AErr: TScpError): Boolean;
-      virtual; abstract;
+    // AMode est DEMANDE a la creation, comme pour un fichier: un dossier prive
+    // l'est des qu'il existe, pas apres un chmod.
+    function MakeDir(const APath: string; AMode: LongWord;
+      out AErr: TScpError): Boolean; virtual; abstract;
     // Ne remplace JAMAIS une cible existante. Seule entorse a la convention:
     // True AVEC AErr rempli veut dire « publie sous ATo, mais AFrom n'a pas pu
     // etre retire »; l'appelant garde alors AFrom dans ses partiels a nettoyer.

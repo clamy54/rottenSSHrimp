@@ -104,7 +104,9 @@ Transfers are recursive, and a queue says what is happening; cancelling one
 stops it where it is and leaves the destination as it was. A replaced file
 keeps its permissions -- on Windows its ACL; setuid, setgid and sticky bits
 are never carried onto new content -- and a new one gets its source's read
-and write bits, never widened and never executable. If the connection drops,
+and write bits, never widened and never executable. A new folder is created
+with its source's permissions from the start, so a private folder is never
+readable by others while it fills. If the connection drops,
 *Reconnect* replays the same prompts as opening the tab; interrupted
 transfers resume where they were confirmed, once both ends are checked
 against what was written, and a folder whose listing was cut is scanned

@@ -16,20 +16,41 @@ unit uScpEngine;
 interface
 
 uses
-  SysUtils, Classes, SyncObjs, sha1, uScpBackend, uScpErrors, uScpPaths,
-  uTransferQueue;
+  SysUtils, Classes, SyncObjs, uSodiumApi, uScpBackend, uScpErrors,
+  uScpPaths, uTransferQueue;
 
 const
   // Tampon FIXE, jamais dimensionne d'apres le reseau.
   SCP_COPY_BUFFER = 64 * 1024;
-  // Au-dela de l'annonce du serveur on continue, mais pas indefiniment.
-  SCP_GROWTH_SLACK = Int64(4) * 1024 * 1024 * 1024;
+  // Au-dela de l'annonce du serveur on continue -- un journal qui grossit --
+  // mais pas indefiniment: c'est la borne contre un disque qu'on remplit.
+  SCP_GROWTH_SLACK = Int64(64) * 1024 * 1024;
   SCP_PROGRESS_MS = 100;
   // Periode de vidage du tampon, qui confirme l'offset de reprise. Trop petit:
   // le debit s'effondre; trop grand, une coupure fait resservir l'intervalle.
   SCP_CONFIRM_EVERY = Int64(4) * 1024 * 1024;
 
 type
+  // Empreinte BLAKE2b (libsodium): elle decide si deux contenus sont les memes,
+  // et doit tenir face a une substitution voulue, pas seulement a un accident.
+  TScpDigest = array[0..31] of Byte;
+
+  // Empreinte en cours. L'etat de libsodium est opaque et aligne sur 64: il vit
+  // dans un bloc a lui, et une lecture intermediaire travaille sur une COPIE.
+  TScpHash = class
+  private
+    FMem: Pointer;
+    FState: Pointer;
+    FSize: SizeUInt;
+  public
+    constructor Create;
+    destructor Destroy; override;
+    procedure Reset;
+    procedure Update(const ABuf; ALen: SizeUInt);
+    // Empreinte de ce qui a ete vu jusqu'ici, sans arreter le calcul.
+    procedure Peek(out ADigest: TScpDigest);
+  end;
+
   // Decision devant un conflit, sur le thread de travail. Peut bloquer le temps
   // que l'interface reponde, mais doit rendre la main sur annulation.
   TScpConflictEvent = procedure(const AInfo: TConflictInfo;
@@ -60,8 +81,8 @@ type
     Confirmed: Int64;
     // Empreinte des Confirmed premiers octets ECRITS, relue et comparee a la
     // reprise: un partiel dont le contenu a change, meme a taille egale, est
-    // refuse. SHA-1 suffit, il faudrait une seconde preimage et pas une collision.
-    Digest: TSHA1Digest;
+    // refuse.
+    Digest: TScpDigest;
     Active: Boolean;
   end;
 
@@ -78,7 +99,7 @@ type
       ADestIdentity, ASourcePath: string; ASourceSize, ASourceTimeUtc: Int64);
     // ADigest: empreinte des AOffset premiers octets ecrits.
     procedure Confirm(const ATempPath: string; AOffset: Int64;
-      const ADigest: TSHA1Digest);
+      const ADigest: TScpDigest);
     procedure Forget(const ATempPath: string);
     // Publie, mais le nom temporaire n'a pas pu etre retire: il reste a nettoyer
     // et ne doit plus JAMAIS etre repris -- c'est un second nom du fichier publie.
@@ -118,6 +139,7 @@ type
     FOnProgress: TScpProgressEvent;
     FOnNote: TScpNoteEvent;
     FBuffer: array of Byte;
+    FHash: TScpHash;
     FLastProgressTick: QWord;
     FConfirmEvery: Int64;
     // Derniere erreur qui condamne la session, vue ou que ce soit.
@@ -146,6 +168,9 @@ type
     // Reprend le parcours d'un dossier dont le listing a ete coupe.
     function RescanDir(ASrcFs, ADstFs: TScpFileSystem; AItem: TTransferItem;
       out AErr: TScpError): Boolean;
+    // Examine une selection (tikScanRoot) et en fait ce qu'elle est.
+    function ScanRoot(ASrcFs, ADstFs: TScpFileSystem; AItem: TTransferItem;
+      AMaxDepth: Integer; out AErr: TScpError): Boolean;
     // Pose l'etat qui correspond a l'erreur: annule, interrompu si la session est
     // perdue, echoue sinon. Une coupure rangee en « echec » interdirait la reprise.
     procedure FailItem(AItem: TTransferItem; const AErr: TScpError);
@@ -155,7 +180,7 @@ type
     function CopyStream(ASrcFs: TScpFileSystem; ASrcH: TScpFileHandle;
       ADstFs: TScpFileSystem; ADstH: TScpFileHandle;
       AItem: TTransferItem; AExpected: Int64; AStartOffset: Int64;
-      const ATempPath: string; var AHash: TSHA1Context;
+      const ATempPath: string; AHash: TScpHash;
       out AErr: TScpError): Boolean;
     function ResolveConflict(ASrcFs, ADstFs: TScpFileSystem;
       AItem: TTransferItem; const ASrcEntry: TScpEntry;
@@ -181,7 +206,7 @@ type
     // avec AErr vide = partiel inutilisable, avec AErr = la relecture a echoue.
     function VerifyPartialPrefix(ADstFs: TScpFileSystem;
       ADstH: TScpFileHandle; AItem: TTransferItem;
-      const APartial: TScpPartial; var AHash: TSHA1Context;
+      const APartial: TScpPartial; AHash: TScpHash;
       out AWhy: string; out AErr: TScpError): Boolean;
     // Meme question pour la SOURCE, distante comprise.
     function VerifySourcePrefix(ASrcFs: TScpFileSystem;
@@ -192,8 +217,9 @@ type
     constructor Create(AQueue: TTransferQueue);
     destructor Destroy; override;
 
-    // Parcourt ASourcePath et remplit la file, dossiers AVANT leur contenu. False
-    // seulement si le parcours a echoue; un enfant refuse donne un element ignore.
+    // Met ASourcePath en file et l'examine tout de suite: un fichier, ou un
+    // dossier et son contenu, dossiers AVANT leur contenu. False seulement si
+    // une coupure a interrompu le parcours; un refus donne un element ignore.
     // ATargetName renomme la RACINE du lot et elle seule, ce qui permet de
     // dupliquer sur place. Vide = le nom de la source.
     function EnumerateInto(ASrcFs, ADstFs: TScpFileSystem;
@@ -224,7 +250,70 @@ type
     property OnNote: TScpNoteEvent read FOnNote write FOnNote;
   end;
 
+function FreeCopyName(AFs: TScpFileSystem; const ADir, AName: string;
+  out AErr: TScpError): string;
+function ScpDigestMatch(const A, B: TScpDigest): Boolean;
+function ScpDigestOfString(const S: string): TScpDigest;
+
 implementation
+
+{ TScpHash }
+
+constructor TScpHash.Create;
+begin
+  inherited Create;
+  SodiumEnsureLoaded;
+  FSize := crypto_generichash_statebytes();
+  GetMem(FMem, FSize + 64);
+  FState := Pointer((PtrUInt(FMem) + 63) and (not PtrUInt(63)));
+  Reset;
+end;
+
+destructor TScpHash.Destroy;
+begin
+  FreeMem(FMem);
+  inherited Destroy;
+end;
+
+procedure TScpHash.Reset;
+begin
+  crypto_generichash_init(FState, nil, 0, SizeOf(TScpDigest));
+end;
+
+procedure TScpHash.Update(const ABuf; ALen: SizeUInt);
+begin
+  if ALen > 0 then
+    crypto_generichash_update(FState, @ABuf, ALen);
+end;
+
+procedure TScpHash.Peek(out ADigest: TScpDigest);
+var
+  mem, copy: Pointer;
+begin
+  GetMem(mem, FSize + 64);
+  try
+    copy := Pointer((PtrUInt(mem) + 63) and (not PtrUInt(63)));
+    Move(FState^, copy^, FSize);
+    crypto_generichash_final(copy, @ADigest[0], SizeOf(ADigest));
+  finally
+    FreeMem(mem);
+  end;
+end;
+
+function ScpDigestMatch(const A, B: TScpDigest): Boolean;
+begin
+  Result := CompareMem(@A[0], @B[0], SizeOf(TScpDigest));
+end;
+
+function ScpDigestOfString(const S: string): TScpDigest;
+begin
+  SodiumEnsureLoaded;
+  FillChar(Result, SizeOf(Result), 0);
+  if S = '' then
+    crypto_generichash(@Result[0], SizeOf(Result), nil, 0, nil, 0)
+  else
+    crypto_generichash(@Result[0], SizeOf(Result), @S[1], Length(S), nil, 0);
+end;
 
 { TScpPartialRegistry }
 
@@ -280,7 +369,7 @@ begin
 end;
 
 procedure TScpPartialRegistry.Confirm(const ATempPath: string;
-  AOffset: Int64; const ADigest: TSHA1Digest);
+  AOffset: Int64; const ADigest: TScpDigest);
 var
   i: Integer;
 begin
@@ -464,10 +553,21 @@ begin
   Result := APrevMode and LongWord(&0777);
 end;
 
+// Droits d'un dossier NEUF: ceux de sa source, sans ecriture pour tous ni bits
+// speciaux, et toujours rwx pour le proprietaire -- il faut pouvoir y ecrire ce
+// qui suit. Poses A LA CREATION: un dossier prive l'est des qu'il existe, et
+// non apres que son contenu a ete lisible par tous. Mode inconnu: le defaut.
+function ModeForNewDir(ASourceMode: LongWord): LongWord;
+begin
+  if (ASourceMode and LongWord(&07777)) = 0 then Exit(SCP_DEFAULT_DIR_MODE);
+  Result := (ASourceMode and LongWord(&0775)) or LongWord(&0700);
+end;
+
 { TScpTransferEngine }
 
 constructor TScpTransferEngine.Create(AQueue: TTransferQueue);
 begin
+  FHash := TScpHash.Create;
   inherited Create;
   FQueue := AQueue;
   FPartials := TScpPartialRegistry.Create;
@@ -541,6 +641,7 @@ end;
 
 destructor TScpTransferEngine.Destroy;
 begin
+  FHash.Free;
   FPartials.Free;
   inherited Destroy;
 end;
@@ -608,7 +709,7 @@ var
     sk: TTransferItem;
   begin
     sk := FQueue.Add(ADirection, tikFile, AChildSrc, ADstDir,
-      DisplaySafeName(AName));
+      DisplaySafeName(AName), AOwner.Batch);
     sk.Depth := ADepth;
     sk.TargetRoot := ATargetRoot;
     sk.Error := AChildErr;
@@ -754,7 +855,7 @@ begin
       begin
         // Jamais suivi: un cycle devient impossible plutot que detectable.
         item := FQueue.Add(ADirection, tikFile, childSrc, childDst,
-          DisplaySafeName(e.Name));
+          DisplaySafeName(e.Name), AOwner.Batch);
         item.Depth := ADepth;
         item.TargetRoot := ATargetRoot;
         item.Error := MakeScpError(sekSymlinkSkipped, 'Copying',
@@ -765,7 +866,7 @@ begin
       if e.IsSpecial then
       begin
         item := FQueue.Add(ADirection, tikFile, childSrc, childDst,
-          DisplaySafeName(e.Name));
+          DisplaySafeName(e.Name), AOwner.Batch);
         item.Depth := ADepth;
         item.TargetRoot := ATargetRoot;
         item.Error := MakeScpError(sekIsSpecialFile, 'Copying',
@@ -797,7 +898,7 @@ begin
         end;
         // L'ordre d'insertion EST la garantie que les parents precedent les enfants.
         item := FQueue.Add(ADirection, tikMakeDir, childSrc, childDst,
-          DisplaySafeName(e.Name));
+          DisplaySafeName(e.Name), AOwner.Batch);
         item.Depth := ADepth;
         item.TargetRoot := ATargetRoot;
         item.SourceMode := e2.Mode;
@@ -812,7 +913,7 @@ begin
         Continue;
       end;
       item := FQueue.Add(ADirection, tikFile, childSrc, childDst,
-        DisplaySafeName(e.Name));
+        DisplaySafeName(e.Name), AOwner.Batch);
       item.Depth := ADepth;
       item.TargetRoot := ATargetRoot;
       item.TotalBytes := e.Size;
@@ -877,7 +978,10 @@ begin
       for i := 0 to FQueue.Count - 1 do
       begin
         it := FQueue.Items[i];
-        if (it <> AItem) and (it.Direction = AItem.Direction) and
+        // Du MEME lot: un lot precedent vers le meme dossier n'est pas « deja
+        // en file », il est un autre transfert.
+        if (it <> AItem) and (it.Batch = AItem.Batch) and
+           (it.Direction = AItem.Direction) and
            ADstFs.IsUnder(AItem.TargetPath, it.TargetPath) then
           known.Add(it.TargetPath);
       end;
@@ -892,130 +996,164 @@ begin
   end;
 end;
 
+// Premier nom de copie libre dans ADir; '' si tous sont pris, ou si la question
+// n'a pas pu etre posee (AErr le dit). La reponse vieillit aussitot: c'est la
+// creation exclusive qui rattrape une collision.
+function FreeCopyName(AFs: TScpFileSystem; const ADir, AName: string;
+  out AErr: TScpError): string;
+var
+  i: Integer;
+  candidate: string;
+  found: Boolean;
+begin
+  Result := '';
+  AErr := NoScpError;
+  for i := 1 to 99 do
+  begin
+    candidate := KeepBothCandidate(AName, i);
+    if AFs.CheckName(candidate) <> nvOk then Continue;
+    if not AFs.Exists(AFs.Join(ADir, candidate), found, AErr) then Exit;
+    if not found then Exit(candidate);
+  end;
+end;
+
+// Une selection encore inconnue: lstat, nom, confinement, puis l'element
+// DEVIENT le fichier ou le dossier qu'il designe -- ou s'ecarte avec sa
+// raison, ce qui le garde au bilan. Une coupure le laisse tel quel, a
+// reprendre: c'est ce qui rend une enumeration coupee reprenable. False =
+// coupure, l'element est deja interrompu.
+function TScpTransferEngine.ScanRoot(ASrcFs, ADstFs: TScpFileSystem;
+  AItem: TTransferItem; AMaxDepth: Integer; out AErr: TScpError): Boolean;
+var
+  srcEntry: TScpEntry;
+  srcName, targetName, targetPath, parent, why: string;
+  v: TNameVerdict;
+  e: TScpError;
+
+  procedure SkipWith(const AWhy: TScpError);
+  begin
+    AItem.Error := AWhy;
+    FQueue.SetState(AItem, tsSkipped);
+  end;
+
+begin
+  Result := True;
+  AErr := NoScpError;
+  if AMaxDepth <= 0 then AMaxDepth := SCP_MAX_DEPTH;
+  srcName := ASrcFs.BaseName(AItem.SourcePath);
+  // Tant que rien n'est verifie, la cible de l'element est son DOSSIER.
+  parent := AItem.TargetPath;
+
+  // lstat: c'est le lien lui-meme qu'on veut voir, pas ce qu'il designe.
+  if not ASrcFs.Stat(AItem.SourcePath, False, srcEntry, e) then
+  begin
+    // Illisible: l'element reste, avec sa raison. Une coupure l'interrompt, a
+    // reprendre a la reconnexion; un autre refus le laisse en echec.
+    AItem.Error := e;
+    if IsFatalToSession(e.Kind) then
+    begin
+      FQueue.SetState(AItem, tsInterrupted);
+      AErr := e;
+      Exit(False);
+    end;
+    FQueue.SetState(AItem, tsFailed);
+    Exit;
+  end;
+  if srcEntry.TypeUnknown then
+  begin
+    SkipWith(MakeScpError(sekOther, 'Copying', DisplaySafeName(srcName),
+      'the server did not say whether this is a file or a folder'));
+    Exit;
+  end;
+  if not NameUsable(ASrcFs, ADstFs, srcName, why) then
+  begin
+    SkipWith(MakeScpError(sekInvalidName, 'Copying',
+      DisplaySafeName(srcName), why));
+    Exit;
+  end;
+  targetName := srcName;
+  if AItem.ForcedName <> '' then
+  begin
+    // Le nom impose passe par les regles de la DESTINATION comme un autre: il
+    // vient d'un calcul, pas d'une garantie.
+    v := ADstFs.CheckName(AItem.ForcedName);
+    if v <> nvOk then
+    begin
+      SkipWith(MakeScpError(sekInvalidName, 'Copying',
+        DisplaySafeName(AItem.ForcedName),
+        NameVerdictText(v, DisplaySafeName(AItem.ForcedName))));
+      Exit;
+    end;
+    targetName := AItem.ForcedName;
+  end
+  else if AItem.Direction in [tdDuplicateLocal, tdDuplicateRemote] then
+  begin
+    // Le nom libre est cherche ICI, par le fil qui copie: choisi plus tot, il
+    // serait perime avant l'ecriture.
+    targetName := FreeCopyName(ADstFs, parent, srcName, e);
+    if targetName = '' then
+    begin
+      if e.Kind = sekNone then
+        e := MakeScpError(sekAlreadyExists, 'Duplicating',
+          DisplaySafeName(srcName), 'no free name left');
+      AItem.Error := e;
+      if IsFatalToSession(e.Kind) then
+      begin
+        FQueue.SetState(AItem, tsInterrupted);
+        AErr := e;
+        Exit(False);
+      end;
+      FQueue.SetState(AItem, tsSkipped);
+      Exit;
+    end;
+  end;
+  targetPath := ADstFs.Join(parent, targetName);
+  if not ADstFs.IsUnder(AItem.TargetRoot, targetPath) then
+  begin
+    SkipWith(MakeScpError(sekOutsideRoot, 'Copying',
+      DisplaySafeName(srcName), ''));
+    Exit;
+  end;
+  AItem.TargetPath := targetPath;
+  if srcEntry.IsLink then
+  begin
+    SkipWith(MakeScpError(sekSymlinkSkipped, 'Copying',
+      DisplaySafeName(srcName), srcEntry.LinkTarget));
+    Exit;
+  end;
+  if srcEntry.IsSpecial then
+  begin
+    SkipWith(MakeScpError(sekIsSpecialFile, 'Copying',
+      DisplaySafeName(srcName), ''));
+    Exit;
+  end;
+  if srcEntry.IsDir then
+  begin
+    FQueue.Rekind(AItem, tikMakeDir, DisplaySafeName(targetName));
+    AItem.SourceMode := srcEntry.Mode;
+    // Coupe en route: le dossier est deja interrompu, a reparcourir.
+    Exit(WalkDir(ASrcFs, ADstFs, AItem.Direction, AItem.SourcePath,
+      targetPath, AItem.TargetRoot, 1, AMaxDepth, AItem, nil, AErr));
+  end;
+  FQueue.Rekind(AItem, tikFile, DisplaySafeName(targetName));
+  AItem.TotalBytes := srcEntry.Size;
+  AItem.SourceTimeUtc := srcEntry.MTimeUtc;
+  AItem.SourceMode := srcEntry.Mode;
+end;
+
 function TScpTransferEngine.EnumerateInto(ASrcFs, ADstFs: TScpFileSystem;
   ADirection: TTransferDirection;
   const ASourcePath, ATargetParent, ATargetRoot: string;
   AMaxDepth: Integer; out AErr: TScpError;
   const ATargetName: string): Boolean;
 var
-  srcEntry: TScpEntry;
-  srcName: string;
-  rootItem: TTransferItem;
-  targetPath, targetName, why: string;
-  v: TNameVerdict;
-
-  procedure SkipRoot(const AWhy: TScpError);
-  var
-    it: TTransferItem;
-  begin
-    it := FQueue.Add(ADirection, tikFile, ASourcePath,
-      ADstFs.Join(ATargetParent, srcName), DisplaySafeName(srcName));
-    it.TargetRoot := ATargetRoot;
-    it.Error := AWhy;
-    FQueue.SetState(it, tsSkipped);
-  end;
-
+  it: TTransferItem;
 begin
-  Result := False;
-  AErr := NoScpError;
-  if AMaxDepth <= 0 then AMaxDepth := SCP_MAX_DEPTH;
-
-  // lstat: c'est le lien lui-meme qu'on veut voir, pas ce qu'il designe.
-  srcName := ASrcFs.BaseName(ASourcePath);
-  if not ASrcFs.Stat(ASourcePath, False, srcEntry, AErr) then
-  begin
-    // Selection illisible: elle entre quand meme dans la file avec sa raison,
-    // sinon le bilan annoncerait complet un lot ampute d'une selection entiere.
-    // Une coupure l'ecarte; un autre refus la laisse en echec, reessayable.
-    rootItem := FQueue.Add(ADirection, tikFile, ASourcePath,
-      ADstFs.Join(ATargetParent, srcName), DisplaySafeName(srcName));
-    rootItem.TargetRoot := ATargetRoot;
-    rootItem.Error := AErr;
-    if IsFatalToSession(AErr.Kind) then
-      FQueue.SetState(rootItem, tsSkipped)
-    else
-      FQueue.SetState(rootItem, tsFailed);
-    Exit;
-  end;
-  if srcEntry.TypeUnknown then
-  begin
-    rootItem := FQueue.Add(ADirection, tikFile, ASourcePath,
-      ADstFs.Join(ATargetParent, srcName), DisplaySafeName(srcName));
-    rootItem.TargetRoot := ATargetRoot;
-    rootItem.Error := MakeScpError(sekOther, 'Copying',
-      DisplaySafeName(srcName),
-      'the server did not say whether this is a file or a folder');
-    FQueue.SetState(rootItem, tsSkipped);
-    Exit(True);
-  end;
-  // Un nom refuse, un nom impose invalide ou une sortie de racine ecartent la
-  // selection AVEC un element: sans lui le bilan annoncerait complet un lot
-  // ampute d'une selection entiere.
-  if not NameUsable(ASrcFs, ADstFs, srcName, why) then
-  begin
-    SkipRoot(MakeScpError(sekInvalidName, 'Copying',
-      DisplaySafeName(srcName), why));
-    Exit(True);
-  end;
-  targetName := srcName;
-  if ATargetName <> '' then
-  begin
-    // Le nom impose passe par les regles de la DESTINATION comme un autre: il
-    // vient d'un calcul, pas d'une garantie.
-    v := ADstFs.CheckName(ATargetName);
-    if v <> nvOk then
-    begin
-      SkipRoot(MakeScpError(sekInvalidName, 'Copying',
-        DisplaySafeName(ATargetName),
-        NameVerdictText(v, DisplaySafeName(ATargetName))));
-      Exit(True);
-    end;
-    targetName := ATargetName;
-  end;
-  targetPath := ADstFs.Join(ATargetParent, targetName);
-  if not ADstFs.IsUnder(ATargetRoot, targetPath) then
-  begin
-    SkipRoot(MakeScpError(sekOutsideRoot, 'Copying',
-      DisplaySafeName(srcName), ''));
-    Exit(True);
-  end;
-
-  if srcEntry.IsLink then
-  begin
-    rootItem := FQueue.Add(ADirection, tikFile, ASourcePath, targetPath,
-      DisplaySafeName(srcName));
-    rootItem.TargetRoot := ATargetRoot;
-    rootItem.Error := MakeScpError(sekSymlinkSkipped, 'Copying',
-      DisplaySafeName(srcName), srcEntry.LinkTarget);
-    FQueue.SetState(rootItem, tsSkipped);
-    Exit(True);
-  end;
-  if srcEntry.IsSpecial then
-  begin
-    rootItem := FQueue.Add(ADirection, tikFile, ASourcePath, targetPath,
-      DisplaySafeName(srcName));
-    rootItem.TargetRoot := ATargetRoot;
-    rootItem.Error := MakeScpError(sekIsSpecialFile, 'Copying',
-      DisplaySafeName(srcName), '');
-    FQueue.SetState(rootItem, tsSkipped);
-    Exit(True);
-  end;
-  if srcEntry.IsDir then
-  begin
-    rootItem := FQueue.Add(ADirection, tikMakeDir, ASourcePath, targetPath,
-      DisplaySafeName(targetName));
-    rootItem.TargetRoot := ATargetRoot;
-    rootItem.SourceMode := srcEntry.Mode;
-    Exit(WalkDir(ASrcFs, ADstFs, ADirection, ASourcePath, targetPath,
-      ATargetRoot, 1, AMaxDepth, rootItem, nil, AErr));
-  end;
-  rootItem := FQueue.Add(ADirection, tikFile, ASourcePath, targetPath,
-    DisplaySafeName(targetName));
-  rootItem.TargetRoot := ATargetRoot;
-  rootItem.TotalBytes := srcEntry.Size;
-  rootItem.SourceTimeUtc := srcEntry.MTimeUtc;
-  rootItem.SourceMode := srcEntry.Mode;
-  Result := True;
+  it := FQueue.Add(ADirection, tikScanRoot, ASourcePath, ATargetParent,
+    DisplaySafeName(ASrcFs.BaseName(ASourcePath)));
+  it.TargetRoot := ATargetRoot;
+  it.ForcedName := ATargetName;
+  Result := ScanRoot(ASrcFs, ADstFs, it, AMaxDepth, AErr);
 end;
 
 // --- Conflits -------------------------------------------------------------
@@ -1114,6 +1252,10 @@ begin
       'source (server, path, size and timestamp must all agree).';
 
   decision.Action := FQueue.ConflictPolicy(AItem.Batch);
+  // « Resume » pour tout le lot ne vaut que la ou un partiel concorde: ailleurs
+  // on REDEMANDE, plutot que de sauter en silence.
+  if (decision.Action = cnResume) and (not info.ResumeAllowed) then
+    decision.Action := cnAsk;
   decision.ApplyToAll := decision.Action <> cnAsk;
   if decision.Action = cnAsk then
   begin
@@ -1131,7 +1273,7 @@ begin
       FQueue.SetConflictPolicy(AItem.Batch, decision.Action);
   end;
 
-  // Une reprise impossible ne devient pas un ecrasement: on redemande.
+  // Une reprise impossible ne devient pas un ecrasement.
   if (decision.Action = cnResume) and (not info.ResumeAllowed) then
     decision.Action := cnSkip;
 
@@ -1196,13 +1338,12 @@ end;
 function TScpTransferEngine.CopyStream(ASrcFs: TScpFileSystem;
   ASrcH: TScpFileHandle; ADstFs: TScpFileSystem; ADstH: TScpFileHandle;
   AItem: TTransferItem; AExpected: Int64; AStartOffset: Int64;
-  const ATempPath: string; var AHash: TSHA1Context;
+  const ATempPath: string; AHash: TScpHash;
   out AErr: TScpError): Boolean;
 var
   got, put, offset: Integer;
   total, cap, sinceConfirm: Int64;
-  snap: TSHA1Context;
-  digest: TSHA1Digest;
+  digest: TScpDigest;
 begin
   Result := False;
   AErr := NoScpError;
@@ -1252,7 +1393,7 @@ begin
         Exit;
       end;
       // Ce que la destination a ACCEPTE, pas ce qu'on a voulu ecrire.
-      SHA1Update(AHash, FBuffer[offset], put);
+      AHash.Update(FBuffer[offset], put);
       Inc(offset, put);
       Inc(total, put);
       Inc(sinceConfirm, put);
@@ -1265,8 +1406,7 @@ begin
     if (ATempPath <> '') and (sinceConfirm >= FConfirmEvery) then
     begin
       if not ADstFs.Flush(ADstH, AErr) then Exit;
-      snap := AHash;
-      SHA1Final(snap, digest);
+      AHash.Peek(digest);
       FPartials.Confirm(ATempPath, total, digest);
       sinceConfirm := 0;
     end;
@@ -1349,17 +1489,16 @@ end;
 
 function TScpTransferEngine.VerifyPartialPrefix(ADstFs: TScpFileSystem;
   ADstH: TScpFileHandle; AItem: TTransferItem; const APartial: TScpPartial;
-  var AHash: TSHA1Context; out AWhy: string; out AErr: TScpError): Boolean;
+  AHash: TScpHash; out AWhy: string; out AErr: TScpError): Boolean;
 var
   left: Int64;
   want, got: Integer;
-  snap: TSHA1Context;
-  digest: TSHA1Digest;
+  digest: TScpDigest;
 begin
   Result := False;
   AWhy := '';
   AErr := NoScpError;
-  SHA1Init(AHash);
+  AHash.Reset;
   // Par la poignee qui va ecrire, pas par le chemin: entre un lstat et une
   // ouverture le chemin peut changer de fichier.
   if not ADstFs.Seek(ADstH, 0, AErr) then Exit;
@@ -1380,12 +1519,11 @@ begin
       AWhy := 'it is shorter than the confirmed offset';
       Exit;
     end;
-    SHA1Update(AHash, FBuffer[0], got);
+    AHash.Update(FBuffer[0], got);
     Dec(left, got);
   end;
-  snap := AHash;
-  SHA1Final(snap, digest);
-  if not SHA1Match(digest, APartial.Digest) then
+  AHash.Peek(digest);
+  if not ScpDigestMatch(digest, APartial.Digest) then
   begin
     // Meme taille, autre contenu: un fichier de bonne longueur et faux dedans.
     AWhy := 'its content no longer matches what was written';
@@ -1401,42 +1539,46 @@ function TScpTransferEngine.VerifySourcePrefix(ASrcFs: TScpFileSystem;
 var
   left: Int64;
   want, got: Integer;
-  ctx: TSHA1Context;
-  digest: TSHA1Digest;
+  ctx: TScpHash;
+  digest: TScpDigest;
 begin
   Result := False;
   AWhy := '';
   AErr := NoScpError;
-  SHA1Init(ctx);
-  if not ASrcFs.Seek(ASrcH, 0, AErr) then Exit;
-  left := APartial.Confirmed;
-  while left > 0 do
-  begin
-    if ASrcFs.Canceled or AItem.CancelRequested then
+  ctx := TScpHash.Create;
+  try
+    if not ASrcFs.Seek(ASrcH, 0, AErr) then Exit;
+    left := APartial.Confirmed;
+    while left > 0 do
     begin
-      AErr := MakeScpError(sekCanceled, 'Verifying', AItem.DisplayName, '');
+      if ASrcFs.Canceled or AItem.CancelRequested then
+      begin
+        AErr := MakeScpError(sekCanceled, 'Verifying', AItem.DisplayName, '');
+        Exit;
+      end;
+      want := SCP_COPY_BUFFER;
+      if left < want then want := Integer(left);
+      if not ASrcFs.Read(ASrcH, @FBuffer[0], want, got, AErr) then Exit;
+      if got <= 0 then
+      begin
+        AWhy := 'the source is now shorter than the confirmed offset';
+        Exit;
+      end;
+      ctx.Update(FBuffer[0], got);
+      Dec(left, got);
+    end;
+    ctx.Peek(digest);
+    if not ScpDigestMatch(digest, APartial.Digest) then
+    begin
+      // Meme taille, meme date, autre contenu: poursuivre collerait un ancien debut
+      // a une nouvelle fin.
+      AWhy := 'the source has changed since the transfer was interrupted';
       Exit;
     end;
-    want := SCP_COPY_BUFFER;
-    if left < want then want := Integer(left);
-    if not ASrcFs.Read(ASrcH, @FBuffer[0], want, got, AErr) then Exit;
-    if got <= 0 then
-    begin
-      AWhy := 'the source is now shorter than the confirmed offset';
-      Exit;
-    end;
-    SHA1Update(ctx, FBuffer[0], got);
-    Dec(left, got);
+    Result := True;
+  finally
+    ctx.Free;
   end;
-  SHA1Final(ctx, digest);
-  if not SHA1Match(digest, APartial.Digest) then
-  begin
-    // Meme taille, meme date, autre contenu: poursuivre collerait un ancien debut
-    // a une nouvelle fin.
-    AWhy := 'the source has changed since the transfer was interrupted';
-    Exit;
-  end;
-  Result := True;
 end;
 
 function TScpTransferEngine.CommitTemp(ADstFs: TScpFileSystem;
@@ -1551,8 +1693,7 @@ var
   v: TNameVerdict;
   prevMode, newMode, tempMode: LongWord;
   why: string;
-  hash, snap: TSHA1Context;
-  digest: TSHA1Digest;
+  digest: TScpDigest;
   partial: TScpPartial;
   outcome: TScpConflictOutcome;
 
@@ -1576,6 +1717,19 @@ begin
     AItem.Error := MakeScpError(sekCanceled, 'Copying', AItem.DisplayName, '');
     FQueue.SetState(AItem, tsCanceled);
     Exit;
+  end;
+
+  // Une selection pas encore examinee: elle devient ici fichier ou dossier,
+  // ou s'ecarte avec sa raison. Une coupure la laisse a reprendre telle quelle.
+  if AItem.Kind = tikScanRoot then
+  begin
+    if not ScanRoot(ASrcFs, ADstFs, AItem, SCP_MAX_DEPTH, err) then
+    begin
+      NoteFatal(err);
+      Exit;
+    end;
+    if AItem.IsTerminal then Exit(AItem.State = tsSkipped);
+    if AItem.State = tsFailed then Exit;
   end;
 
   targetPath := AItem.TargetPath;
@@ -1638,7 +1792,8 @@ begin
         Exit;
       end;
     end
-    else if not ADstFs.MakeDir(targetPath, err) then
+    else if not ADstFs.MakeDir(targetPath, ModeForNewDir(AItem.SourceMode),
+       err) then
     begin
       FailItem(AItem, err);
       FailSubtree(ADstFs, AItem);
@@ -1775,7 +1930,7 @@ begin
         if not FPartials.Lookup(tempPath, partial) then
           partial.Confirmed := -1;
         if (partial.Confirmed <> resumeFrom) or
-           not VerifyPartialPrefix(ADstFs, dstH, AItem, partial, hash, why,
+           not VerifyPartialPrefix(ADstFs, dstH, AItem, partial, FHash, why,
              err) then
         begin
           ADstFs.Close(dstH, closeErr);
@@ -1846,11 +2001,11 @@ begin
         ADstFs.DisplayName, AItem.SourcePath, srcEntry.Size,
         srcEntry.MTimeUtc);
       resumeFrom := 0;
-      SHA1Init(hash);
+      FHash.Reset;
     end;
 
     okCopy := CopyStream(ASrcFs, srcH, ADstFs, dstH, AItem, srcEntry.Size,
-      resumeFrom, tempPath, hash, err);
+      resumeFrom, tempPath, FHash, err);
 
     // Vider AVANT de conclure: un disque plein ne se revele souvent qu'ici, et
     // conclure avant remplacerait une cible valide par un fichier tronque.
@@ -1858,8 +2013,7 @@ begin
       okCopy := ADstFs.Flush(dstH, err);
     if okCopy then
     begin
-      snap := hash;
-      SHA1Final(snap, digest);
+      FHash.Peek(digest);
       FPartials.Confirm(tempPath, AItem.DoneBytes, digest);
     end;
 
@@ -1955,6 +2109,23 @@ begin
       AItem.Error := MakeScpError(sekCanceled, 'Copying', AItem.DisplayName,
         '');
       FQueue.SetState(AItem, tsCanceled);
+      Exit;
+    end;
+
+    // Le temporaire va etre designe par son NOM une derniere fois, pour le
+    // rename: on revoit ce que ce nom designe. Un lien, un dossier ou une autre
+    // taille sont refuses; un autre fichier ordinaire de meme taille passerait,
+    // et c'est la limite d'un rename par chemin.
+    if not ADstFs.Stat(tempPath, False, dstEntry, err) then
+    begin
+      FailItem(AItem, err);
+      Exit;
+    end;
+    if dstEntry.IsLink or dstEntry.IsDir or dstEntry.IsSpecial or
+       ((dstEntry.Size >= 0) and (dstEntry.Size <> AItem.DoneBytes)) then
+    begin
+      FailItem(AItem, MakeScpError(sekOther, 'Publishing', AItem.DisplayName,
+        'the temporary file changed before it could be published'));
       Exit;
     end;
 

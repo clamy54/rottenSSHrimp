@@ -45,7 +45,7 @@ type
     function DescribeLink(const ADir: string; var AEntry: TScpEntry;
       out AErr: TScpError): Boolean;
     function SameFileAsPath(AHandle: TScpFileHandle; const AOp, AWhat: string;
-      out AErr: TScpError): Boolean;
+      AContext: TScpAccessContext; out AErr: TScpError): Boolean;
     function SetTimesByHandle(AHandle: TScpFileHandle; AMTimeUtc: Int64;
       out AErr: TScpError): Boolean;
   public
@@ -63,7 +63,7 @@ type
       out AEntry: TScpEntry; out AErr: TScpError): Boolean; override;
     function Exists(const APath: string; out AFound: Boolean;
       out AErr: TScpError): Boolean; override;
-    function MakeDir(const APath: string;
+    function MakeDir(const APath: string; AMode: LongWord;
       out AErr: TScpError): Boolean; override;
     function Rename(const AFrom, ATo: string;
       out AErr: TScpError): Boolean; override;
@@ -130,6 +130,9 @@ type
     TargetRoot: string;
     OnRemote: Boolean;    // duplication: de quel cote elle se fait
     Serial: Int64;   // rapproche une reponse de sa demande
+    // Lot attribue A LA DEMANDE, sur le thread UI: c'est lui que porteront les
+    // elements, quel que soit le moment ou ils entrent en file.
+    Batch: Integer;
   end;
 
   // ASerial: le numero de la demande servie. Sans lui, aller en A, en B, puis
@@ -442,7 +445,9 @@ begin
     Result := MakeScpError(sekOther, AOp, DisplaySafeName(ASubject),
       Format('%s (libssh2 %d)', [detail, ARc]));
   end;
-  if Canceled then
+  // Une annulation n'efface pas une coupure: retrograder une socket morte en
+  // « annule » laisserait l'onglet se croire connecte.
+  if Canceled and (not IsFatalToSession(Result.Kind)) then
     Result.Kind := sekCanceled;
   if rc = 0 then ;
 end;
@@ -766,7 +771,7 @@ begin
   Result := False;
 end;
 
-function TSftpFileSystem.MakeDir(const APath: string;
+function TSftpFileSystem.MakeDir(const APath: string; AMode: LongWord;
   out AErr: TScpError): Boolean;
 var
   rc: cint;
@@ -778,7 +783,7 @@ begin
   deadline := GetTickCount64 + SFTP_OP_TIMEOUT_MS;
   repeat
     rc := libssh2_sftp_mkdir_ex(FOwner.FSftp, PAnsiChar(p), Length(p),
-      SCP_DEFAULT_DIR_MODE);
+      clong(AMode and LongWord(&0777)));
     if rc <> LIBSSH2_ERROR_EAGAIN then Break;
   until not WaitAgain(deadline);
   Result := rc = 0;
@@ -910,7 +915,7 @@ begin
   h.Path := RemoteNormalize(APath);
   // SFTP v3 suit un lien a l'ouverture: entre le lstat du moteur et celle-ci,
   // le chemin a pu changer de fichier. Meme controle qu'a la reprise.
-  if not SameFileAsPath(h, 'Opening', 'the source', AErr) then
+  if not SameFileAsPath(h, 'Opening', 'the source', acRead, AErr) then
   begin
     Close(h, closeErr);
     Exit(False);
@@ -977,9 +982,13 @@ end;
 // lstat du chemin contre fstat de la poignee: meme type, meme taille. Un lien
 // a la place du fichier est refuse; un fichier substitue de meme taille ne
 // l'est pas ici, c'est l'empreinte du prefixe, relue par le moteur, qui le
-// rattrape a la reprise. AWhat nomme ce qu'on ouvrait, pour le message.
+// rattrape a la reprise. AWhat nomme ce qu'on ouvrait, pour le message. Taille
+// et type sont tout ce que SFTP v3 donne: pas d'inode, donc un autre fichier
+// ordinaire de meme taille passe ici, et seule l'empreinte du prefixe, a la
+// reprise, le verrait.
 function TSftpFileSystem.SameFileAsPath(AHandle: TScpFileHandle;
-  const AOp, AWhat: string; out AErr: TScpError): Boolean;
+  const AOp, AWhat: string; AContext: TScpAccessContext;
+  out AErr: TScpError): Boolean;
 var
   h: TSftpHandle;
   onDisk, opened: LIBSSH2_SFTP_ATTRIBUTES;
@@ -1001,7 +1010,7 @@ begin
   until not WaitAgain(deadline);
   if rc < 0 then
   begin
-    AErr := LastError('Reading attributes of', h.Path, rc, acWrite);
+    AErr := LastError('Reading attributes of', h.Path, rc, AContext);
     Exit;
   end;
   mode := 0;
@@ -1022,7 +1031,7 @@ begin
   until not WaitAgain(deadline);
   if rc < 0 then
   begin
-    AErr := LastError('Reading attributes of', h.Path, rc, acWrite);
+    AErr := LastError('Reading attributes of', h.Path, rc, AContext);
     Exit;
   end;
   if ((onDisk.flags and LIBSSH2_SFTP_ATTR_SIZE) <> 0) and
@@ -1074,7 +1083,8 @@ begin
   // celui pose entre l'ouverture et ce controle ne l'est pas, et le protocole
   // ne permet pas de fermer cette fenetre-la. Le moteur relit encore le prefixe
   // confirme par la poignee, et un contenu different fait repartir de zero.
-  if not SameFileAsPath(h, 'Reopening', 'the partial file', AErr) then
+  if not SameFileAsPath(h, 'Reopening', 'the partial file', acWrite, AErr)
+  then
   begin
     Close(h, closeErr);
     Exit(False);
@@ -1787,6 +1797,7 @@ begin
   c.Sources := Copy(ASources, 0, Length(ASources));
   c.TargetDir := ARemoteDir;
   c.TargetRoot := ARemoteRoot;
+  c.Batch := FQueue.BeginBatch;
   PostCommand(c);
 end;
 
@@ -1800,6 +1811,7 @@ begin
   c.Sources := Copy(ASources, 0, Length(ASources));
   c.TargetDir := ALocalDir;
   c.TargetRoot := ALocalRoot;
+  c.Batch := FQueue.BeginBatch;
   PostCommand(c);
 end;
 
@@ -1814,6 +1826,7 @@ begin
   c.TargetDir := ADir;
   c.TargetRoot := ADir;
   c.OnRemote := AOnRemote;
+  c.Batch := FQueue.BeginBatch;
   PostCommand(c);
 end;
 
@@ -2064,37 +2077,17 @@ begin
     Queue(@PublishQueueChanged);
 end;
 
-// Premier nom de copie libre dans ADir; '' si tous sont pris, ou si la question
-// n'a pas pu etre posee (AErr le dit). La reponse vieillit aussitot: c'est la
-// creation exclusive qui rattrape une collision.
-function FreeCopyName(AFs: TScpFileSystem; const ADir, AName: string;
-  out AErr: TScpError): string;
-var
-  i: Integer;
-  candidate: string;
-  found: Boolean;
-begin
-  Result := '';
-  AErr := NoScpError;
-  for i := 1 to 99 do
-  begin
-    candidate := KeepBothCandidate(AName, i);
-    if AFs.CheckName(candidate) <> nvOk then Continue;
-    if not AFs.Exists(AFs.Join(ADir, candidate), found, AErr) then Exit;
-    if not found then Exit(candidate);
-  end;
-end;
-
 procedure TSftpTransport.RunCommand(ACmd: TSftpCommand);
 var
   entries: TScpEntryArray;
   err: TScpError;
-  path, copyName: string;
+  path, name: string;
   i: Integer;
-  srcFs, dstFs: TScpFileSystem;
+  dstFs: TScpFileSystem;
   dir: TTransferDirection;
   leftover: TStringArray;
   r: TSftpResult;
+  it: TTransferItem;
 begin
   err := NoScpError;
   case ACmd.Kind of
@@ -2131,7 +2124,7 @@ begin
       end;
     sckRemoteMkdir:
       begin
-        FRemote.MakeDir(ACmd.PathA, err);
+        FRemote.MakeDir(ACmd.PathA, SCP_DEFAULT_DIR_MODE, err);
         r := TSftpResult.Create;
         r.Kind := srOpDone;
         r.Error := err;
@@ -2156,82 +2149,37 @@ begin
         PostResult(r);
         FailIfFatal(err);
       end;
-    sckEnqueueUpload, sckEnqueueDownload:
+    sckEnqueueUpload, sckEnqueueDownload, sckEnqueueDuplicate:
       begin
-        if ACmd.Kind = sckEnqueueUpload then
-        begin
-          srcFs := FLocal;
-          dstFs := FRemote;
-          dir := tdUpload;
-        end
+        // Chaque selection entre en file telle quelle, a EXAMINER: c'est le
+        // moteur qui la lit, la nomme et la parcourt, en son tour. Une coupure
+        // pendant l'une d'elles laisse les suivantes en file, reprises avec le
+        // reste a la reconnexion.
+        case ACmd.Kind of
+          sckEnqueueUpload: begin dstFs := FRemote; dir := tdUpload; end;
+          sckEnqueueDownload: begin dstFs := FLocal; dir := tdDownload; end;
         else
-        begin
-          srcFs := FRemote;
-          dstFs := FLocal;
-          dir := tdDownload;
+          if ACmd.OnRemote then
+          begin
+            dstFs := FRemote;
+            dir := tdDuplicateRemote;
+          end
+          else
+          begin
+            dstFs := FLocal;
+            dir := tdDuplicateLocal;
+          end;
         end;
         for i := 0 to High(ACmd.Sources) do
         begin
-          if Terminated then Break;
-          if not FEngine.EnumerateInto(srcFs, dstFs, dir, ACmd.Sources[i],
-             ACmd.TargetDir, ACmd.TargetRoot, SCP_MAX_DEPTH, err) then
-          begin
-            EngineNote(ScpErrorText(err));
-            // Un parcours coupe par la session doit la faire tomber, pas laisser une
-            // note: sinon l'onglet se croit connecte et Reconnect reste eteint. Et le
-            // lot s'arrete la: enumerer le reste sur une socket morte ne produirait
-            // que des notes.
-            FailIfFatal(err);
-            if State <> rssConnected then Break;
-          end;
+          name := dstFs.BaseName(ACmd.Sources[i]);
+          it := FQueue.Add(dir, tikScanRoot, ACmd.Sources[i], ACmd.TargetDir,
+            DisplaySafeName(name), ACmd.Batch);
+          it.TargetRoot := ACmd.TargetRoot;
         end;
         if Assigned(FOnQueueChanged) then
           Queue(@PublishQueueChanged);
-        if State = rssConnected then DoRunQueue;
-      end;
-    sckEnqueueDuplicate:
-      begin
-        if ACmd.OnRemote then
-        begin
-          srcFs := FRemote;
-          dir := tdDuplicateRemote;
-        end
-        else
-        begin
-          srcFs := FLocal;
-          dir := tdDuplicateLocal;
-        end;
-        for i := 0 to High(ACmd.Sources) do
-        begin
-          if Terminated then Break;
-          copyName := FreeCopyName(srcFs, ACmd.TargetDir,
-            srcFs.BaseName(ACmd.Sources[i]), err);
-          if copyName = '' then
-          begin
-            if err.Kind <> sekNone then
-            begin
-              EngineNote(ScpErrorText(err));
-              FailIfFatal(err);
-              if State <> rssConnected then Break;
-            end
-            else
-              EngineNote(Format('No free name left to duplicate %s.',
-                [DisplaySafeName(srcFs.BaseName(ACmd.Sources[i]))]));
-            Continue;
-          end;
-          // Meme systeme des deux cotes: la racine est le dossier de la source.
-          if not FEngine.EnumerateInto(srcFs, srcFs, dir,
-             ACmd.Sources[i], ACmd.TargetDir, ACmd.TargetRoot,
-             SCP_MAX_DEPTH, err, copyName) then
-          begin
-            EngineNote(ScpErrorText(err));
-            FailIfFatal(err);
-            if State <> rssConnected then Break;
-          end;
-        end;
-        if Assigned(FOnQueueChanged) then
-          Queue(@PublishQueueChanged);
-        if State = rssConnected then DoRunQueue;
+        DoRunQueue;
       end;
     sckRunQueue:
       DoRunQueue;

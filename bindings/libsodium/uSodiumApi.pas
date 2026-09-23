@@ -47,6 +47,14 @@ type
     subkey_id: cuint64; ctx: PAnsiChar; key: PByte): cint; cdecl;
   Tcrypto_generichash = function(outp: PByte; outlen: csize_t;
     inp: PByte; inlen: cuint64; key: PByte; keylen: csize_t): cint; cdecl;
+  // Etat opaque, de crypto_generichash_statebytes octets, aligne sur 64.
+  Tcrypto_generichash_statebytes = function: csize_t; cdecl;
+  Tcrypto_generichash_init = function(state: Pointer; key: PByte;
+    keylen: csize_t; outlen: csize_t): cint; cdecl;
+  Tcrypto_generichash_update = function(state: Pointer; inp: PByte;
+    inlen: cuint64): cint; cdecl;
+  Tcrypto_generichash_final = function(state: Pointer; outp: PByte;
+    outlen: csize_t): cint; cdecl;
   Tsodium_malloc = function(size: csize_t): Pointer; cdecl;
   Tsodium_free = procedure(ptr: Pointer); cdecl;
   Tsodium_mlock = function(addr: Pointer; len: csize_t): cint; cdecl;
@@ -63,6 +71,10 @@ var
   crypto_aead_xchacha20poly1305_ietf_decrypt: Tcrypto_aead_decrypt = nil;
   crypto_kdf_derive_from_key: Tcrypto_kdf_derive_from_key = nil;
   crypto_generichash: Tcrypto_generichash = nil;
+  crypto_generichash_statebytes: Tcrypto_generichash_statebytes = nil;
+  crypto_generichash_init: Tcrypto_generichash_init = nil;
+  crypto_generichash_update: Tcrypto_generichash_update = nil;
+  crypto_generichash_final: Tcrypto_generichash_final = nil;
   sodium_malloc: Tsodium_malloc = nil;
   sodium_free: Tsodium_free = nil;
   sodium_mlock: Tsodium_mlock = nil;
@@ -159,6 +171,11 @@ begin
     MustSym('crypto_aead_xchacha20poly1305_ietf_decrypt');
   Pointer(crypto_kdf_derive_from_key) := MustSym('crypto_kdf_derive_from_key');
   Pointer(crypto_generichash) := MustSym('crypto_generichash');
+  Pointer(crypto_generichash_statebytes) :=
+    MustSym('crypto_generichash_statebytes');
+  Pointer(crypto_generichash_init) := MustSym('crypto_generichash_init');
+  Pointer(crypto_generichash_update) := MustSym('crypto_generichash_update');
+  Pointer(crypto_generichash_final) := MustSym('crypto_generichash_final');
   Pointer(sodium_malloc) := MustSym('sodium_malloc');
   Pointer(sodium_free) := MustSym('sodium_free');
   Pointer(sodium_mlock) := MustSym('sodium_mlock');

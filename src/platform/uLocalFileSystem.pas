@@ -57,7 +57,7 @@ type
       out AEntry: TScpEntry; out AErr: TScpError): Boolean; override;
     function Exists(const APath: string; out AFound: Boolean;
       out AErr: TScpError): Boolean; override;
-    function MakeDir(const APath: string;
+    function MakeDir(const APath: string; AMode: LongWord;
       out AErr: TScpError): Boolean; override;
     function Rename(const AFrom, ATo: string;
       out AErr: TScpError): Boolean; override;
@@ -136,6 +136,7 @@ const
   PROTECTED_DACL_SECURITY_INFORMATION_ = $80000000;
   UNPROTECTED_DACL_SECURITY_INFORMATION_ = $20000000;
   SE_DACL_PROTECTED_ = $1000;
+  FILE_ATTRIBUTE_NOT_CONTENT_INDEXED_ = $2000;
   LOCAL_MAX_RM_DEPTH = 64;
   {$ELSE}
   LOCAL_MAX_RM_DEPTH = 64;
@@ -700,14 +701,15 @@ begin
   {$ENDIF}
 end;
 
-function TLocalFileSystem.MakeDir(const APath: string;
+function TLocalFileSystem.MakeDir(const APath: string; AMode: LongWord;
   out AErr: TScpError): Boolean;
 begin
   AErr := NoScpError;
   {$IFDEF WINDOWS}
+  // Pas de mode ici: le dossier herite de l'ACL de son parent.
   Result := CreateDirectoryW(PWideChar(NativeW(APath)), nil);
   {$ELSE}
-  Result := fpMkdir(PChar(LocalNormalize(APath)), &0755) = 0;
+  Result := fpMkdir(PChar(LocalNormalize(APath)), AMode and LongWord(&0777)) = 0;
   {$ENDIF}
   if not Result then
     AErr := LastErr('Creating folder', APath);
@@ -869,6 +871,11 @@ end;
 
 function TLocalFileSystem.ReplaceAtomic(const AFrom, ATo: string;
   out AErr: TScpError): Boolean;
+{$IFDEF WINDOWS}
+var
+  tattrs, keep: DWORD;
+  readOnly: Boolean;
+{$ENDIF}
 begin
   AErr := NoScpError;
   {$IFDEF WINDOWS}
@@ -876,10 +883,29 @@ begin
   // DACL, recopiee sur le temporaire AVANT qu'il prenne la place. Sans elle,
   // la cible n'est pas remplacee.
   if not CopyDacl(ATo, AFrom, AErr) then Exit(False);
+  // Les attributs aussi: cache, systeme, lecture seule. Une cible en lecture
+  // seule refuse d'etre remplacee; on lui retire le temps du rename, et le
+  // nouveau contenu le porte a son tour.
+  tattrs := GetFileAttributesW(PWideChar(NativeW(ATo)));
+  readOnly := (tattrs <> INVALID_FILE_ATTRIBUTES) and
+    ((tattrs and FILE_ATTRIBUTE_READONLY) <> 0);
+  if tattrs <> INVALID_FILE_ATTRIBUTES then
+  begin
+    keep := tattrs and (FILE_ATTRIBUTE_READONLY or FILE_ATTRIBUTE_HIDDEN or
+      FILE_ATTRIBUTE_SYSTEM or FILE_ATTRIBUTE_ARCHIVE or
+      FILE_ATTRIBUTE_NOT_CONTENT_INDEXED_);
+    if keep = 0 then keep := FILE_ATTRIBUTE_NORMAL;
+    SetFileAttributesW(PWideChar(NativeW(AFrom)), keep);
+    if readOnly then
+      SetFileAttributesW(PWideChar(NativeW(ATo)),
+        tattrs and (not FILE_ATTRIBUTE_READONLY));
+  end;
   // MOVEFILE_REPLACE_EXISTING sur un meme volume NTFS: pas d'etat
   // intermediaire. WRITE_THROUGH attend le support avant de rendre la main.
   Result := MoveFileExW(PWideChar(NativeW(AFrom)), PWideChar(NativeW(ATo)),
     MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH_);
+  if (not Result) and readOnly then
+    SetFileAttributesW(PWideChar(NativeW(ATo)), tattrs);
   {$ELSE}
   Result := fpRename(PChar(LocalNormalize(AFrom)),
     PChar(LocalNormalize(ATo))) = 0;
@@ -1041,6 +1067,12 @@ function TLocalFileSystem.OpenAppend(const APath: string; AOffset: Int64;
 var
   h: TLocalHandle;
   err: TScpError;
+  {$IFDEF WINDOWS}
+  info: TByHandleFileInformation;
+  {$ELSE}
+  st: Stat;
+  flags: cint;
+  {$ENDIF}
 begin
   AHandle := nil;
   AErr := NoScpError;
@@ -1061,14 +1093,40 @@ begin
     h.Free;
     Exit(False);
   end;
+  // Meme controle qu'a l'ouverture en lecture: ce qui a ete OUVERT est-il un
+  // fichier ordinaire? Le lstat du moteur repondait pour un chemin.
+  if (GetFileType(h.H) <> FILE_TYPE_DISK_) or
+     (not GetFileInformationByHandle(h.H, info)) or
+     ((info.dwFileAttributes and (FILE_ATTRIBUTE_DIRECTORY or
+       FILE_ATTRIBUTE_REPARSE_POINT)) <> 0) then
+  begin
+    CloseHandle(h.H);
+    h.Free;
+    AErr := MakeScpError(sekIsSpecialFile, 'Reopening',
+      DisplaySafeName(APath), 'what was opened is not a regular file');
+    Exit(False);
+  end;
   {$ELSE}
-  h.Fd := fpOpen(PChar(LocalNormalize(APath)), O_RDWR or O_NOFOLLOW);
+  // O_NONBLOCK: un tube nomme a la place du partiel bloquerait l'ouverture.
+  h.Fd := fpOpen(PChar(LocalNormalize(APath)),
+    O_RDWR or O_NOFOLLOW or O_NONBLOCK);
   if h.Fd < 0 then
   begin
     AErr := LastErr('Reopening', APath);
     h.Free;
     Exit(False);
   end;
+  if (fpFStat(h.Fd, st) <> 0) or (not fpS_ISREG(st.st_mode)) then
+  begin
+    fpClose(h.Fd);
+    h.Free;
+    AErr := MakeScpError(sekIsSpecialFile, 'Reopening',
+      DisplaySafeName(APath), 'what was opened is not a regular file');
+    Exit(False);
+  end;
+  flags := fpFcntl(h.Fd, F_GETFL);
+  if flags >= 0 then
+    fpFcntl(h.Fd, F_SETFL, flags and (not O_NONBLOCK));
   {$ENDIF}
   AHandle := h;
   // Offset confirme ET troncature: des octets non confirmes sont des octets
@@ -1397,12 +1455,20 @@ begin
       oa.Attributes := OBJ_CASE_INSENSITIVE_;
       child := 0;
       // FILE_OPEN_REPARSE_POINT: un lien ou une jonction est ouvert LUI-MEME,
-      // et n'a alors aucun contenu a nos yeux; il partira seul.
+      // et n'a alors aucun contenu a nos yeux; il partira seul. Le droit de
+      // lister n'est demande que s'il est accorde: un fichier illisible se
+      // supprime quand meme, par son dossier.
       st := NtOpenFile(@child, DELETE_ or SYNCHRONIZE_ or
         FILE_READ_ATTRIBUTES_ or FILE_LIST_DIRECTORY_, @oa, @iosb,
         FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE_,
         FILE_OPEN_REPARSE_POINT_ or FILE_OPEN_FOR_BACKUP_INTENT_ or
         FILE_SYNCHRONOUS_IO_NONALERT_);
+      if (st < 0) and (RtlNtStatusToDosError(st) = ERROR_ACCESS_DENIED) then
+        st := NtOpenFile(@child, DELETE_ or SYNCHRONIZE_ or
+          FILE_READ_ATTRIBUTES_, @oa, @iosb,
+          FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE_,
+          FILE_OPEN_REPARSE_POINT_ or FILE_OPEN_FOR_BACKUP_INTENT_ or
+          FILE_SYNCHRONOUS_IO_NONALERT_);
       if st < 0 then
       begin
         code := RtlNtStatusToDosError(st);
@@ -1497,7 +1563,10 @@ begin
     end;
     code := fpGetErrno;
     if code = ESysENOENT then Continue;       // le listing a vieilli
-    if (code <> ESysENOTDIR) and (code <> ESysELOOP) then
+    // EACCES: un fichier qu'on ne peut pas lire se supprime quand meme, par
+    // son dossier; un dossier qu'on ne peut pas lire, lui, reste et le dit.
+    if (code <> ESysENOTDIR) and (code <> ESysELOOP) and (code <> ESysEACCES)
+    then
     begin
       AErr := LastErr('Deleting', LocalJoin(APath, name));
       Exit;
@@ -1521,8 +1590,9 @@ var
   attrs: TByHandleFileInformation;
   disp: TFileDispositionInfo;
   {$ELSE}
-  fd: cint;
+  fd, parentFd: cint;
   st: Stat;
+  base: string;
   {$ENDIF}
 begin
   Result := False;
@@ -1565,30 +1635,42 @@ begin
     CloseHandle(h);
   end;
   {$ELSE}
-  fd := fpOpen(PChar(LocalNormalize(APath)),
-    O_RDONLY or O_NOFOLLOW or O_DIRECTORY or O_CLOEXEC_);
-  if fd < 0 then
+  // La racine aussi est ouverte et retiree RELATIVEMENT a son parent: un
+  // renommage concurrent ne fait pas viser un autre dossier.
+  base := LocalBaseName(APath);
+  parentFd := fpOpen(PChar(LocalNormalize(LocalParent(APath))),
+    O_RDONLY or O_DIRECTORY or O_CLOEXEC_);
+  if parentFd < 0 then
   begin
     AErr := LastErr('Deleting folder', APath);
     Exit;
   end;
   try
-    if (fpFStat(fd, st) <> 0) or (not fpS_ISDIR(st.st_mode)) then
+    fd := OpenDirAt(parentFd, base);
+    if fd < 0 then
     begin
-      AErr := MakeScpError(sekOutsideRoot, 'Deleting folder',
-        DisplaySafeName(APath), 'the folder changed while it was being deleted');
+      AErr := LastErr('Deleting folder', APath);
       Exit;
     end;
-    if not EmptyDirByFd(fd, APath, 0, AErr) then Exit;
+    try
+      if (fpFStat(fd, st) <> 0) or (not fpS_ISDIR(st.st_mode)) then
+      begin
+        AErr := MakeScpError(sekOutsideRoot, 'Deleting folder',
+          DisplaySafeName(APath),
+          'the folder changed while it was being deleted');
+        Exit;
+      end;
+      if not EmptyDirByFd(fd, APath, 0, AErr) then Exit;
+    finally
+      fpClose(fd);
+    end;
+    if UnlinkAt(parentFd, base, True) <> 0 then
+    begin
+      AErr := LastErr('Deleting folder', APath);
+      Exit;
+    end;
   finally
-    fpClose(fd);
-  end;
-  // rmdir ne suit pas un lien et ne retire qu'un dossier VIDE: par le chemin,
-  // c'est sans risque.
-  if fpRmdir(PChar(LocalNormalize(APath))) <> 0 then
-  begin
-    AErr := LastErr('Deleting folder', APath);
-    Exit;
+    fpClose(parentFd);
   end;
   {$ENDIF}
   Result := True;
