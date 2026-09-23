@@ -43,3 +43,5 @@ Thumbs.db
 *.exe
 *.dmg
 
+# Notes de travail, pas de la documentation du projet
+CAHIER_DES_CHARGES_SCP_V2.md
