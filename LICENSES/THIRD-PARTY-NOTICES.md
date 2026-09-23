@@ -8,7 +8,7 @@ RottenSSHrimp is distributed under GPL-3.0-or-later (see GPL-3.0-or-later.txt).
 |---|---|---|---|
 | Monaspace Frozen, 5 families x 4 styles (20 TTF) | frozen assets | SIL OFL 1.1 | Monaspace-OFL-1.1.txt |
 | JetBrainsMono NL Nerd Font Mono, 4 styles (4 TTF) | 2.304 / Nerd Fonts 3.5.1 | SIL OFL 1.1 | JetBrainsMono-OFL-1.1.txt |
-| Tabler Icons (monochrome tree icons) | 3.x | MIT | Tabler-MIT.txt |
+| Tabler Icons (monochrome tree and transfer icons) | 3.x | MIT | Tabler-MIT.txt |
 | Papirus icon theme (colour tree icons) | 20250501 | GPL-3.0 | GPL-3.0-or-later.txt |
 | Lazarus LCL | 4.x | modified LGPL with linking exception | FPC-LCL-modified-LGPL.txt |
 
@@ -172,15 +172,22 @@ from the Nerd Fonts release. It is offered as a terminal font next to the
 Monaspace families (Tools > Terminal Font). Its licence text is in
 JetBrainsMono-OFL-1.1.txt.
 
-## Tree node icons
+## Tree node and file transfer icons
 
-Two icon sets are embedded as binary resources. `icons/README.md` maps each
-source directory to its upstream project; this section is the licence side of
-the same story.
+Two upstream projects are embedded as binary resources. `icons/README.md` maps
+each source directory to its upstream project; this section is the licence side
+of the same story.
 
-**Tabler Icons** (https://tabler.io/icons), MIT. The 126 monochrome sources in
-`icons/folders`, `icons/hosts` and `icons/extended-set`, recoloured to
-black-background and white-background variants and resized to 16/24/32/48 px.
+**Tabler Icons** (https://tabler.io/icons), MIT. 141 monochrome sources, in two
+groups and modified in two different ways:
+
+- the 126 in `icons/folders`, `icons/hosts` and `icons/extended-set`,
+  recoloured to black-background and white-background variants and resized to
+  16/24/32/48 px;
+- the 15 in `icons/transfer`, reduced to a white alpha mask and resized to
+  twelve sizes from 12 to 64 px. The colour is applied when the file transfer
+  tab draws them, so no coloured variant is shipped.
+
 The MIT license permits modification and redistribution; its notice is kept in
 Tabler-MIT.txt.
 
@@ -232,10 +239,11 @@ and must be distributed (or offered) with any binary release:
 
 | Item | Why it is required |
 |---|---|
-| `scripts/gen-tree-icons.lpr` | Generates every embedded icon resource from the sources below. Without it the resources cannot be regenerated. |
+| `scripts/gen-icons.lpr` | Generates every embedded icon resource from the sources below. Without it the resources cannot be regenerated. |
 | `scripts/gen-vnc-offsets.c` | Generates the verified `rfbClient` struct offsets used by the libvncclient binding. Without it those offsets cannot be re-derived for another libvncclient build, and the binding cannot be safely modified. |
 | `scripts/build-libvnc.sh`, `third_party/libvnc/patches/`, `third_party/libvnc/SHA256SUMS` | Corresponding source of the **embedded, modified** `libvncclient`: the pinned tarball hash, our two security patches, and the exact build recipe. See "libvncclient and the GPL-3 question" above. |
 | `icons/folders`, `icons/hosts`, `icons/extended-set` | Monochrome icon sources (Tabler) consumed by that script. 126 files, of which 85 are the extended set. |
+| `icons/transfer` | Monochrome icon sources (Tabler) for the file transfer tab, consumed by that script. 15 files. |
 | `icons/folders-dark`, `icons/folders-light`, `icons/hosts-dark`, `icons/hosts-light` | Colour icon sources (Papirus) consumed by that script. |
 | `icons/README.md` | States the provenance and licence of each source directory. |
 | `scripts/build.sh`, `scripts/make-app.sh`, `dist/` | Build and packaging scripts. |
@@ -284,7 +292,7 @@ Two points to keep straight:
   already declared above under GPL-3.0 section 5a.
 
 The authoritative build input remains the PNG set committed to this
-repository: it is what `scripts/gen-tree-icons.lpr` consumes, and it is the
+repository: it is what `scripts/gen-icons.lpr` consumes, and it is the
 form in which this project actually works on the icons. That set, plus this
 pin, is what a redistributor needs.
 

@@ -1,4 +1,4 @@
-// GENERE par scripts/gen-tree-icons.lpr -- NE PAS EDITER.
+// GENERE par scripts/gen-icons.lpr -- NE PAS EDITER.
 // Identifiants d'icones (= noms de fichiers). Stables:
 // stockes dans nodes.icon_id.
 const

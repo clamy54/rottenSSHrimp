@@ -1,21 +1,22 @@
-{ Icones de l'onglet Scp, DESSINEES et non embarquees.
+{ Icones de l'onglet Scp, de deux origines: des PNG embarques
+  (XFER_<ID>_<TAILLE>), produits par scripts/gen-icons.lpr, et quelques traces
+  a la main pour ce dont aucune source n'existe.
 
-  Pourquoi pas des PNG comme les icones d'arborescence: celles-la sont un
-  catalogue que l'utilisateur choisit, stocke dans nodes.icon_id, et il est
-  juste qu'elles vivent dans resources/. Celles-ci sont des elements de
-  chrome -- une fleche d'envoi, une corbeille, une pause. Les embarquer en
-  trois tailles et deux variantes de fond ajouterait cent-vingt fichiers pour
-  vingt dessins, et il faudrait quand meme les reechantillonner aux echelles
-  intermediaires (125 %, 175 %), ce qui est exactement le flou qu'on veut
-  eviter.
+  Les PNG sont des MASQUES, et l'encre est posee ici parce que sa couleur
+  PORTE un sens: un lien s'affiche a la couleur d'accent, un fichier special en
+  avertissement, une ligne selectionnee a la couleur du texte de selection. Une
+  paire figee ondark/onlight aurait efface ces distinctions. Le fond suit la
+  meme logique: la composition se fait en logiciel, sur la couleur que
+  l'appelant vient de peindre, ce qui evite de dependre du sens que chaque
+  widgetset donne a l'alpha d'un bitmap.
 
-  Dessinees, elles sont nettes a toutes les echelles, prennent la couleur du
-  theme sans variante ondark/onlight, et ne demandent aucune entree au
-  fichier d'attribution.
+  Douze tailles sont fournies, et non trois: le rectangle demande suit la
+  hauteur de ligne, donc la police, et ne tombe pas sur une echelle ronde. Le
+  dessin prend la plus grande taille qui TIENT et la centre, sans jamais
+  etirer.
 
-  Geometrie de style Tabler: grille de 24, trait de 2, extremites carrees,
-  coins arrondis de 2. Les coordonnees ci-dessous sont dans cette grille de 24
-  et sont mises a l'echelle du rectangle demande.
+  Geometrie de style Tabler pour les traces: grille de 24, trait de 2,
+  extremites carrees, coins arrondis de 2.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -58,19 +59,25 @@ type
     siCopy,
     siServer,
     siSettings,
-    siReveal);
+    siReveal,
+    siSortAsc,
+    siSortDesc);
 
-// Dessine AIcon centree dans ARect, a la couleur AColor. Le trait s'epaissit
-// avec la taille: a 16 px il fait 1 px, a 32 px il en fait 2, et il reste
-// entier -- un trait fractionnaire est ce qui rend une icone floue.
+// Dessine AIcon centree dans ARect, a l'encre AColor, sur le fond ABg.
+//
+// ABg doit etre la couleur que l'appelant vient de peindre SOUS ce rectangle:
+// les icones embarquees y sont composees, et un fond faux se voit comme un
+// lisere autour du trait. Les icones tracees l'ignorent; leur trait s'epaissit
+// avec la taille et reste ENTIER, un trait fractionnaire etant flou.
 procedure DrawScpIcon(ACanvas: TCanvas; const ARect: TRect;
-  AIcon: TScpIcon; AColor: TColor);
-
-// Taille d'icone conseillee pour un DPI donne. Multiples entiers de 8:
-// l'echelle reste rationnelle et le trait tombe sur des pixels.
-function ScpIconSize(APixelsPerInch: Integer): Integer;
+  AIcon: TScpIcon; AColor, ABg: TColor);
 
 implementation
+
+uses
+  LCLType, IntfGraphics, FPImage;
+
+{$I uScpIconCatalog.inc}
 
 type
   TPt = record
@@ -81,18 +88,6 @@ function P(AX, AY: Double): TPt; inline;
 begin
   Result.X := AX;
   Result.Y := AY;
-end;
-
-function ScpIconSize(APixelsPerInch: Integer): Integer;
-begin
-  if APixelsPerInch >= 192 then
-    Result := 32
-  else if APixelsPerInch >= 144 then
-    Result := 24
-  else if APixelsPerInch >= 120 then
-    Result := 20
-  else
-    Result := 16;
 end;
 
 type
@@ -360,14 +355,171 @@ begin
         Line(A, 11, 13, 20, 4);
         Poly(A, [P(14, 4), P(20, 4), P(20, 10)], False);
       end;
+    siSortAsc:
+      begin
+        Line(A, 12, 20, 12, 6);
+        Poly(A, [P(7, 11), P(12, 6), P(17, 11)], False);
+      end;
+    siSortDesc:
+      begin
+        Line(A, 12, 4, 12, 18);
+        Poly(A, [P(7, 13), P(12, 18), P(17, 13)], False);
+      end;
   end;
 end;
 
+// --- Jeu embarque -----------------------------------------------------
+
+type
+  TIconCacheItem = class
+    Bmp: TBitmap;      // nil = ressource absente, constatee une seule fois
+    destructor Destroy; override;
+  end;
+
+var
+  GCache: TStringList = nil;
+
+destructor TIconCacheItem.Destroy;
+begin
+  Bmp.Free;
+  inherited Destroy;
+end;
+
+// L'identifiant de la source pour cette icone, '' si elle est tracee.
+function XferIdFor(AIcon: TScpIcon): string;
+begin
+  case AIcon of
+    siFolder:     Result := 'folder';
+    siFolderOpen: Result := 'folder-open';
+    siFile:       Result := 'file';
+    siLink:       Result := 'link';
+    siHome:       Result := 'home-2';
+    siParent:     Result := 'folder-up';
+    siBack:       Result := 'arrow-narrow-left';
+    siForward:    Result := 'arrow-narrow-right';
+    siRefresh:    Result := 'refresh';
+    siNewFolder:  Result := 'folder-plus';
+    siCopy:       Result := 'fullpath';
+    siUpload:     Result := 'upload';
+    siDownload:   Result := 'download';
+    siSortAsc:    Result := 'arrow-narrow-up';
+    siSortDesc:   Result := 'arrow-narrow-down';
+  else
+    Result := '';
+  end;
+end;
+
+// La plus grande taille FOURNIE qui tient dans ABox, 0 si aucune: la plus
+// proche ferait deborder l'icone sur le texte.
+function PickXferSize(ABox: Integer): Integer;
+var
+  i: Integer;
+begin
+  Result := 0;
+  for i := Low(XFER_ICON_SIZES) to High(XFER_ICON_SIZES) do
+    if XFER_ICON_SIZES[i] <= ABox then
+      Result := XFER_ICON_SIZES[i];
+end;
+
+function MixChannel(AInk, ABg: Word; ACoverage: Word): Word; inline;
+begin
+  Result := Word((QWord(AInk) * ACoverage +
+    QWord(ABg) * (65535 - ACoverage)) div 65535);
+end;
+
+// Compose le masque sur ABg a l'encre AInk. nil = ressource absente, et
+// l'appelant retombe sur le trace.
+function BuildXferIcon(const AId: string; ASize: Integer;
+  AInk, ABg: TColor): TBitmap;
+var
+  res: TResourceStream;
+  png: TPortableNetworkGraphic;
+  img: TLazIntfImage;
+  x, y: Integer;
+  c, ink, bg: TFPColor;
+  cov: Word;
+begin
+  Result := nil;
+  try
+    res := TResourceStream.Create(HInstance,
+      'XFER_' + UpperCase(StringReplace(AId, '-', '_', [rfReplaceAll])) +
+      '_' + IntToStr(ASize), RT_RCDATA);
+  except
+    Exit;
+  end;
+  png := TPortableNetworkGraphic.Create;
+  try
+    try
+      png.LoadFromStream(res);
+    finally
+      res.Free;
+    end;
+    ink := TColorToFPColor(ColorToRGB(AInk));
+    bg := TColorToFPColor(ColorToRGB(ABg));
+    img := png.CreateIntfImage;
+    try
+      for y := 0 to img.Height - 1 do
+        for x := 0 to img.Width - 1 do
+        begin
+          // L'alpha de la source EST la couverture du trait, et la seule chose qu'on
+          // lui prend: sa couleur blanche ne fait que la porter.
+          cov := img.Colors[x, y].Alpha;
+          c.Red := MixChannel(ink.Red, bg.Red, cov);
+          c.Green := MixChannel(ink.Green, bg.Green, cov);
+          c.Blue := MixChannel(ink.Blue, bg.Blue, cov);
+          c.Alpha := alphaOpaque;
+          img.Colors[x, y] := c;
+        end;
+      Result := TBitmap.Create;
+      try
+        Result.LoadFromIntfImage(img);
+      except
+        FreeAndNil(Result);
+      end;
+    finally
+      img.Free;
+    end;
+  finally
+    png.Free;
+  end;
+end;
+
+function CachedXferIcon(const AId: string; ASize: Integer;
+  AInk, ABg: TColor): TBitmap;
+var
+  key: string;
+  idx: Integer;
+  item: TIconCacheItem;
+begin
+  key := Format('%s|%d|%.8x|%.8x', [AId, ASize, ColorToRGB(AInk),
+    ColorToRGB(ABg)]);
+  if GCache = nil then
+  begin
+    GCache := TStringList.Create;
+    GCache.Sorted := True;
+    GCache.Duplicates := dupIgnore;
+    GCache.OwnsObjects := True;
+  end;
+  idx := GCache.IndexOf(key);
+  if idx >= 0 then
+    Exit(TIconCacheItem(GCache.Objects[idx]).Bmp);
+  // Un changement de theme laisse les entrees de l'ancien: peu nombreuses,
+  // mais elles s'accumulent sur une longue session.
+  if GCache.Count > 512 then
+    GCache.Clear;
+  item := TIconCacheItem.Create;
+  item.Bmp := BuildXferIcon(AId, ASize, AInk, ABg);
+  GCache.AddObject(key, item);
+  Result := item.Bmp;
+end;
+
 procedure DrawScpIcon(ACanvas: TCanvas; const ARect: TRect;
-  AIcon: TScpIcon; AColor: TColor);
+  AIcon: TScpIcon; AColor, ABg: TColor);
 var
   pen: TIconPen;
-  side: Integer;
+  side, sz: Integer;
+  id: string;
+  bmp: TBitmap;
   oldPenColor, oldBrushColor: TColor;
   oldPenWidth: Integer;
   oldBrushStyle: TBrushStyle;
@@ -377,6 +529,23 @@ begin
   side := ARect.Right - ARect.Left;
   if (ARect.Bottom - ARect.Top) < side then side := ARect.Bottom - ARect.Top;
   if side < 6 then Exit;
+
+  id := XferIdFor(AIcon);
+  if id <> '' then
+  begin
+    sz := PickXferSize(side);
+    if sz > 0 then
+    begin
+      bmp := CachedXferIcon(id, sz, AColor, ABg);
+      if bmp <> nil then
+      begin
+        ACanvas.Draw(ARect.Left + ((ARect.Right - ARect.Left) - sz) div 2,
+          ARect.Top + ((ARect.Bottom - ARect.Top) - sz) div 2, bmp);
+        Exit;
+      end;
+    end;
+    // Ressource absente ou rectangle trop petit: le trace vaut mieux qu'un trou.
+  end;
 
   oldPenColor := ACanvas.Pen.Color;
   oldPenWidth := ACanvas.Pen.Width;
@@ -406,5 +575,8 @@ begin
     ACanvas.Brush.Style := oldBrushStyle;
   end;
 end;
+
+finalization
+  FreeAndNil(GCache);
 
 end.

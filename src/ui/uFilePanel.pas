@@ -605,25 +605,39 @@ var
   idx: Integer;
 
   procedure Head(ACol: TFileSortColumn; const ACaption: string);
+  var
+    bg: TColor;
+    arrowBox, arrowX: Integer;
   begin
     if FColWidths[ACol] <= 0 then Exit;
     w := FColWidths[ACol];
     r := Rect(x, 0, x + w, FHeaderHeight);
+    bg := clPanelHeader;
     if idx = FHoverHeader then
     begin
-      Canvas.Brush.Color := BlendColor(clPanelHeader, clAppFg, 88);
+      bg := BlendColor(clPanelHeader, clAppFg, 88);
+      Canvas.Brush.Color := bg;
       Canvas.FillRect(r);
     end;
     headText := ACaption;
-    // La fleche de tri porte le sens: une colonne sans fleche n'est pas celle
-    // qui trie, et l'utilisateur n'a pas a s'en souvenir.
-    if FSortCol = ACol then
-      if FSortDesc then headText := headText + '  v'
-      else headText := headText + '  ^';
     Canvas.Font.Color := clPanelHeaderText;
     Canvas.TextRect(Rect(x + PANEL_PAD, 0, x + w - 2, FHeaderHeight),
       x + PANEL_PAD, (FHeaderHeight - Canvas.TextHeight('Wg')) div 2,
       headText);
+    // La fleche porte le sens du tri. Omise plutot que rognee si la colonne est
+    // trop etroite: une demi fleche ne dit plus ou elle pointe.
+    if FSortCol = ACol then
+    begin
+      arrowBox := FHeaderHeight - 6;
+      arrowX := x + PANEL_PAD + Canvas.TextWidth(headText) + 2;
+      if arrowX + arrowBox <= x + w - 2 then
+        if FSortDesc then
+          DrawScpIcon(Canvas, Rect(arrowX, 3, arrowX + arrowBox,
+            3 + arrowBox), siSortDesc, clPanelHeaderText, bg)
+        else
+          DrawScpIcon(Canvas, Rect(arrowX, 3, arrowX + arrowBox,
+            3 + arrowBox), siSortAsc, clPanelHeaderText, bg);
+    end;
     Canvas.Pen.Color := clPanelGrid;
     Canvas.Line(x + w - 1, 2, x + w - 1, FHeaderHeight - 2);
     Inc(x, w);
@@ -654,7 +668,7 @@ var
   e: TScpEntry;
   sel: Boolean;
   x, w, iconBox, textTop: Integer;
-  fg: TColor;
+  fg, rowBg: TColor;
   s: string;
   r: TRect;
   drop, parentRow: Boolean;
@@ -688,18 +702,19 @@ begin
   if drop then
     // Le dossier vise par le lacher, distinct de la selection: l'un dit OU, et
     // l'autre QUOI.
-    Canvas.Brush.Color := BlendColor(clAccent, clPanelBg, 40)
+    rowBg := BlendColor(clAccent, clPanelBg, 40)
   else if sel then
   begin
     if FPanelActive then
-      Canvas.Brush.Color := clSelActive
+      rowBg := clSelActive
     else
-      Canvas.Brush.Color := clSelInactive;
+      rowBg := clSelInactive;
   end
   else if Odd(AIndex) then
-    Canvas.Brush.Color := clPanelAltRow
+    rowBg := clPanelAltRow
   else
-    Canvas.Brush.Color := clPanelBg;
+    rowBg := clPanelBg;
+  Canvas.Brush.Color := rowBg;
   Canvas.Brush.Style := bsSolid;
   Canvas.FillRect(r);
   Canvas.Brush.Style := bsClear;
@@ -719,10 +734,10 @@ begin
   iconBox := FRowHeight - 4;
   if parentRow then
     DrawScpIcon(Canvas, Rect(PANEL_PAD, AY + 2, PANEL_PAD + iconBox,
-      AY + 2 + iconBox), siParent, fg)
+      AY + 2 + iconBox), siParent, fg, rowBg)
   else
     DrawScpIcon(Canvas, Rect(PANEL_PAD, AY + 2, PANEL_PAD + iconBox,
-      AY + 2 + iconBox), EntryIcon(e), fg);
+      AY + 2 + iconBox), EntryIcon(e), fg, rowBg);
 
   x := 0;
   w := FColWidths[fscName];
@@ -1507,7 +1522,7 @@ procedure TFilePanel.ToolbarPaint(Sender: TObject);
 var
   i, size, step, x: Integer;
   r: TRect;
-  ink: TColor;
+  ink, bg: TColor;
 begin
   FToolbar.Canvas.Brush.Color := clPanelBg;
   FToolbar.Canvas.Brush.Style := bsSolid;
@@ -1522,16 +1537,20 @@ begin
     // icone qui bouge d'un pixel a l'air d'un defaut d'affichage.
     if i = FPressedButton then
     begin
-      FToolbar.Canvas.Brush.Color := clSelActive;
+      bg := clSelActive;
+      FToolbar.Canvas.Brush.Color := bg;
       FToolbar.Canvas.FillRect(r);
     end
     else if i = FHoverButton then
     begin
-      FToolbar.Canvas.Brush.Color := clSideHover;
+      bg := clSideHover;
+      FToolbar.Canvas.Brush.Color := bg;
       FToolbar.Canvas.FillRect(r);
-    end;
+    end
+    else
+      bg := clPanelBg;
     if i = FPressedButton then ink := clSelText else ink := clAppFg;
-    DrawScpIcon(FToolbar.Canvas, r, ButtonIcon(i), ink);
+    DrawScpIcon(FToolbar.Canvas, r, ButtonIcon(i), ink, bg);
   end;
 end;
 

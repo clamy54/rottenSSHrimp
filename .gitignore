@@ -5,6 +5,7 @@ rottensshrimp
 rottensshrimp.exe
 RottenSSHrimp.app/
 app/rottensshrimp.res
+tests/rsshscpsmoke.res
 app/rottensshrimp.lps
 *.ppu
 *.o

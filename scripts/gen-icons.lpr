@@ -1,9 +1,17 @@
-program gentreeicons;
+program genicons;
 
 {$mode objfpc}{$H+}
 
-// Genere le catalogue d'icones d'arborescence. Trois GROUPES (dossiers, hotes,
-// etendu), et pour chacun deux sortes de sources:
+// Genere les icones embarquees: le catalogue d'ARBORESCENCE et le jeu de
+// l'onglet de TRANSFERT DE FICHIERS. Les deux partent des memes sources
+// Tabler et du meme reechantillonnage; ce qui les separe est ce qu'on en
+// fait a l'arrivee.
+//
+//
+// A) Arborescence -> resources/icons/tree/, ressources TREE_<ID>_<VARIANTE>_<N>
+//
+// Trois GROUPES (dossiers, hotes, etendu), et pour chacun deux sortes de
+// sources:
 //
 //   1) monochrome    icons/folders/       icons/hosts/
 //      Trace sombre sur fond transparent. On en derive les deux variantes en
@@ -16,8 +24,25 @@ program gentreeicons;
 //      sombre), et non la couleur du trace.
 //
 //
+//
+// B) Transfert -> resources/icons/transfer/, ressources XFER_<ID>_<N>
+//
+// Source monochrome unique, dans icons/transfer/. Une seule variante est
+// produite, et non une paire ondark/onlight: ce sont des MASQUES. Le blanc
+// n'est la que pour porter l'alpha; l'encre est posee au dessin, a la
+// couleur que le panneau donne a la ligne. Il le faut: un lien s'affiche a
+// la couleur d'accent, un fichier special en avertissement, une entree sans
+// attributs en secondaire. Deux variantes figees rendraient ces couleurs,
+// et avec elles ce qu'elles disent, impossibles.
+//
+// Les tailles y sont plus nombreuses et plus serrees que pour
+// l'arborescence, parce que le rectangle demande suit la hauteur de ligne et
+// la hauteur de barre, qui suivent la police. Le dessin choisit la plus
+// grande taille qui tient et la CENTRE: jamais d'etirement, donc jamais de
+// flou.
+//
 // Outil de build uniquement. Ne depend que de la FCL:
-//   fpc -O2 scripts/gen-tree-icons.lpr && scripts/gen-tree-icons
+//   fpc -O2 scripts/gen-icons.lpr && scripts/gen-icons
 
 uses
   SysUtils, Classes, Math,
@@ -31,6 +56,13 @@ type
 const
   SIZES: array[0..3] of Integer = (16, 24, 32, 48);
 
+  // Echelle serree: le dessin prend la plus grande qui tient dans le
+  // rectangle, sans etirer. Un trou dans l'echelle se verrait comme une
+  // icone trop petite a cote de son texte.
+  XFER_SIZES: array[0..11] of Integer = (12, 14, 16, 18, 20, 22, 24, 28, 32,
+    40, 48, 64);
+  XFER_DIR = 'transfer';
+
   ONDARK  = 'ondark';    // affichee sur fond sombre
   ONLIGHT = 'onlight';   // affichee sur fond clair
 
@@ -43,6 +75,8 @@ const
 
 var
   Root, IconsDir, DstDir, IncFile, LpiFile: string;
+  XferDstDir, XferIncFile, SmokeLpiFile: string;
+  XferIds: TStringList;
   Entries: TStringList;      // 'RESNAME'=chemin relatif au depot
   Seen: TStringList;         // id=groupe
   Skipped: TStringList;      // id=groupe proprietaire
@@ -245,6 +279,12 @@ begin
      UpperCase(AVariant), ASize]);
 end;
 
+function XferResName(const AIconId: string; ASize: Integer): string;
+begin
+  Result := Format('XFER_%s_%d',
+    [UpperCase(StringReplace(AIconId, '-', '_', [rfReplaceAll])), ASize]);
+end;
+
 function Listing(const ASubDir: string; ARequired: Boolean;
   out ADir: string): TStringList;
 var
@@ -287,6 +327,26 @@ begin
       SavePng(scaled, DstDir + name);
       Entries.Add(ResName(AIconId, AVariant, SIZES[i]) + '=' +
         'resources/icons/tree/' + name);
+    finally
+      scaled.Free;
+    end;
+  end;
+end;
+
+procedure EmitXfer(AImg: TFPCustomImage; const AIconId: string);
+var
+  i: Integer;
+  scaled: TFPMemoryImage;
+  name: string;
+begin
+  for i := Low(XFER_SIZES) to High(XFER_SIZES) do
+  begin
+    scaled := Resample(AImg, XFER_SIZES[i]);
+    try
+      name := Format('%s_%d.png', [AIconId, XFER_SIZES[i]]);
+      SavePng(scaled, XferDstDir + name);
+      Entries.Add(XferResName(AIconId, XFER_SIZES[i]) + '=' +
+        'resources/icons/transfer/' + name);
     finally
       scaled.Free;
     end;
@@ -355,7 +415,7 @@ procedure WriteInc;
 var
   s: string;
 begin
-  s := '// GENERE par scripts/gen-tree-icons.lpr -- NE PAS EDITER.'#10 +
+  s := '// GENERE par scripts/gen-icons.lpr -- NE PAS EDITER.'#10 +
        '// Identifiants d''icones (= noms de fichiers). Stables:'#10 +
        '// stockes dans nodes.icon_id.'#10 +
        'const'#10 +
@@ -363,6 +423,41 @@ begin
        PascalArray('TREE_HOST_IDS', GroupIds[1]) +
        PascalArray('TREE_EXTENDED_IDS', GroupIds[2]);
   WriteTextKeepingEol(IncFile, s);
+end;
+
+function IntArray(const AName: string;
+  const AValues: array of Integer): string;
+var
+  i: Integer;
+  body: string;
+begin
+  body := '';
+  for i := Low(AValues) to High(AValues) do
+  begin
+    if i > Low(AValues) then
+      body := body + ',';
+    if ((i - Low(AValues)) mod 8) = 0 then
+      body := body + #10'    '
+    else if i > Low(AValues) then
+      body := body + ' ';
+    body := body + IntToStr(AValues[i]);
+  end;
+  Result := Format('  %s: array[0..%d] of Integer = (%s);'#10,
+    [AName, High(AValues) - Low(AValues), body]);
+end;
+
+procedure WriteXferInc;
+var
+  s: string;
+begin
+  s := '// GENERE par scripts/gen-icons.lpr -- NE PAS EDITER.'#10 +
+       '// Jeu de l''onglet de transfert. Les identifiants nomment les'#10 +
+       '// ressources XFER_<ID>_<TAILLE>; les tailles sont celles qui'#10 +
+       '// existent reellement, et le dessin ne choisit que parmi elles.'#10 +
+       'const'#10 +
+       PascalArray('XFER_ICON_IDS', XferIds) +
+       IntArray('XFER_ICON_SIZES', XFER_SIZES);
+  WriteTextKeepingEol(XferIncFile, s);
 end;
 
 function ReadWholeFile(const AFile: string): string;
@@ -393,7 +488,27 @@ begin
   Result := Copy(ALine, p, q - p);
 end;
 
-procedure PatchLpi;
+// Insere un bloc <Resources> vide si le projet n'en a pas encore. Il vit
+// dans <General>, juste avant sa fermeture.
+function WithResourcesBlock(const AText, AEol: string): string;
+var
+  p: Integer;
+begin
+  Result := AText;
+  if Pos('<Resources Count="', Result) > 0 then Exit;
+  p := Pos('</General>', Result);
+  if p = 0 then
+    Die('bloc <General> introuvable: impossible d''y poser les ressources');
+  Result := Copy(Result, 1, p - 1) +
+    '<Resources Count="0">' + AEol + '      </Resources>' + AEol + '      ' +
+    Copy(Result, p, Length(Result) - p + 1);
+end;
+
+// AXferOnly: le projet ne recoit que le jeu de transfert. C'est le cas de la
+// suite de fumee, qui peint les memes panneaux que l'application et doit donc
+// peindre les memes icones -- sinon elle verifie un chemin de dessin que
+// personne n'emprunte.
+procedure PatchLpi(const AFile: string; AXferOnly: Boolean);
 var
   text, block, line: string;
   lines: TStringList;
@@ -401,20 +516,25 @@ var
   i, startPos, endPos: Integer;
   fn, rn, crlfEol: string;
   total: Integer;
+  mine: TStringList;
 begin
-  text := ReadWholeFile(LpiFile);
+  text := ReadWholeFile(AFile);
+  if Pos(#13#10, text) > 0 then crlfEol := #13#10 else crlfEol := #10;
+  text := WithResourcesBlock(text, crlfEol);
 
   startPos := Pos('<Resources Count="', text);
-  if startPos = 0 then
-    Die('bloc <Resources> introuvable dans ' + LpiFile);
   endPos := Pos('</Resources>', text);
   if (endPos = 0) or (endPos < startPos) then
-    Die('bloc </Resources> introuvable dans ' + LpiFile);
+    Die('bloc </Resources> introuvable dans ' + AFile);
   Inc(endPos, Length('</Resources>'));
 
   kept := TStringList.Create;
   lines := TStringList.Create;
+  mine := TStringList.Create;
   try
+    for i := 0 to Entries.Count - 1 do
+      if (not AXferOnly) or (Copy(Entries.Names[i], 1, 5) = 'XFER_') then
+        mine.Add(Entries[i]);
     lines.Text := Copy(text, startPos, endPos - startPos);
     for i := 0 to lines.Count - 1 do
     begin
@@ -425,31 +545,31 @@ begin
       rn := AttrValue(line, 'ResourceName');
       if (fn = '') or (rn = '') then Continue;
       if Copy(rn, 1, 5) = 'TREE_' then Continue;
+      if Copy(rn, 1, 5) = 'XFER_' then Continue;
       kept.Add(fn + '=' + rn);
     end;
 
-    if Pos(#13#10, text) > 0 then crlfEol := #13#10 else crlfEol := #10;
-
-    total := kept.Count + Entries.Count;
+    total := kept.Count + mine.Count;
     block := Format('<Resources Count="%d">', [total]);
     for i := 0 to kept.Count - 1 do
       block := block + crlfEol +
         Format('        <Resource_%d FileName="%s" Type="RCDATA" ResourceName="%s"/>',
           [i, kept.Names[i], kept.ValueFromIndex[i]]);
-    for i := 0 to Entries.Count - 1 do
+    for i := 0 to mine.Count - 1 do
       block := block + crlfEol +
         Format('        <Resource_%d FileName="../%s" Type="RCDATA" ResourceName="%s"/>',
-          [kept.Count + i, Entries.ValueFromIndex[i], Entries.Names[i]]);
+          [kept.Count + i, mine.ValueFromIndex[i], mine.Names[i]]);
     block := block + crlfEol + '      </Resources>';
 
     text := Copy(text, 1, startPos - 1) + block +
       Copy(text, endPos, Length(text) - endPos + 1);
   finally
+    mine.Free;
     lines.Free;
     kept.Free;
   end;
 
-  with TFileStream.Create(LpiFile, fmCreate) do
+  with TFileStream.Create(AFile, fmCreate) do
   try
     WriteBuffer(text[1], Length(text));
   finally
@@ -457,19 +577,51 @@ begin
   end;
 end;
 
-procedure ClearOldPngs;
+procedure ClearOldPngs(const ADir: string);
 var
   rec: TSearchRec;
 begin
-  ForceDirectories(DstDir);
-  if FindFirst(DstDir + '*', faAnyFile, rec) = 0 then
+  ForceDirectories(ADir);
+  if FindFirst(ADir + '*', faAnyFile, rec) = 0 then
   begin
     repeat
       if ((rec.Attr and faDirectory) = 0) and
          SameText(ExtractFileExt(rec.Name), '.png') then
-        DeleteFile(DstDir + rec.Name);
+        DeleteFile(ADir + rec.Name);
     until FindNext(rec) <> 0;
     FindClose(rec);
+  end;
+end;
+
+procedure ProcessTransfer;
+var
+  files: TStringList;
+  srcPath, iconId: string;
+  i: Integer;
+  src, mask: TFPMemoryImage;
+begin
+  files := Listing(XFER_DIR, True, srcPath);
+  try
+    for i := 0 to files.Count - 1 do
+    begin
+      iconId := Rid(files[i]);
+      src := LoadPng(srcPath + files[i]);
+      try
+        // Blanc plein sous l'alpha de la source: un masque, pas une couleur.
+        // L'encre est choisie au dessin.
+        mask := Recolor(src, $FFFF, $FFFF, $FFFF);
+        try
+          EmitXfer(mask, iconId);
+        finally
+          mask.Free;
+        end;
+      finally
+        src.Free;
+      end;
+      XferIds.Add(iconId);
+    end;
+  finally
+    files.Free;
   end;
 end;
 
@@ -581,28 +733,42 @@ begin
   IconsDir := Root + 'icons' + PathDelim;
   DstDir := Root + 'resources' + PathDelim + 'icons' + PathDelim + 'tree' +
     PathDelim;
+  XferDstDir := Root + 'resources' + PathDelim + 'icons' + PathDelim +
+    'transfer' + PathDelim;
   IncFile := Root + 'src' + PathDelim + 'ui' + PathDelim + 'uTreeIconCatalog.inc';
+  XferIncFile := Root + 'src' + PathDelim + 'ui' + PathDelim +
+    'uScpIconCatalog.inc';
   LpiFile := Root + 'app' + PathDelim + 'rottensshrimp.lpi';
+  SmokeLpiFile := Root + 'tests' + PathDelim + 'rsshscpsmoke.lpi';
 
   Entries := TStringList.Create;
   Seen := TStringList.Create;
   Skipped := TStringList.Create;
+  XferIds := TStringList.Create;
   try
-    ClearOldPngs;
+    ClearOldPngs(DstDir);
+    ClearOldPngs(XferDstDir);
     ProcessGroups;
+    ProcessTransfer;
     WriteInc;
-    PatchLpi;
+    WriteXferInc;
+    PatchLpi(LpiFile, False);
+    PatchLpi(SmokeLpiFile, True);
 
     for i := 0 to Skipped.Count - 1 do
       WriteLn(Format('collision ignoree: %s deja fourni par le groupe %s',
         [Skipped.Names[i], Skipped.ValueFromIndex[i]]));
-    WriteLn(Format('%d icones (%d folders + %d hosts + %d extended) x 2 ' +
-      'variantes x %d tailles -> %d PNG',
+    WriteLn(Format('arborescence: %d icones (%d folders + %d hosts + ' +
+      '%d extended) x 2 variantes x %d tailles',
       [Seen.Count, GroupIds[0].Count, GroupIds[1].Count, GroupIds[2].Count,
-       Length(SIZES), Entries.Count]));
+       Length(SIZES)]));
+    WriteLn(Format('transfert: %d icones x %d tailles',
+      [XferIds.Count, Length(XFER_SIZES)]));
+    WriteLn(Format('%d PNG au total', [Entries.Count]));
   finally
     for i := 0 to GROUP_COUNT - 1 do
       GroupIds[i].Free;
+    XferIds.Free;
     Skipped.Free;
     Seen.Free;
     Entries.Free;

@@ -26,20 +26,29 @@ to the `.lpi`. The scripts `cd` into `app/` for the duration of the build. Call
 fonts and icons, will not say so, and will hand you a perfectly successful
 build of an application with no icons. Enjoy discovering that at runtime.
 
-### Regenerating the tree icons (rarely)
+### Regenerating the icons (rarely)
 
-The 1288 icon PNGs under `resources/icons/` are committed, so a normal build
+The 1468 icon PNGs under `resources/icons/` are committed, so a normal build
 never touches them. If you add or change an icon in `icons/`, regenerate:
 
 ```sh
-fpc -O2 scripts/gen-tree-icons.lpr && scripts/gen-tree-icons
+fpc -O2 scripts/gen-icons.lpr && scripts/gen-icons
 ```
 
-It recolours the monochrome sources into their on-dark and on-light variants,
-resamples everything to 16/24/32/48, rewrites `uTreeIconCatalog.inc` and
-rewrites the `<Resources>` block of the `.lpi`. It depends on nothing but the
-FCL, so the toolchain you already installed to build the application is the
-whole requirement.
+One program, two sets. For the **tree** it recolours the monochrome sources
+into their on-dark and on-light variants and resamples to 16/24/32/48. For the
+**file transfer tab** it produces a single white-on-transparent mask per icon,
+across twelve sizes from 12 to 64, because that tab tints its icons at draw
+time and asks for whatever size the row height works out to. It then rewrites
+`uTreeIconCatalog.inc`, `uScpIconCatalog.inc` and the `<Resources>` block of
+both `app/rottensshrimp.lpi` and `tests/rsshscpsmoke.lpi` — the smoke suite
+paints the same panels, so it needs the same resources or it checks a fallback
+nobody sees. It depends on nothing but the FCL, so the toolchain you already
+installed to build the application is the whole requirement.
+
+The same "build from the project directory" rule applies to the smoke suite:
+`lazbuild` resolves resource paths against the current directory, so
+`scripts/run-tests.*` steps into `tests/` before building it.
 
 It carries its own Lanczos resampler rather than using `TFPBaseInterpolation`
 from the FCL, which accumulates into the destination `Word`: a filter with

@@ -182,17 +182,18 @@ var
   x, barX, pct, iconBox: Integer;
   r, barR: TRect;
   s: string;
-  fg: TColor;
+  fg, rowBg: TColor;
   textTop: Integer;
 begin
   it := FQueue.Items[AIndex];
   r := Rect(0, AY, ClientWidth, AY + FRowHeight);
   if (AIndex < Length(FSelected)) and FSelected[AIndex] then
-    Canvas.Brush.Color := clSelActive
+    rowBg := clSelActive
   else if Odd(AIndex) then
-    Canvas.Brush.Color := clPanelAltRow
+    rowBg := clPanelAltRow
   else
-    Canvas.Brush.Color := clPanelBg;
+    rowBg := clPanelBg;
+  Canvas.Brush.Color := rowBg;
   Canvas.Brush.Style := bsSolid;
   Canvas.FillRect(r);
   Canvas.Brush.Style := bsClear;
@@ -205,13 +206,13 @@ begin
   case it.Direction of
     tdUpload:
       DrawScpIcon(Canvas, Rect(x, AY + 3, x + iconBox, AY + 3 + iconBox),
-        siUpload, clAccent);
+        siUpload, clAccent, rowBg);
     tdDuplicateLocal, tdDuplicateRemote:
       DrawScpIcon(Canvas, Rect(x, AY + 3, x + iconBox, AY + 3 + iconBox),
-        siCopy, clAccent);
+        siCopy, clAccent, rowBg);
   else
     DrawScpIcon(Canvas, Rect(x, AY + 3, x + iconBox, AY + 3 + iconBox),
-      siDownload, clAccent);
+      siDownload, clAccent, rowBg);
   end;
   Inc(x, iconBox + PAD);
 
@@ -262,7 +263,7 @@ begin
   if StateIcon(it.State) <> siNone then
   begin
     DrawScpIcon(Canvas, Rect(x, AY + 3, x + iconBox, AY + 3 + iconBox),
-      StateIcon(it.State), StateColor(it.State));
+      StateIcon(it.State), StateColor(it.State), rowBg);
     Inc(x, iconBox + 4);
   end;
   s := TransferStateName(it.State);
