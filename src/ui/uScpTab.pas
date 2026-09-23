@@ -590,7 +590,7 @@ begin
   else
     mark := '';
   end;
-  Caption := mark + FDisplayName + ' — Scp';
+  Caption := mark + FDisplayName + ' — File transfer';
   if Assigned(FOnStatusChanged) then
     FOnStatusChanged(Self);
 end;
@@ -1126,7 +1126,8 @@ begin
   if not (FState in [rssFailed, rssDisconnected]) then Exit;
   if (not Assigned(FReconnectBuilder)) or (FModel = nil) then
   begin
-    Note('Close this tab and open Scp again on the host to reconnect.');
+    Note('Close this tab and open File Transfer again on the host to ' +
+      'reconnect.');
     Exit;
   end;
   params := nil;
@@ -1441,7 +1442,7 @@ begin
       [partials]);
   msg := msg + LineEnding + LineEnding +
     'No destination file has been replaced by an incomplete transfer.';
-  Result := QuestionDlg('Close Scp', msg, mtConfirmation,
+  Result := QuestionDlg('Close file transfer', msg, mtConfirmation,
     [mrCancel, 'Keep open', 'IsCancel', 'IsDefault',
      mrOK, 'Close anyway'], 0) = mrOK;
   if Result and (FTransport <> nil) then
@@ -1527,7 +1528,7 @@ end;
 
 function TScpTab.TabBarCaption: string;
 begin
-  Result := FDisplayName + ' — Scp';
+  Result := FDisplayName + ' — File transfer';
 end;
 
 function TScpTab.TabConnUuid: string;

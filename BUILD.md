@@ -51,7 +51,7 @@ into an opaque white pixel. Ask how that was discovered.
 Three of them, and they answer different questions.
 
 **Unit tests.** No network, no server, no LCL. They cover the layers of the
-Scp tab that can be reasoned about in isolation: path joining, normalisation
+File Transfer tab that can be reasoned about in isolation: path joining, normalisation
 and containment on both platforms, the rules that decide which filenames from a
 server are acceptable to act on, the transfer queue's state machine, and the
 transfer engine driven against fake filesystems that inject access denied,
@@ -73,7 +73,7 @@ place it can mean anything.
 
 Exit code is non-zero if anything fails, so it drops into CI unchanged.
 
-**A smoke test of the Scp tab.** A separate project because it needs the LCL,
+**A smoke test of the File Transfer tab.** A separate project because it needs the LCL,
 which the unit tests deliberately do not:
 
 ```sh
@@ -108,7 +108,7 @@ fpc -Mobjfpc -Sh -O1 -Fusrc/util -Fusrc/application -Fusrc/platform -Fusrc/sessi
 ./rsshsftpit <document.rsh> <password> <host-name-in-the-tree> [--big]
 ```
 
-It drives the *same* transport and the *same* engine the Scp tab uses, minus
+It drives the *same* transport and the *same* engine the File Transfer tab uses, minus
 the LCL, against a real server: connect, list, round-trip empty, small and
 large files, names with spaces, quotes, accents and a leading dash, a recursive
 tree, duplication in place on both sides, the three conflict resolutions,

@@ -2485,9 +2485,10 @@ begin
     except
       on EModelError do ;
     end;
-    // SFTP over SSH, sous le libelle « Scp » qu'attend l'utilisateur.
+    // SFTP over SSH. Le libelle dit ce que c'est, pas le nom d'un protocole
+    // que la fonctionnalite n'utilise pas.
     if CanOpenScp(FModel, ref.Uuid) then
-      Add('Scp', @ScpClick);
+      Add('File Transfer', @ScpClick);
     Add('-', nil);
     // ssh-copy-id sans terminal, si le credential est une cle geree
     if CanCopySshId(FModel, ref.Uuid) then

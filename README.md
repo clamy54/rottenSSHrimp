@@ -94,8 +94,8 @@ Or the firewall whose new rule you tested thoroughly, from the wrong side. Or
 the one remaining machine in that subnet still answering, which you are now
 going to use as a raft.
 
-**Scp.** Right-click an SSH host, *Scp*, and get a two-panel file manager in a
-tab: local on the left, remote on the right, a splitter between them, and
+**File transfer.** Right-click an SSH host, *File Transfer*, and get a
+two-panel file manager in a tab: local on the left, remote on the right, a splitter between them, and
 multi-select with Ctrl and Shift. Send a selection across by dragging it into
 the other panel -- drop it on a folder to go straight in -- or with F5, or with
 the arrow at the end of the panel's toolbar. Right-click for the same actions
@@ -106,9 +106,10 @@ its source's, never widened. If the connection drops, *Reconnect* replays the
 same prompts as opening the tab and interrupted transfers resume where they
 were confirmed.
 
-The menu says `Scp` because that is the word everyone reaches for. What goes
-over the wire is **SFTP over SSH**, which the tab header states in as many
-words, and there is no silent fallback to the historical SCP protocol. That
+The menu says *File Transfer* and means it. What goes over the wire is **SFTP
+over SSH**, which the tab header states in as many words, and there is no
+silent fallback to the historical SCP protocol (the name survives only in the
+source units). That
 protocol can send a file and receive a file; it cannot list a directory without
 someone parsing the output of `ls` and guessing about locales, spaces and
 quoting, and it has no honest way to cancel a transfer halfway. SFTP runs on

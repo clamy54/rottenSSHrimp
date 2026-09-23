@@ -1,4 +1,5 @@
-{ Lancement d'un onglet Scp depuis un noeud, sur le modele de uSshConnect.
+{ Lancement d'un onglet File Transfer (unites « Scp ») depuis un noeud, sur
+  le modele de uSshConnect.
 
   Les parametres de connexion sont construits par BuildSshConnectParams, le
   MEME que pour une session terminal: credentials, heritage de dossier, mots
@@ -29,7 +30,8 @@ function StartScpSession(APages: TPageControl; ADoc: TRshDocument;
   AModel: TRshModel; AManager: TSessionManager; const AConnUuid: string;
   ANotice: TSessionNoticeEvent; out AErr: string): TScpTab;
 
-// L'item `Scp` doit-il apparaitre pour ce noeud? Une seule connexion SSH,
+// L'item « File Transfer » doit-il apparaitre pour ce noeud? Une seule
+// connexion SSH,
 // et rien d'autre.
 function CanOpenScp(AModel: TRshModel; const AConnUuid: string): Boolean;
 
@@ -153,7 +155,8 @@ begin
     Exit;
   try
     if (tun <> nil) and Assigned(ANotice) then
-      ANotice(Format('%s: Scp via the SSH jump host.', [displayName]));
+      ANotice(Format('%s: file transfer via the SSH jump host.',
+        [displayName]));
 
     // La propriete passe a l'onglet DES l'appel: si le constructeur echoue c'est
     // lui qui libere, et un params.Free ici libererait une seconde fois.
