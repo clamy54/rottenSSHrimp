@@ -1045,14 +1045,12 @@ begin
   FQueueView.Refresh;
 end;
 
-// « Apply to all » et « Skip all similar » ne valent que pour leur propre lot,
-// et s'oublient AVANT de poster la commande: reveille, le fil de transfert peut
-// prendre le premier element du nouveau lot sur-le-champ, et lui appliquer la
-// decision de l'ancien -- ecraser sans demander, par exemple.
+// « Apply to all » et « Skip all similar » ne valent que pour leur propre lot:
+// chaque lot recoit son numero AVANT d'etre poste, et une decision prise plus
+// tard pour un lot encore en cours ne s'applique pas a celui-ci.
 procedure TScpTab.ForgetBatchDecisions;
 begin
-  FQueue.ClearConflictPolicy;
-  FQueue.ClearSkipKinds;
+  FQueue.BeginBatch;
 end;
 
 // Duplication sur place. Le nom libre n'est PAS choisi ici: le dossier peut

@@ -102,10 +102,13 @@ straight in -- or with F5, or with the arrow at the end of the panel's
 toolbar. Right-click for the same actions plus rename, duplicate and delete.
 Transfers are recursive, and a queue says what is happening; cancelling one
 stops it where it is and leaves the destination as it was. A replaced file
-keeps its permissions, a new one gets its source's read and write bits, never
-widened and never executable. If the
-connection drops, *Reconnect* replays the same prompts as opening the tab and
-interrupted transfers resume where they were confirmed.
+keeps its permissions -- on Windows its ACL; setuid, setgid and sticky bits
+are never carried onto new content -- and a new one gets its source's read
+and write bits, never widened and never executable. If the connection drops,
+*Reconnect* replays the same prompts as opening the tab; interrupted
+transfers resume where they were confirmed, once both ends are checked
+against what was written, and a folder whose listing was cut is scanned
+again.
 
 The menu says *File Transfer* and means it. What goes over the wire is **SFTP
 over SSH**, which the tab header states in as many words, and there is no
@@ -130,7 +133,10 @@ of deciding on your behalf.
 
 It also declines to guess in the other direction. A symbolic link is never
 followed during a recursive copy, so a link pointing at `/` cannot turn one
-folder into a copy of the whole disk. Sockets, pipes and devices are refused
+folder into a copy of the whole disk, and a recursive delete removes the link,
+not what it points at -- on the local disk every step is anchored to the
+folder already opened, a guarantee SFTP, which only knows paths, cannot give.
+Sockets, pipes and devices are refused
 rather than read as files. A remote filename containing a slash, a `..`, an
 ANSI escape sequence or a Windows reserved device name is refused with the
 reason, never quietly renamed into something that would land outside the

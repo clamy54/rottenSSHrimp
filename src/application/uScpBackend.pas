@@ -68,9 +68,6 @@ type
     // Distant ou local: change les regles de nommage, pas le protocole d'appel.
     function IsRemote: Boolean; virtual; abstract;
     function DisplayName: string; virtual; abstract;
-    // Relire un prefixe est-il bon marche ici? Sur un disque oui; sur une session
-    // distante cela coute ce que la reprise economise, et n'a plus de sens.
-    function CheapReRead: Boolean; virtual;
 
     // Annulation cooperative: le moteur l'interroge a chaque tour de boucle.
     function Canceled: Boolean; virtual; abstract;
@@ -96,6 +93,9 @@ type
     // --- Operations ---
     function MakeDir(const APath: string; out AErr: TScpError): Boolean;
       virtual; abstract;
+    // Ne remplace JAMAIS une cible existante. Seule entorse a la convention:
+    // True AVEC AErr rempli veut dire « publie sous ATo, mais AFrom n'a pas pu
+    // etre retire »; l'appelant garde alors AFrom dans ses partiels a nettoyer.
     function Rename(const AFrom, ATo: string; out AErr: TScpError): Boolean;
       virtual; abstract;
     // Remplacement ATOMIQUE d'une cible existante. False + sekUnsupported ou
@@ -141,10 +141,12 @@ type
       virtual; abstract;
 
     // --- Metadonnees ---
-    // Un echec remonte sekAttrRefused: AVERTISSEMENT, pas perte de contenu.
-    function SetMTime(const APath: string; AMTimeUtc: Int64;
+    // Par la POIGNEE, jamais par le chemin: une fois le temporaire ferme, son nom
+    // peut designer autre chose, pose par un tiers qui ecrit dans le dossier. Un
+    // echec remonte sekAttrRefused: AVERTISSEMENT, pas perte de contenu.
+    function SetMTime(AHandle: TScpFileHandle; AMTimeUtc: Int64;
       out AErr: TScpError): Boolean; virtual; abstract;
-    function SetMode(const APath: string; AMode: LongWord;
+    function SetMode(AHandle: TScpFileHandle; AMode: LongWord;
       out AErr: TScpError): Boolean; virtual; abstract;
 
     // --- Chemins: chaque cote a ses regles, jamais de concatenation nue ---
@@ -162,18 +164,13 @@ type
 // lisible par tous, inscriptible par son seul proprietaire, jamais executable.
 // Une source qui en annonce un le voit repris sans ecriture pour tous, sans
 // setuid et sans bit d'execution. L'umask peut encore restreindre, jamais
-// elargir. Un fichier REMPLACE garde les droits qu'il avait.
+// elargir. Un fichier REMPLACE garde ses droits de lecture, d'ecriture et
+// d'execution, les memes des deux cotes; setuid, setgid et sticky ne sont
+// jamais reportes sur un contenu nouveau.
 const
   SCP_DEFAULT_FILE_MODE = &0644;
   SCP_DEFAULT_DIR_MODE = &0755;
 
 implementation
-
-// La reponse suit la distance: un disque relit pour rien, une session
-// distante pour le prix d'un telechargement.
-function TScpFileSystem.CheapReRead: Boolean;
-begin
-  Result := not IsRemote;
-end;
 
 end.

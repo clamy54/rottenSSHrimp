@@ -54,8 +54,6 @@ type
     procedure PublishNext;
     function Post(AKind: TLocalOpKind; const AArg1: string = '';
       const AArg2: string = ''): Int64;
-    function RemoveTree(const APath: string; ADepth: Integer;
-      out AErr: TScpError): Boolean;
   protected
     procedure Execute; override;
   public
@@ -79,9 +77,6 @@ implementation
 
 uses
   uScpPaths;
-
-const
-  LOCAL_MAX_RM_DEPTH = 64;
 
 type
   TLocalOp = class
@@ -232,65 +227,6 @@ begin
   end;
 end;
 
-function TLocalFsWorker.RemoveTree(const APath: string; ADepth: Integer;
-  out AErr: TScpError): Boolean;
-var
-  entries: TScpEntryArray;
-  i: Integer;
-  child: string;
-  e: TScpEntry;
-  statErr: TScpError;
-begin
-  AErr := NoScpError;
-  if Terminated then
-  begin
-    AErr := MakeScpError(sekCanceled, 'Deleting', DisplaySafeName(APath), '');
-    Exit(False);
-  end;
-  if ADepth > LOCAL_MAX_RM_DEPTH then
-  begin
-    AErr := MakeScpError(sekOther, 'Deleting', DisplaySafeName(APath),
-      Format('maximum depth of %d reached', [LOCAL_MAX_RM_DEPTH]));
-    Exit(False);
-  end;
-  if not FFs.Stat(APath, False, e, statErr) then
-  begin
-    AErr := statErr;
-    Exit(False);
-  end;
-  // Un lien vers un dossier se supprime LUI: y descendre effacerait sa cible.
-  if e.IsLink or (not e.IsDir) then
-    Exit(FFs.DeleteFile(APath, AErr));
-
-  if not FFs.List(APath, entries, AErr) then Exit(False);
-  for i := 0 to High(entries) do
-  begin
-    if Terminated then
-    begin
-      AErr := MakeScpError(sekCanceled, 'Deleting', DisplaySafeName(APath),
-        '');
-      Exit(False);
-    end;
-    if CheckRemoteChildName(entries[i].Name) <> nvOk then
-    begin
-      AErr := MakeScpError(sekInvalidName, 'Deleting',
-        DisplaySafeName(entries[i].Name), '');
-      Exit(False);
-    end;
-    child := LocalJoin(APath, entries[i].Name);
-    // La jointure doit rester sous le dossier a effacer: un nom fabrique ne fait
-    // pas sortir une suppression recursive.
-    if not LocalIsUnder(APath, child) then
-    begin
-      AErr := MakeScpError(sekOutsideRoot, 'Deleting',
-        DisplaySafeName(entries[i].Name), '');
-      Exit(False);
-    end;
-    if not RemoveTree(child, ADepth + 1, AErr) then Exit(False);
-  end;
-  Result := FFs.DeleteDir(APath, AErr);
-end;
-
 procedure TLocalFsWorker.Execute;
 var
   op: TLocalOp;
@@ -362,7 +298,7 @@ begin
             end;
           lokDelete:
             begin
-              RemoveTree(op.Arg1, 0, err);
+              FFs.RemoveTree(op.Arg1, err);
               r := TLocalResult.Create;
               r.Kind := lrOpDone;
               r.Error := err;

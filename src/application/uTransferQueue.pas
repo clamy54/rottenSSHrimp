@@ -94,9 +94,17 @@ type
     FOwner: TTransferQueue;
     // Annulation posee par l'interface, lue a chaque tour de la boucle de copie.
     FCancelRequested: Boolean;
+    // Lot d'origine: « Apply to all » ne vaut que pour lui.
+    FBatch: Integer;
+    // Dossier dont le contenu reste a enumerer: le listing a ete coupe par la
+    // session, et une reconnexion doit le reprendre au lieu de l'oublier.
+    FScanPending: Boolean;
     procedure SetTargetPath(const AValue: string);
     procedure SetError(const AValue: TScpError);
     procedure SetWarning(const AValue: string);
+    procedure SetTotalBytes(AValue: Int64);
+    procedure SetDoneBytes(AValue: Int64);
+    procedure SetScanPending(AValue: Boolean);
   public
     constructor Create(AId: Integer; ADirection: TTransferDirection;
       AKind: TTransferItemKind; const ASourcePath, ATargetPath,
@@ -112,8 +120,8 @@ type
     property SourcePath: string read FSourcePath;
     property TargetPath: string read FTargetPath write SetTargetPath;
     property DisplayName: string read FDisplayName;
-    property TotalBytes: Int64 read FTotalBytes write FTotalBytes;
-    property DoneBytes: Int64 read FDoneBytes write FDoneBytes;
+    property TotalBytes: Int64 read FTotalBytes write SetTotalBytes;
+    property DoneBytes: Int64 read FDoneBytes write SetDoneBytes;
     property State: TTransferState read FState;
     property Error: TScpError read FError write SetError;
     property Warning: string read FWarning write SetWarning;
@@ -122,6 +130,8 @@ type
     property Attempts: Integer read FAttempts write FAttempts;
     property Depth: Integer read FDepth write FDepth;
     property TargetRoot: string read FTargetRoot write FTargetRoot;
+    property Batch: Integer read FBatch;
+    property ScanPending: Boolean read FScanPending write SetScanPending;
   end;
 
   // Debit lisse: une moyenne sur la duree ment apres une pause, une mesure
@@ -160,8 +170,13 @@ type
     FNextId: Integer;
     FPaused: Boolean;
     FNextIndex: Integer;
+    // Les decisions « pour tout le lot » portent le numero du lot qui les a
+    // prises: un lot pose pendant qu'un autre pose une question n'en herite pas.
+    FBatch: Integer;
     FConflictPolicy: TConflictAction;   // cnAsk = pas de decision globale
+    FPolicyBatch: Integer;
     FSkipAllKinds: set of TScpErrorKind;
+    FSkipBatch: Integer;
     FLock: TCriticalSection;
     // Element rendu par NextRunnable et pas encore rendu par ReleaseCurrent:
     // le fil de transfert le tient, personne ne le libere.
@@ -215,12 +230,15 @@ type
     // geste.
     function RetryInterrupted: Integer;
 
-    procedure SetConflictPolicy(AAction: TConflictAction);
-    function ConflictPolicy: TConflictAction;
+    // Nouveau lot: ce que Add mettra en file ensuite ne prend aucune decision
+    // des lots precedents, meme prise plus tard.
+    procedure BeginBatch;
+    procedure SetConflictPolicy(ABatch: Integer; AAction: TConflictAction);
+    function ConflictPolicy(ABatch: Integer): TConflictAction;
     procedure ClearConflictPolicy;
     // « Skip all similar errors »: la CLASSE d'erreur est ignoree ensuite.
-    procedure SkipAllOfKind(AKind: TScpErrorKind);
-    function IsSkippedKind(AKind: TScpErrorKind): Boolean;
+    procedure SkipAllOfKind(ABatch: Integer; AKind: TScpErrorKind);
+    function IsSkippedKind(ABatch: Integer; AKind: TScpErrorKind): Boolean;
     procedure ClearSkipKinds;
 
     function Summary: TQueueSummary;
@@ -334,9 +352,48 @@ begin
   Result := FState in [tsPending, tsRetrying];
 end;
 
+// Ecrit sous le verrou de la file par l'interface, lu par le fil de copie: le
+// lire sous le meme verrou, sinon rien ne dit quand il le verra.
 function TTransferItem.CancelRequested: Boolean;
 begin
-  Result := FCancelRequested;
+  if FOwner <> nil then FOwner.Lock;
+  try
+    Result := FCancelRequested;
+  finally
+    if FOwner <> nil then FOwner.Unlock;
+  end;
+end;
+
+// Les compteurs sont ecrits par le fil de copie et lus par l'affichage sous
+// le verrou de la file: les ecrire sous lui aussi.
+procedure TTransferItem.SetTotalBytes(AValue: Int64);
+begin
+  if FOwner <> nil then FOwner.Lock;
+  try
+    FTotalBytes := AValue;
+  finally
+    if FOwner <> nil then FOwner.Unlock;
+  end;
+end;
+
+procedure TTransferItem.SetDoneBytes(AValue: Int64);
+begin
+  if FOwner <> nil then FOwner.Lock;
+  try
+    FDoneBytes := AValue;
+  finally
+    if FOwner <> nil then FOwner.Unlock;
+  end;
+end;
+
+procedure TTransferItem.SetScanPending(AValue: Boolean);
+begin
+  if FOwner <> nil then FOwner.Lock;
+  try
+    FScanPending := AValue;
+  finally
+    if FOwner <> nil then FOwner.Unlock;
+  end;
 end;
 
 procedure TTransferItem.SetTargetPath(const AValue: string);
@@ -462,6 +519,7 @@ begin
   FLock := TCriticalSection.Create;
   FNextId := 1;
   FNextIndex := 0;
+  FBatch := 1;
   FConflictPolicy := cnAsk;
   FSkipAllKinds := [];
 end;
@@ -509,6 +567,7 @@ begin
     Result := TTransferItem.Create(FNextId, ADirection, AKind,
       ASourcePath, ATargetPath, ADisplayName);
     Result.FOwner := Self;
+    Result.FBatch := FBatch;
     Inc(FNextId);
     FItems.Add(Result);
   finally
@@ -852,35 +911,85 @@ begin
   end;
 end;
 
-procedure TTransferQueue.SetConflictPolicy(AAction: TConflictAction);
+procedure TTransferQueue.BeginBatch;
 begin
-  FConflictPolicy := AAction;
+  Lock;
+  try
+    Inc(FBatch);
+  finally
+    Unlock;
+  end;
 end;
 
-function TTransferQueue.ConflictPolicy: TConflictAction;
+// Sous verrou, tous: poses par le fil de transfert, effaces par l'interface.
+procedure TTransferQueue.SetConflictPolicy(ABatch: Integer;
+  AAction: TConflictAction);
 begin
-  Result := FConflictPolicy;
+  Lock;
+  try
+    FConflictPolicy := AAction;
+    FPolicyBatch := ABatch;
+  finally
+    Unlock;
+  end;
+end;
+
+function TTransferQueue.ConflictPolicy(ABatch: Integer): TConflictAction;
+begin
+  Lock;
+  try
+    Result := cnAsk;
+    if ABatch = FPolicyBatch then Result := FConflictPolicy;
+  finally
+    Unlock;
+  end;
 end;
 
 procedure TTransferQueue.ClearConflictPolicy;
 begin
-  FConflictPolicy := cnAsk;
+  Lock;
+  try
+    FConflictPolicy := cnAsk;
+    FPolicyBatch := 0;
+  finally
+    Unlock;
+  end;
 end;
 
-procedure TTransferQueue.SkipAllOfKind(AKind: TScpErrorKind);
+procedure TTransferQueue.SkipAllOfKind(ABatch: Integer; AKind: TScpErrorKind);
 begin
   if AKind = sekNone then Exit;
-  Include(FSkipAllKinds, AKind);
+  Lock;
+  try
+    if ABatch <> FSkipBatch then FSkipAllKinds := [];
+    FSkipBatch := ABatch;
+    Include(FSkipAllKinds, AKind);
+  finally
+    Unlock;
+  end;
 end;
 
-function TTransferQueue.IsSkippedKind(AKind: TScpErrorKind): Boolean;
+function TTransferQueue.IsSkippedKind(ABatch: Integer;
+  AKind: TScpErrorKind): Boolean;
 begin
-  Result := (AKind <> sekNone) and (AKind in FSkipAllKinds);
+  Lock;
+  try
+    Result := (AKind <> sekNone) and (ABatch = FSkipBatch) and
+      (AKind in FSkipAllKinds);
+  finally
+    Unlock;
+  end;
 end;
 
 procedure TTransferQueue.ClearSkipKinds;
 begin
-  FSkipAllKinds := [];
+  Lock;
+  try
+    FSkipAllKinds := [];
+    FSkipBatch := 0;
+  finally
+    Unlock;
+  end;
 end;
 
 function TTransferQueue.Summary: TQueueSummary;

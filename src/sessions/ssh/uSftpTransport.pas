@@ -35,13 +35,18 @@ type
     function LastError(const AOp, ASubject: string;
       ARc: Integer; AContext: TScpAccessContext): TScpError;
     function WaitAgain(var ADeadline: QWord): Boolean;
+    // La fermeture d'une poignee ignore « Cancel selected »: interrompue, elle
+    // laisserait la poignee ouverte sur le serveur jusqu'a la deconnexion.
+    function WaitToClose(var ADeadline: QWord): Boolean;
     // Un READDIR sans permissions ne dit pas ce qu'est l'entree: lstat redemande.
     // Muet lui aussi, le type reste inconnu et le moteur refusera l'entree.
     function RefineUnknownType(const ADir: string; var AEntry: TScpEntry;
       out AErr: TScpError): Boolean;
     function DescribeLink(const ADir: string; var AEntry: TScpEntry;
       out AErr: TScpError): Boolean;
-    function SameFileAsPath(AHandle: TScpFileHandle;
+    function SameFileAsPath(AHandle: TScpFileHandle; const AOp, AWhat: string;
+      out AErr: TScpError): Boolean;
+    function SetTimesByHandle(AHandle: TScpFileHandle; AMTimeUtc: Int64;
       out AErr: TScpError): Boolean;
   public
     constructor Create(AOwner: TSftpTransport; const AIdentity: string);
@@ -85,9 +90,9 @@ type
       out AErr: TScpError): Boolean; override;
     function Close(AHandle: TScpFileHandle;
       out AErr: TScpError): Boolean; override;
-    function SetMTime(const APath: string; AMTimeUtc: Int64;
+    function SetMTime(AHandle: TScpFileHandle; AMTimeUtc: Int64;
       out AErr: TScpError): Boolean; override;
-    function SetMode(const APath: string; AMode: LongWord;
+    function SetMode(AHandle: TScpFileHandle; AMode: LongWord;
       out AErr: TScpError): Boolean; override;
     function Join(const ABase, AName: string): string; override;
     function Parent(const APath: string): string; override;
@@ -391,6 +396,14 @@ begin
   Result := not Canceled;
 end;
 
+function TSftpFileSystem.WaitToClose(var ADeadline: QWord): Boolean;
+begin
+  if FOwner.Terminated then Exit(False);
+  if GetTickCount64 >= ADeadline then Exit(False);
+  FOwner.WaitIo(SFTP_POLL_MS);
+  Result := not FOwner.Terminated;
+end;
+
 function TSftpFileSystem.LastError(const AOp, ASubject: string;
   ARc: Integer; AContext: TScpAccessContext): TScpError;
 var
@@ -418,8 +431,11 @@ begin
     LIBSSH2_ERROR_EAGAIN, LIBSSH2_ERROR_TIMEOUT, LIBSSH2_ERROR_SOCKET_TIMEOUT:
       Result := MakeScpError(sekTimeout, AOp, DisplaySafeName(ASubject),
         detail);
+    // Tout ce qui laisse la session inutilisable: socket, canal, chiffrement.
     LIBSSH2_ERROR_SOCKET_DISCONNECT, LIBSSH2_ERROR_SOCKET_SEND,
-    LIBSSH2_ERROR_SOCKET_RECV, LIBSSH2_ERROR_CHANNEL_CLOSED:
+    LIBSSH2_ERROR_SOCKET_RECV, LIBSSH2_ERROR_BAD_SOCKET,
+    LIBSSH2_ERROR_CHANNEL_CLOSED, LIBSSH2_ERROR_CHANNEL_EOF_SENT,
+    LIBSSH2_ERROR_PROTO, LIBSSH2_ERROR_DECRYPT, LIBSSH2_ERROR_INVALID_MAC:
       Result := MakeScpError(sekConnectionLost, AOp,
         DisplaySafeName(ASubject), detail);
   else
@@ -870,6 +886,7 @@ var
   rc: cint;
   deadline: QWord;
   p: AnsiString;
+  closeErr: TScpError;
 begin
   AHandle := nil;
   AErr := NoScpError;
@@ -891,6 +908,13 @@ begin
   h := TSftpHandle.Create;
   h.H := hnd;
   h.Path := RemoteNormalize(APath);
+  // SFTP v3 suit un lien a l'ouverture: entre le lstat du moteur et celle-ci,
+  // le chemin a pu changer de fichier. Meme controle qu'a la reprise.
+  if not SameFileAsPath(h, 'Opening', 'the source', AErr) then
+  begin
+    Close(h, closeErr);
+    Exit(False);
+  end;
   AHandle := h;
   Result := True;
 end;
@@ -953,9 +977,9 @@ end;
 // lstat du chemin contre fstat de la poignee: meme type, meme taille. Un lien
 // a la place du fichier est refuse; un fichier substitue de meme taille ne
 // l'est pas ici, c'est l'empreinte du prefixe, relue par le moteur, qui le
-// rattrape.
+// rattrape a la reprise. AWhat nomme ce qu'on ouvrait, pour le message.
 function TSftpFileSystem.SameFileAsPath(AHandle: TScpFileHandle;
-  out AErr: TScpError): Boolean;
+  const AOp, AWhat: string; out AErr: TScpError): Boolean;
 var
   h: TSftpHandle;
   onDisk, opened: LIBSSH2_SFTP_ATTRIBUTES;
@@ -986,9 +1010,8 @@ begin
   if (mode = 0) or ModeIsLink(mode) or ModeIsDir(mode) or ModeIsSpecial(mode)
   then
   begin
-    AErr := MakeScpError(sekSymlinkSkipped, 'Reopening',
-      DisplaySafeName(h.Path),
-      'the partial file is no longer a regular file');
+    AErr := MakeScpError(sekSymlinkSkipped, AOp, DisplaySafeName(h.Path),
+      AWhat + ' is no longer a regular file');
     Exit;
   end;
   FillChar(opened, SizeOf(opened), 0);
@@ -1006,8 +1029,8 @@ begin
      ((opened.flags and LIBSSH2_SFTP_ATTR_SIZE) <> 0) and
      (onDisk.filesize <> opened.filesize) then
   begin
-    AErr := MakeScpError(sekOther, 'Reopening', DisplaySafeName(h.Path),
-      'the partial file changed while it was being reopened');
+    AErr := MakeScpError(sekOther, AOp, DisplaySafeName(h.Path),
+      AWhat + ' changed while it was being opened');
     Exit;
   end;
   Result := True;
@@ -1051,7 +1074,7 @@ begin
   // celui pose entre l'ouverture et ce controle ne l'est pas, et le protocole
   // ne permet pas de fermer cette fenetre-la. Le moteur relit encore le prefixe
   // confirme par la poignee, et un contenu different fait repartir de zero.
-  if not SameFileAsPath(h, AErr) then
+  if not SameFileAsPath(h, 'Reopening', 'the partial file', AErr) then
   begin
     Close(h, closeErr);
     Exit(False);
@@ -1169,11 +1192,13 @@ begin
   h := TSftpHandle(AHandle);
   if h.H <> nil then
   begin
+    // WaitToClose et pas WaitAgain: une annulation qui coupait cette boucle
+    // laissait la poignee ouverte sur le serveur, et il en a un nombre fini.
     deadline := GetTickCount64 + SFTP_OP_TIMEOUT_MS;
     repeat
       rc := libssh2_sftp_close_handle(h.H);
       if rc <> LIBSSH2_ERROR_EAGAIN then Break;
-    until not WaitAgain(deadline);
+    until not WaitToClose(deadline);
     // La fermeture est ou un serveur avoue un quota depasse: la traiter comme une
     // formalite ferait passer un fichier tronque pour un succes.
     if rc <> 0 then
@@ -1186,24 +1211,24 @@ begin
   h.Free;
 end;
 
-function TSftpFileSystem.SetMTime(const APath: string; AMTimeUtc: Int64;
-  out AErr: TScpError): Boolean;
+// FSETSTAT: par la poignee, le chemin n'intervient plus.
+function TSftpFileSystem.SetTimesByHandle(AHandle: TScpFileHandle;
+  AMTimeUtc: Int64; out AErr: TScpError): Boolean;
 var
+  h: TSftpHandle;
   attrs: LIBSSH2_SFTP_ATTRIBUTES;
   cur: LIBSSH2_SFTP_ATTRIBUTES;
   rc: cint;
   deadline: QWord;
-  p: AnsiString;
 begin
   AErr := NoScpError;
-  p := AnsiString(RemoteNormalize(APath));
+  h := TSftpHandle(AHandle);
   // SETSTAT ecrit TOUS les champs annonces: relire d'abord, sinon la date
   // d'acces part avec une valeur inventee.
   FillChar(cur, SizeOf(cur), 0);
   deadline := GetTickCount64 + SFTP_OP_TIMEOUT_MS;
   repeat
-    rc := libssh2_sftp_stat_ex(FOwner.FSftp, PAnsiChar(p), Length(p),
-      LIBSSH2_SFTP_STAT, @cur);
+    rc := libssh2_sftp_fstat_ex(h.H, @cur, 0);
     if rc <> LIBSSH2_ERROR_EAGAIN then Break;
   until not WaitAgain(deadline);
 
@@ -1212,10 +1237,10 @@ begin
   if (rc <> 0) or ((cur.flags and LIBSSH2_SFTP_ATTR_ACMODTIME) = 0) then
   begin
     if rc <> 0 then
-      AErr := LastError('Setting the timestamp of', APath, rc, acWrite)
+      AErr := LastError('Setting the timestamp of', h.Path, rc, acWrite)
     else
       AErr := MakeScpError(sekAttrRefused, 'Setting the timestamp of',
-        DisplaySafeName(APath), 'the server did not report the access time');
+        DisplaySafeName(h.Path), 'the server did not report the access time');
     if not IsFatalToSession(AErr.Kind) then AErr.Kind := sekAttrRefused;
     Exit(False);
   end;
@@ -1226,43 +1251,48 @@ begin
 
   deadline := GetTickCount64 + SFTP_OP_TIMEOUT_MS;
   repeat
-    rc := libssh2_sftp_stat_ex(FOwner.FSftp, PAnsiChar(p), Length(p),
-      LIBSSH2_SFTP_SETSTAT, @attrs);
+    rc := libssh2_sftp_fstat_ex(h.H, @attrs, 1);
     if rc <> LIBSSH2_ERROR_EAGAIN then Break;
   until not WaitAgain(deadline);
   Result := rc = 0;
   if not Result then
   begin
-    AErr := LastError('Setting the timestamp of', APath, rc, acWrite);
+    AErr := LastError('Setting the timestamp of', h.Path, rc, acWrite);
     // Le contenu est arrive: ce refus est un avertissement, pas une perte.
     if not IsFatalToSession(AErr.Kind) then AErr.Kind := sekAttrRefused;
   end;
 end;
 
-function TSftpFileSystem.SetMode(const APath: string; AMode: LongWord;
+function TSftpFileSystem.SetMTime(AHandle: TScpFileHandle; AMTimeUtc: Int64;
+  out AErr: TScpError): Boolean;
+begin
+  Result := SetTimesByHandle(AHandle, AMTimeUtc, AErr);
+end;
+
+// Le mode demande est pose tel quel: c'est le moteur qui tient la politique,
+// la meme des deux cotes.
+function TSftpFileSystem.SetMode(AHandle: TScpFileHandle; AMode: LongWord;
   out AErr: TScpError): Boolean;
 var
+  h: TSftpHandle;
   attrs: LIBSSH2_SFTP_ATTRIBUTES;
   rc: cint;
   deadline: QWord;
-  p: AnsiString;
 begin
   AErr := NoScpError;
-  p := AnsiString(RemoteNormalize(APath));
+  h := TSftpHandle(AHandle);
   FillChar(attrs, SizeOf(attrs), 0);
   attrs.flags := LIBSSH2_SFTP_ATTR_PERMISSIONS;
-  // Jamais de droit monde en ecriture, quel que soit le mode demande.
-  attrs.permissions := culong(AMode and LongWord(&0775));
+  attrs.permissions := culong(AMode and LongWord(&07777));
   deadline := GetTickCount64 + SFTP_OP_TIMEOUT_MS;
   repeat
-    rc := libssh2_sftp_stat_ex(FOwner.FSftp, PAnsiChar(p), Length(p),
-      LIBSSH2_SFTP_SETSTAT, @attrs);
+    rc := libssh2_sftp_fstat_ex(h.H, @attrs, 1);
     if rc <> LIBSSH2_ERROR_EAGAIN then Break;
   until not WaitAgain(deadline);
   Result := rc = 0;
   if not Result then
   begin
-    AErr := LastError('Setting the mode of', APath, rc, acWrite);
+    AErr := LastError('Setting the mode of', h.Path, rc, acWrite);
     if not IsFatalToSession(AErr.Kind) then AErr.Kind := sekAttrRefused;
   end;
 end;
@@ -1921,6 +1951,18 @@ begin
     Exit(FRemote.DeleteFile(APath, AErr));
 
   if not FRemote.List(APath, entries, AErr) then Exit(False);
+  // SFTP v3 n'a rien pour ancrer une suppression a un dossier ouvert: tout passe
+  // par des chemins. Un dossier devenu lien AVANT le listing est vu ici, car le
+  // listing aurait traverse le lien; devenu lien APRES, chaque enfant est
+  // encore relu par lstat, mais par un chemin qui traverse le lien. Cette
+  // fenetre-la, le protocole ne permet pas de la fermer.
+  if not FRemote.Stat(APath, False, e, AErr) then Exit(False);
+  if e.IsLink or (not e.IsDir) then
+  begin
+    AErr := MakeScpError(sekOutsideRoot, 'Deleting', DisplaySafeName(APath),
+      'the folder changed while it was being deleted');
+    Exit(False);
+  end;
   for i := 0 to High(entries) do
   begin
     if Terminated then
