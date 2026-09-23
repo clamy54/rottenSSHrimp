@@ -184,7 +184,7 @@ type
       AKnown: TStrings; out AErr: TScpError): Boolean;
     procedure MarkScanCut(AOwner: TTransferItem; const AErr: TScpError);
     // Le parcours doit-il s'arreter AVANT d'aller plus loin? Annulation de la
-    // selection ou du dossier parcouru, ou file pleine; AErr dit laquelle.
+    // selection ou du dossier parcouru. La file pleine se juge a l'ajout.
     function WalkMustStop(ASrcFs, ADstFs: TScpFileSystem;
       AOwner: TTransferItem; const ADir: string;
       out AErr: TScpError): Boolean;
@@ -746,13 +746,29 @@ var
   // note seule laisserait le bilan annoncer un lot complet. Le chemin retenu est
   // celui du DOSSIER, fabriquer le sien a partir d'un nom refuse n'aurait pas de
   // sens.
+  // Seul point d'ajout du parcours. Le plafond se juge ICI, juste avant, et
+  // pas avant de lister: un dossier vide tient dans une file pleine. nil = file
+  // pleine, FQueueFull pose; la boucle s'arrete a l'entree suivante.
+  function AddChild(AKind: TTransferItemKind;
+    const AChildSrc, AChildDst, AName: string): TTransferItem;
+  begin
+    Result := nil;
+    if FQueue.Count >= FMaxQueueItems then
+    begin
+      FQueueFull := True;
+      Exit;
+    end;
+    Result := FQueue.Add(ADirection, AKind, AChildSrc, AChildDst,
+      DisplaySafeName(AName), AOwner.Batch, AOwner);
+  end;
+
   procedure SkipChild(const AChildSrc, AName: string;
     const AChildErr: TScpError);
   var
     sk: TTransferItem;
   begin
-    sk := FQueue.Add(ADirection, tikFile, AChildSrc, ADstDir,
-      DisplaySafeName(AName), AOwner.Batch, AOwner);
+    sk := AddChild(tikFile, AChildSrc, ADstDir, AName);
+    if sk = nil then Exit;
     sk.Depth := ADepth;
     sk.TargetRoot := ATargetRoot;
     sk.Error := AChildErr;
@@ -824,6 +840,7 @@ begin
     begin
       // Avant CHAQUE ajout: une annulation ne laisse entrer personne apres elle.
       if WalkMustStop(ASrcFs, ADstFs, AOwner, ASrcDir, AErr) then Exit;
+      if FQueueFull then Break;
       e := entries[i];
       if not NameUsable(ASrcFs, ADstFs, e.Name, why) then
       begin
@@ -890,8 +907,8 @@ begin
       if e.IsLink then
       begin
         // Jamais suivi: un cycle devient impossible plutot que detectable.
-        item := FQueue.Add(ADirection, tikFile, childSrc, childDst,
-          DisplaySafeName(e.Name), AOwner.Batch, AOwner);
+        item := AddChild(tikFile, childSrc, childDst, e.Name);
+        if item = nil then Continue;
         item.Depth := ADepth;
         item.TargetRoot := ATargetRoot;
         item.Error := MakeScpError(sekSymlinkSkipped, 'Copying',
@@ -901,8 +918,8 @@ begin
       end;
       if e.IsSpecial then
       begin
-        item := FQueue.Add(ADirection, tikFile, childSrc, childDst,
-          DisplaySafeName(e.Name), AOwner.Batch, AOwner);
+        item := AddChild(tikFile, childSrc, childDst, e.Name);
+        if item = nil then Continue;
         item.Depth := ADepth;
         item.TargetRoot := ATargetRoot;
         item.Error := MakeScpError(sekIsSpecialFile, 'Copying',
@@ -938,8 +955,8 @@ begin
         // Le lstat a pu attendre le serveur longtemps.
         if WalkMustStop(ASrcFs, ADstFs, AOwner, ASrcDir, AErr) then Exit;
         // L'ordre d'insertion EST la garantie que les parents precedent les enfants.
-        item := FQueue.Add(ADirection, tikMakeDir, childSrc, childDst,
-          DisplaySafeName(e.Name), AOwner.Batch, AOwner);
+        item := AddChild(tikMakeDir, childSrc, childDst, e.Name);
+        if item = nil then Continue;
         item.Depth := ADepth;
         item.TargetRoot := ATargetRoot;
         item.SourceMode := e2.Mode;
@@ -965,8 +982,8 @@ begin
         end;
         Continue;
       end;
-      item := FQueue.Add(ADirection, tikFile, childSrc, childDst,
-        DisplaySafeName(e.Name), AOwner.Batch, AOwner);
+      item := AddChild(tikFile, childSrc, childDst, e.Name);
+      if item = nil then Continue;
       item.Depth := ADepth;
       item.TargetRoot := ATargetRoot;
       item.TotalBytes := e.Size;
@@ -976,6 +993,12 @@ begin
     end;
   finally
     seen.Free;
+  end;
+  if FQueueFull then
+  begin
+    AErr := MakeScpError(sekOther, 'Scanning', DisplaySafeName(ASrcDir),
+      Format('the queue would hold more than %d items', [FMaxQueueItems]));
+    Exit;
   end;
   Result := True;
 end;
@@ -1013,13 +1036,6 @@ begin
      ((AOwner <> nil) and AOwner.CancelRequested) then
   begin
     AErr := MakeScpError(sekCanceled, 'Scanning', DisplaySafeName(ADir), '');
-    Exit(True);
-  end;
-  if FQueue.Count >= FMaxQueueItems then
-  begin
-    FQueueFull := True;
-    AErr := MakeScpError(sekOther, 'Scanning', DisplaySafeName(ADir),
-      Format('the queue would hold more than %d items', [FMaxQueueItems]));
     Exit(True);
   end;
   Result := False;
@@ -1920,7 +1936,7 @@ var
   digest: TScpDigest;
   partial: TScpPartial;
   outcome: TScpConflictOutcome;
-  scanned: Boolean;
+  scanned, madeDir: Boolean;
 
   procedure AddWarning(const AText: string);
   begin
@@ -2050,18 +2066,16 @@ begin
       end;
       AItem.SourceMode := srcEntry.Mode;
       AItem.SourceModeKnown := srcEntry.ModeKnown;
-      if not ADstFs.MakeDir(targetPath,
-         ModeForNewDir(AItem.SourceMode, AItem.SourceModeKnown), err) then
+      // Copie sur place: le dossier nait avec la protection de sa source, la
+      // ou les modes ne la portent pas.
+      if ASrcFs = ADstFs then
+        madeDir := ADstFs.MakeDirFromSource(AItem.SourcePath, targetPath,
+          ModeForNewDir(AItem.SourceMode, AItem.SourceModeKnown), err)
+      else
+        madeDir := ADstFs.MakeDir(targetPath,
+          ModeForNewDir(AItem.SourceMode, AItem.SourceModeKnown), err);
+      if not madeDir then
       begin
-        FailItem(AItem, err);
-        FailSubtree(ADstFs, AItem);
-        Exit;
-      end;
-      if (ASrcFs = ADstFs) and
-         (not ADstFs.CopyProtectionFrom(AItem.SourcePath, targetPath, err)) then
-      begin
-        // Vide, il n'a rien expose: il part, et son contenu n'ira nulle part.
-        ADstFs.DeleteDir(targetPath, closeErr);
         FailItem(AItem, err);
         FailSubtree(ADstFs, AItem);
         Exit;

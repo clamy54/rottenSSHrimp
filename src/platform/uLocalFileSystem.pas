@@ -95,6 +95,10 @@ type
     function RemoveTree(const APath: string; out AErr: TScpError): Boolean;
     function CopyProtectionFrom(const ASourcePath, ATargetPath: string;
       out AErr: TScpError): Boolean; override;
+    {$IFDEF WINDOWS}
+    function MakeDirFromSource(const ASourcePath, APath: string;
+      AMode: LongWord; out AErr: TScpError): Boolean; override;
+    {$ENDIF}
     function Join(const ABase, AName: string): string; override;
     function Parent(const APath: string): string; override;
     function BaseName(const APath: string): string; override;
@@ -124,6 +128,7 @@ const
   FILE_FLAG_OPEN_REPARSE_POINT_ = $00200000;
   // Ouvertures relatives a un dossier (ntdll) et suppression par poignee.
   DELETE_ = $00010000;
+  READ_CONTROL_ = $00020000;
   SYNCHRONIZE_ = $00100000;
   FILE_READ_ATTRIBUTES_ = $0080;
   FILE_LIST_DIRECTORY_ = $0001;
@@ -996,6 +1001,65 @@ begin
       Format('the permissions of the existing file could not be applied to ' +
         'the new content (Windows error %d); the existing file was left ' +
         'untouched', [code]));
+end;
+{$ENDIF}
+
+{$IFDEF WINDOWS}
+// La DACL est lue par une POIGNEE sur la source, point de reanalyse refuse:
+// c'est le dossier copie qui la donne, pas ce que son nom designerait devenu
+// jonction. Elle part dans CreateDirectoryW, protection contre l'heritage
+// comprise: aucun instant ou le dossier neuf porterait les droits du parent.
+function TLocalFileSystem.MakeDirFromSource(const ASourcePath, APath: string;
+  AMode: LongWord; out AErr: TScpError): Boolean;
+var
+  h: THandle;
+  info: TByHandleFileInformation;
+  need: DWORD;
+  sd: array of Byte;
+  sa: TSecurityAttributes;
+begin
+  Result := False;
+  AErr := NoScpError;
+  h := CreateFileW(PWideChar(NativeW(ASourcePath)),
+    READ_CONTROL_ or FILE_READ_ATTRIBUTES_,
+    FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE_, nil,
+    OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS or FILE_FLAG_OPEN_REPARSE_POINT_,
+    0);
+  if h = INVALID_HANDLE_VALUE then
+  begin
+    AErr := LastErr('Duplicating', ASourcePath);
+    Exit;
+  end;
+  try
+    if (not GetFileInformationByHandle(h, info)) or
+       ((info.dwFileAttributes and (FILE_ATTRIBUTE_DIRECTORY or
+         FILE_ATTRIBUTE_REPARSE_POINT)) <> FILE_ATTRIBUTE_DIRECTORY) then
+    begin
+      AErr := MakeScpError(sekNotADirectory, 'Duplicating',
+        DisplaySafeName(ASourcePath), 'the source is not a folder any more');
+      Exit;
+    end;
+    need := 0;
+    GetKernelObjectSecurity(h, DACL_SECURITY_INFORMATION, nil, 0, @need);
+    SetLength(sd, need);
+    if (need = 0) or (not GetKernelObjectSecurity(h,
+       DACL_SECURITY_INFORMATION, @sd[0], need, @need)) then
+    begin
+      AErr := MakeScpError(sekAttrRefused, 'Duplicating',
+        DisplaySafeName(ASourcePath),
+        Format('the permissions of the source could not be read (Windows ' +
+          'error %d); the copy was not created', [GetLastError]));
+      Exit;
+    end;
+  finally
+    CloseHandle(h);
+  end;
+  sa.nLength := SizeOf(sa);
+  sa.bInheritHandle := False;
+  sa.lpSecurityDescriptor := @sd[0];
+  Result := CreateDirectoryW(PWideChar(NativeW(APath)), @sa);
+  if not Result then
+    AErr := LastErr('Creating folder', APath);
 end;
 {$ENDIF}
 

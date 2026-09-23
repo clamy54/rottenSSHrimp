@@ -50,8 +50,8 @@ type
     procedure ClearSelection;
     // Reselectionne par identifiant apres un « Clear completed »: les lignes
     // restantes ont change de position, pas d'identite.
-    procedure RestoreSelection(const AIds: TStringArray; AFocusId: Integer);
-    function FocusedItemId: Integer;
+    procedure RestoreSelection(const AIds: TStringArray; AFocusId: Int64);
+    function FocusedItemId: Int64;
     property OnCommand: TQueueCommandEvent read FOnCommand write FOnCommand;
     property List: TQueueListView read FList;
   end;
@@ -91,8 +91,8 @@ type
     function SelectionCount: Integer;
     procedure ClearSelection;
     procedure SelectAll;
-    procedure SelectIds(const AIds: TStringArray; AFocusId: Integer);
-    function FocusedId: Integer;
+    procedure SelectIds(const AIds: TStringArray; AFocusId: Int64);
+    function FocusedId: Int64;
     procedure RecomputeMetrics;
     property OnSelectionChanged: TNotifyEvent
       read FOnSelectionChanged write FOnSelectionChanged;
@@ -270,7 +270,7 @@ begin
     ScrollSetTop(rowTop + FRowHeight - ClientHeight);
 end;
 
-function TQueueListView.FocusedId: Integer;
+function TQueueListView.FocusedId: Int64;
 begin
   Result := -1;
   FQueue.Lock;
@@ -285,9 +285,10 @@ end;
 // Liste triee: un Ctrl+A sur des milliers de fichiers suivi d'un « Clear
 // completed » ferait sinon des millions de comparaisons sur le thread UI.
 procedure TQueueListView.SelectIds(const AIds: TStringArray;
-  AFocusId: Integer);
+  AFocusId: Int64);
 var
-  i, k, id: Integer;
+  i, k: Integer;
+  id: Int64;
   wanted: TStringList;
 begin
   SyncSelection;
@@ -776,12 +777,12 @@ begin
 end;
 
 procedure TTransferQueueView.RestoreSelection(const AIds: TStringArray;
-  AFocusId: Integer);
+  AFocusId: Int64);
 begin
   FList.SelectIds(AIds, AFocusId);
 end;
 
-function TTransferQueueView.FocusedItemId: Integer;
+function TTransferQueueView.FocusedItemId: Int64;
 begin
   Result := FList.FocusedId;
 end;

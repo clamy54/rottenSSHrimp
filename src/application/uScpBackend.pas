@@ -159,6 +159,11 @@ type
     // avant qu'un octet y soit ecrit. Defaut: rien a faire.
     function CopyProtectionFrom(const ASourcePath, ATargetPath: string;
       out AErr: TScpError): Boolean; virtual;
+    // Dossier de copie sur place: il NAIT avec la protection de sa source.
+    // Un dossier n'a pas de poignee exclusive pour le proteger entre sa
+    // creation et une copie de droits apres coup. Defaut: MakeDir.
+    function MakeDirFromSource(const ASourcePath, APath: string;
+      AMode: LongWord; out AErr: TScpError): Boolean; virtual;
 
     // --- Chemins: chaque cote a ses regles, jamais de concatenation nue ---
     function Join(const ABase, AName: string): string; virtual; abstract;
@@ -197,6 +202,12 @@ function TScpFileSystem.CopyProtectionFrom(const ASourcePath,
 begin
   AErr := NoScpError;
   Result := True;
+end;
+
+function TScpFileSystem.MakeDirFromSource(const ASourcePath, APath: string;
+  AMode: LongWord; out AErr: TScpError): Boolean;
+begin
+  Result := MakeDir(APath, AMode, AErr);
 end;
 
 end.

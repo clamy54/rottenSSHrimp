@@ -1129,7 +1129,8 @@ end;
 procedure TScpTab.QueueCommand(ACommand: TQueueCommand);
 var
   ids: TStringArray;
-  i, id: Integer;
+  i: Integer;
+  id: Int64;
   item: TTransferItem;
 begin
   if FClosing or (FTransport = nil) then Exit;
@@ -1145,7 +1146,7 @@ begin
       begin
         ids := FQueueView.SelectedItemIds;
         for i := 0 to High(ids) do
-          if TryStrToInt(ids[i], id) then
+          if TryStrToInt64(ids[i], id) then
           begin
             item := FQueue.FindById(id);
             FQueue.CancelItem(item);

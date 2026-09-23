@@ -75,7 +75,7 @@ type
 
   TTransferItem = class
   private
-    FId: Integer;
+    FId: Int64;
     FDirection: TTransferDirection;
     FKind: TTransferItemKind;
     FSourcePath: string;
@@ -110,7 +110,7 @@ type
     // Dossier qui a mis cet element en file, 0 pour une selection. C'est lui,
     // et non le chemin cible, qui dit ce qui descend de quoi: deux lots vers
     // un meme dossier, ou un nom distant contenant « \ », ne se melangent pas.
-    FParentId: Integer;
+    FParentId: Int64;
     procedure SetTargetPath(const AValue: string);
     procedure SetError(const AValue: TScpError);
     procedure SetWarning(const AValue: string);
@@ -118,7 +118,7 @@ type
     procedure SetDoneBytes(AValue: Int64);
     procedure SetScanPending(AValue: Boolean);
   public
-    constructor Create(AId: Integer; ADirection: TTransferDirection;
+    constructor Create(AId: Int64; ADirection: TTransferDirection;
       AKind: TTransferItemKind; const ASourcePath, ATargetPath,
       ADisplayName: string);
     function IsTerminal: Boolean;
@@ -126,7 +126,7 @@ type
     function CancelRequested: Boolean;
     function PercentDone: Integer;
 
-    property Id: Integer read FId;
+    property Id: Int64 read FId;
     property Direction: TTransferDirection read FDirection;
     property Kind: TTransferItemKind read FKind;
     property SourcePath: string read FSourcePath;
@@ -147,7 +147,7 @@ type
     property Batch: Integer read FBatch;
     property ScanPending: Boolean read FScanPending write SetScanPending;
     property ForcedName: string read FForcedName write FForcedName;
-    property ParentId: Integer read FParentId;
+    property ParentId: Int64 read FParentId;
   end;
 
   // Debit lisse: une moyenne sur la duree ment apres une pause, une mesure
@@ -183,7 +183,8 @@ type
   TTransferQueue = class
   private
     FItems: TFPList;
-    FNextId: Integer;
+    // Int64: jamais remis a zero, il ne doit jamais faire le tour non plus.
+    FNextId: Int64;
     FPaused: Boolean;
     FNextIndex: Integer;
     // Les decisions « pour tout le lot » portent le numero du lot qui les a
@@ -224,7 +225,7 @@ type
     // Retire les elements finis: le curseur est recalcule, sinon un « Clear
     // completed » ferait sauter un element. L'element TENU reste, meme fini.
     procedure ClearFinished;
-    function FindById(AId: Integer): TTransferItem;
+    function FindById(AId: Int64): TTransferItem;
 
     // Seul point de mutation. False = transition refusee: un callback en retard
     // ne ressuscite pas un element fini.
@@ -346,7 +347,7 @@ end;
 
 { TTransferItem }
 
-constructor TTransferItem.Create(AId: Integer; ADirection: TTransferDirection;
+constructor TTransferItem.Create(AId: Int64; ADirection: TTransferDirection;
   AKind: TTransferItemKind; const ASourcePath, ATargetPath,
   ADisplayName: string);
 begin
@@ -657,7 +658,7 @@ begin
   end;
 end;
 
-function TTransferQueue.FindById(AId: Integer): TTransferItem;
+function TTransferQueue.FindById(AId: Int64): TTransferItem;
 var
   i: Integer;
 begin
@@ -860,31 +861,46 @@ begin
 end;
 
 // Un parent precede toujours ses enfants, et les identifiants croissent avec
-// la position: un seul passage suffit, marque par identifiant.
+// la position: un seul passage suffit. Les identifiants du sous-arbre sont
+// retenus dans l'ordre ou on les rencontre, donc tries: une recherche
+// dichotomique, et une memoire a la mesure de la file -- pas de l'ecart des
+// identifiants, qui grandit a chaque « Clear completed ».
 procedure TTransferQueue.CollectDescendantsLocked(AItem: TTransferItem;
   AInto: TFPList);
 var
-  i, start, base: Integer;
+  i, start, n: Integer;
   it: TTransferItem;
-  inTree: TBits;
+  ids: array of Int64;
+
+  function InTree(AId: Int64): Boolean;
+  var
+    lo, hi, mid: Integer;
+  begin
+    lo := 0;
+    hi := n - 1;
+    while lo <= hi do
+    begin
+      mid := (lo + hi) div 2;
+      if ids[mid] = AId then Exit(True);
+      if ids[mid] < AId then lo := mid + 1 else hi := mid - 1;
+    end;
+    Result := False;
+  end;
+
 begin
   start := FItems.IndexOf(AItem);
   if start < 0 then Exit;
-  base := AItem.Id;
-  inTree := TBits.Create(TTransferItem(FItems[FItems.Count - 1]).Id - base + 1);
-  try
-    inTree[0] := True;
-    for i := start + 1 to FItems.Count - 1 do
-    begin
-      it := TTransferItem(FItems[i]);
-      if (it.FParentId >= base) and inTree[it.FParentId - base] then
-      begin
-        inTree[it.Id - base] := True;
-        AInto.Add(it);
-      end;
-    end;
-  finally
-    inTree.Free;
+  SetLength(ids, 16);
+  ids[0] := AItem.Id;
+  n := 1;
+  for i := start + 1 to FItems.Count - 1 do
+  begin
+    it := TTransferItem(FItems[i]);
+    if (it.FParentId = 0) or (not InTree(it.FParentId)) then Continue;
+    if n = Length(ids) then SetLength(ids, n * 2);
+    ids[n] := it.Id;
+    Inc(n);
+    AInto.Add(it);
   end;
 end;
 
