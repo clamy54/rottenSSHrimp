@@ -16,7 +16,7 @@ unit uScpEngine;
 interface
 
 uses
-  SysUtils, Classes, SyncObjs, uScpBackend, uScpErrors, uScpPaths,
+  SysUtils, Classes, SyncObjs, sha1, uScpBackend, uScpErrors, uScpPaths,
   uTransferQueue;
 
 const
@@ -56,8 +56,12 @@ type
     SourcePath: string;
     SourceSize: Int64;
     SourceTimeUtc: Int64;
-    // Dernier offset CONFIRME: ecrit ET vide sur le support.
+    // Dernier offset CONFIRME: vide sur le support si possible, acquitte sinon.
     Confirmed: Int64;
+    // Empreinte des Confirmed premiers octets ECRITS, relue et comparee a la
+    // reprise: un partiel dont le contenu a change, meme a taille egale, est
+    // refuse. SHA-1 suffit, il faudrait une seconde preimage et pas une collision.
+    Digest: TSHA1Digest;
     Active: Boolean;
   end;
 
@@ -72,8 +76,11 @@ type
     destructor Destroy; override;
     procedure Note(const ATempPath, ATargetPath, ASourceIdentity,
       ADestIdentity, ASourcePath: string; ASourceSize, ASourceTimeUtc: Int64);
-    procedure Confirm(const ATempPath: string; AOffset: Int64);
+    // ADigest: empreinte des AOffset premiers octets ecrits.
+    procedure Confirm(const ATempPath: string; AOffset: Int64;
+      const ADigest: TSHA1Digest);
     procedure Forget(const ATempPath: string);
+    function Lookup(const ATempPath: string; out APartial: TScpPartial): Boolean;
     // Cherche un partiel reutilisable pour cette source exacte, sur cette
     // destination. Refuse des que le moindre element ne concorde pas.
     function FindResumable(const ATargetPath, ASourceIdentity, ADestIdentity,
@@ -100,11 +107,13 @@ type
 
     procedure Note(const AText: string);
     procedure ReportProgress(AItem: TTransferItem; AForce: Boolean);
-    // Copie proprement dite, source deja ouverte et cible deja ouverte.
+    // Copie proprement dite, source et cible deja ouvertes. AHash court sur les
+    // octets ECRITS: fraiche pour un fichier neuf, nourrie du prefixe a la reprise.
     function CopyStream(ASrcFs: TScpFileSystem; ASrcH: TScpFileHandle;
       ADstFs: TScpFileSystem; ADstH: TScpFileHandle;
       AItem: TTransferItem; AExpected: Int64; AStartOffset: Int64;
-      const ATempPath: string; out AErr: TScpError): Boolean;
+      const ATempPath: string; var AHash: TSHA1Context;
+      out AErr: TScpError): Boolean;
     // Decide du sort d'une cible existante. Rend False si l'element ne doit
     // pas etre transfere (ignore ou annule). APrevMode: droits de la cible
     // remplacee, 0 = inconnus ou pas de cible.
@@ -125,6 +134,13 @@ type
     // pas un lien, au moins aussi long que l'offset confirme.
     function PartialUsable(ADstFs: TScpFileSystem; const ATempPath: string;
       AConfirmed: Int64; out AWhy: string): Boolean;
+    // Relit le prefixe confirme A TRAVERS la poignee rouverte et compare son
+    // empreinte au registre; laisse AHash nourrie et la poignee a l'offset. False
+    // avec AErr vide = partiel inutilisable, avec AErr = la relecture a echoue.
+    function VerifyPartialPrefix(ADstFs: TScpFileSystem;
+      ADstH: TScpFileHandle; AItem: TTransferItem;
+      const APartial: TScpPartial; var AHash: TSHA1Context;
+      out AWhy: string; out AErr: TScpError): Boolean;
   public
     constructor Create(AQueue: TTransferQueue);
     destructor Destroy; override;
@@ -205,6 +221,7 @@ begin
     FItems[i].SourceSize := ASourceSize;
     FItems[i].SourceTimeUtc := ASourceTimeUtc;
     FItems[i].Confirmed := 0;
+    FillChar(FItems[i].Digest, SizeOf(FItems[i].Digest), 0);
     FItems[i].Active := True;
   finally
     FLock.Release;
@@ -212,17 +229,35 @@ begin
 end;
 
 procedure TScpPartialRegistry.Confirm(const ATempPath: string;
-  AOffset: Int64);
+  AOffset: Int64; const ADigest: TSHA1Digest);
 var
   i: Integer;
 begin
   FLock.Acquire;
   try
     i := IndexOfTemp(ATempPath);
-    // Un offset qui recule n'a pas de sens: seul le plus grand confirme
-    // compte.
+    // Seul le plus grand offset confirme compte.
     if (i >= 0) and (AOffset > FItems[i].Confirmed) then
+    begin
       FItems[i].Confirmed := AOffset;
+      FItems[i].Digest := ADigest;
+    end;
+  finally
+    FLock.Release;
+  end;
+end;
+
+function TScpPartialRegistry.Lookup(const ATempPath: string;
+  out APartial: TScpPartial): Boolean;
+var
+  i: Integer;
+begin
+  APartial := Default(TScpPartial);
+  FLock.Acquire;
+  try
+    i := IndexOfTemp(ATempPath);
+    Result := i >= 0;
+    if Result then APartial := FItems[i];
   finally
     FLock.Release;
   end;
@@ -786,10 +821,13 @@ end;
 function TScpTransferEngine.CopyStream(ASrcFs: TScpFileSystem;
   ASrcH: TScpFileHandle; ADstFs: TScpFileSystem; ADstH: TScpFileHandle;
   AItem: TTransferItem; AExpected: Int64; AStartOffset: Int64;
-  const ATempPath: string; out AErr: TScpError): Boolean;
+  const ATempPath: string; var AHash: TSHA1Context;
+  out AErr: TScpError): Boolean;
 var
   got, put, offset: Integer;
   total, cap, sinceConfirm: Int64;
+  snap: TSHA1Context;
+  digest: TSHA1Digest;
 begin
   Result := False;
   AErr := NoScpError;
@@ -838,19 +876,23 @@ begin
           'the destination accepted no bytes');
         Exit;
       end;
+      // Ce que la destination a ACCEPTE, pas ce qu'on a voulu ecrire.
+      SHA1Update(AHash, FBuffer[offset], put);
       Inc(offset, put);
       Inc(total, put);
       Inc(sinceConfirm, put);
     end;
 
     AItem.DoneBytes := total;
-    // Un offset n'est CONFIRME qu'une fois vide sur le support: reprendre
-    // sur des octets encore en tampon au moment de la coupure, c'est
-    // reprendre apres un trou.
+    // Un offset n'est CONFIRME qu'une fois vide sur le support: reprendre sur des
+    // octets restes en tampon, c'est reprendre apres un trou. L'empreinte est
+    // prise sur une COPIE du contexte, finaliser le courant l'arreterait.
     if (ATempPath <> '') and (sinceConfirm >= FConfirmEvery) then
     begin
       if not ADstFs.Flush(ADstH, AErr) then Exit;
-      FPartials.Confirm(ATempPath, total);
+      snap := AHash;
+      SHA1Final(snap, digest);
+      FPartials.Confirm(ATempPath, total, digest);
       sinceConfirm := 0;
     end;
     ReportProgress(AItem, False);
@@ -913,6 +955,54 @@ begin
     AWhy := 'it is shorter than the confirmed offset';
     Exit;
   end;
+  Result := True;
+end;
+
+function TScpTransferEngine.VerifyPartialPrefix(ADstFs: TScpFileSystem;
+  ADstH: TScpFileHandle; AItem: TTransferItem; const APartial: TScpPartial;
+  var AHash: TSHA1Context; out AWhy: string; out AErr: TScpError): Boolean;
+var
+  left: Int64;
+  want, got: Integer;
+  snap: TSHA1Context;
+  digest: TSHA1Digest;
+begin
+  Result := False;
+  AWhy := '';
+  AErr := NoScpError;
+  SHA1Init(AHash);
+  // Par la poignee qui va ecrire, pas par le chemin: entre un lstat et une
+  // ouverture le chemin peut changer de fichier.
+  if not ADstFs.Seek(ADstH, 0, AErr) then Exit;
+  left := APartial.Confirmed;
+  while left > 0 do
+  begin
+    if ADstFs.Canceled or AItem.CancelRequested then
+    begin
+      AErr := MakeScpError(sekCanceled, 'Verifying', AItem.DisplayName, '');
+      Exit;
+    end;
+    want := SCP_COPY_BUFFER;
+    if left < want then want := Integer(left);
+    if not ADstFs.Read(ADstH, @FBuffer[0], want, got, AErr) then Exit;
+    // EOF avant l'offset confirme: lstat et la poignee peuvent differer.
+    if got <= 0 then
+    begin
+      AWhy := 'it is shorter than the confirmed offset';
+      Exit;
+    end;
+    SHA1Update(AHash, FBuffer[0], got);
+    Dec(left, got);
+  end;
+  snap := AHash;
+  SHA1Final(snap, digest);
+  if not SHA1Match(digest, APartial.Digest) then
+  begin
+    // Meme taille, autre contenu: un fichier de bonne longueur et faux dedans.
+    AWhy := 'its content no longer matches what was written';
+    Exit;
+  end;
+  if not ADstFs.Seek(ADstH, APartial.Confirmed, AErr) then Exit;
   Result := True;
 end;
 
@@ -1014,6 +1104,9 @@ var
   v: TNameVerdict;
   prevMode, newMode, tempMode: LongWord;
   why: string;
+  hash, snap: TSHA1Context;
+  digest: TSHA1Digest;
+  partial: TScpPartial;
 begin
   Result := False;
   srcH := nil;
@@ -1201,11 +1294,43 @@ begin
         tempPath := '';
         resumeFrom := 0;
       end
-      else if not ASrcFs.Seek(srcH, resumeFrom, err) then
+      else
       begin
-        AItem.Error := err;
-        FQueue.SetState(AItem, tsFailed);
-        Exit;
+        // Le fichier rouvert est-il celui qu'on a ecrit? Un lstat repond sur un
+        // chemin; relire le prefixe par cette poignee repond sur le FICHIER.
+        if not FPartials.Lookup(tempPath, partial) then
+          partial.Confirmed := -1;
+        if (partial.Confirmed <> resumeFrom) or
+           not VerifyPartialPrefix(ADstFs, dstH, AItem, partial, hash, why,
+             err) then
+        begin
+          ADstFs.Close(dstH, closeErr);
+          dstH := nil;
+          if err.Kind <> sekNone then
+          begin
+            AItem.Error := err;
+            if err.Kind = sekCanceled then
+              FQueue.SetState(AItem, tsCanceled)
+            else if IsFatalToSession(err.Kind) then
+              FQueue.SetState(AItem, tsInterrupted)
+            else
+              FQueue.SetState(AItem, tsFailed);
+            Exit;
+          end;
+          if why = '' then why := 'the registry and the offset disagree';
+          FPartials.Forget(tempPath);
+          Note(Format('The partial file for %s cannot be resumed (%s); ' +
+            'starting over.', [AItem.DisplayName, why]));
+          ADstFs.DeleteFile(tempPath, closeErr);
+          tempPath := '';
+          resumeFrom := 0;
+        end
+        else if not ASrcFs.Seek(srcH, resumeFrom, err) then
+        begin
+          AItem.Error := err;
+          FQueue.SetState(AItem, tsFailed);
+          Exit;
+        end;
       end;
     end;
     if tempPath = '' then
@@ -1224,17 +1349,22 @@ begin
         ADstFs.DisplayName, AItem.SourcePath, srcEntry.Size,
         srcEntry.MTimeUtc);
       resumeFrom := 0;
+      SHA1Init(hash);
     end;
 
     okCopy := CopyStream(ASrcFs, srcH, ADstFs, dstH, AItem, srcEntry.Size,
-      resumeFrom, tempPath, err);
+      resumeFrom, tempPath, hash, err);
 
     // Vider AVANT de conclure: un disque plein ne se revele souvent qu'ici, et
     // conclure avant remplacerait une cible valide par un fichier tronque.
     if okCopy then
       okCopy := ADstFs.Flush(dstH, err);
     if okCopy then
-      FPartials.Confirm(tempPath, AItem.DoneBytes);
+    begin
+      snap := hash;
+      SHA1Final(snap, digest);
+      FPartials.Confirm(tempPath, AItem.DoneBytes, digest);
+    end;
 
     ADstFs.Close(dstH, closeErr);
     dstH := nil;

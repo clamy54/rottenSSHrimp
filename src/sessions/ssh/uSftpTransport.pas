@@ -28,6 +28,7 @@ type
   TSftpFileSystem = class(TScpFileSystem)
   private
     FOwner: TSftpTransport;
+    FNoFsyncSaid: Boolean;
     FIdentity: string;
     // Erreur exploitable du dernier echec: le code SSH_FX_* si libssh2 signale
     // une erreur de protocole SFTP, le sien sinon.
@@ -866,9 +867,11 @@ begin
   AErr := NoScpError;
   p := AnsiString(RemoteNormalize(APath));
   deadline := GetTickCount64 + SFTP_OP_TIMEOUT_MS;
+  // Lecture ET ecriture: le moteur relit le prefixe par cette poignee avant
+  // d'ecrire, ce qui lie la verification au fichier ouvert et non au chemin.
   repeat
     hnd := libssh2_sftp_open_ex(FOwner.FSftp, PAnsiChar(p), Length(p),
-      LIBSSH2_FXF_WRITE, &0600, LIBSSH2_SFTP_OPENFILE);
+      LIBSSH2_FXF_READ or LIBSSH2_FXF_WRITE, &0600, LIBSSH2_SFTP_OPENFILE);
     if hnd <> nil then Break;
     rc := libssh2_session_last_errno(FOwner.FSession);
     if rc <> LIBSSH2_ERROR_EAGAIN then Break;
@@ -962,12 +965,21 @@ begin
   until not WaitAgain(deadline);
   if rc = 0 then Exit(True);
   AErr := LastError('Flushing', h.Path, rc, False);
-  // fsync@openssh.com est une extension: beaucoup de serveurs ne l'ont pas.
-  // Son absence n'est pas un echec du transfert -- la fermeture du fichier
-  // reste le point de verite.
+  // fsync@openssh.com est une extension que beaucoup de serveurs n'ont pas. Son
+  // absence n'est pas un echec -- la fermeture reste le point de verite -- mais
+  // elle change le sens de « confirme »: acquitte par le serveur, pas vide sur
+  // son disque. Le moteur compare le prefixe a la reprise, donc un bout perdu
+  // fait repartir de zero; on le DIT une fois, pour que la garantie soit vraie.
   if AErr.Kind = sekUnsupported then
   begin
     AErr := NoScpError;
+    if not FNoFsyncSaid then
+    begin
+      FNoFsyncSaid := True;
+      FOwner.EngineNote('The server has no fsync extension: resume points ' +
+        'are acknowledged, not flushed to disk. The resumed part is ' +
+        'verified before use, so a lost tail restarts the file.');
+    end;
     Exit(True);
   end;
   Result := False;
@@ -1729,7 +1741,8 @@ procedure TSftpTransport.DoRunQueue;
 var
   item: TTransferItem;
   srcFs, dstFs: TScpFileSystem;
-  root: string;
+  root, errText: string;
+  interrupted: Boolean;
 begin
   while not Terminated do
   begin
@@ -1753,6 +1766,8 @@ begin
     if root = '' then
       // Hors enumeration: le dossier de la cible est la borne la plus stricte.
       root := dstFs.Parent(item.TargetPath);
+    interrupted := False;
+    errText := '';
     try
       FEngine.RunItem(srcFs, dstFs, item, root);
       if item.IsRunnable then
@@ -1761,17 +1776,22 @@ begin
           'the transfer ended without a result');
         FQueue.SetState(item, tsFailed);
       end;
+      // Tout ce qu'on veut savoir de l'element se lit ICI, tant qu'il est tenu:
+      // une fois rendu, « Clear completed » peut le liberer des la ligne suivante.
+      interrupted := item.State = tsInterrupted;
+      if interrupted then errText := ScpErrorText(item.Error);
     finally
       FQueue.ReleaseCurrent;
     end;
+    item := nil;
     if Assigned(FOnQueueChanged) then
       Queue(@PublishQueueChanged);
     // Connexion tombee EN PLEIN fichier: continuer a servir des commandes sur une
     // socket fermee laisserait l'onglet « connected », Reconnect eteint.
-    if item.State = tsInterrupted then
+    if interrupted then
     begin
       if not Terminated then
-        Fail(ScpErrorText(item.Error));
+        Fail(errText);
       Break;
     end;
     // Entre deux elements: une commande d'interface ne coupe pas un fichier, mais

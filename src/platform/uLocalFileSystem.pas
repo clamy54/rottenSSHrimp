@@ -680,13 +680,13 @@ begin
   AErr := NoScpError;
   h := TLocalHandle.Create;
   h.Path := APath;
-  // Jamais a travers un lien: un partiel remplace par un lien entre la
-  // coupure et la reprise ferait ecrire la suite dans un autre fichier. Le
-  // moteur l'a deja verifie par lstat; l'ouverture le garantit sans course.
+  // Jamais a travers un lien: un partiel devenu lien entre la coupure et la
+  // reprise ferait ecrire ailleurs. Lecture ET ecriture, parce que le moteur
+  // relit le prefixe par cette poignee, ce qui lie la verification au FICHIER.
   {$IFDEF WINDOWS}
   // FILE_FLAG_OPEN_REPARSE_POINT: sur un lien, l'ecriture echoue au lieu de
   // traverser.
-  h.H := CreateFileW(PWideChar(NativeW(APath)), GENERIC_WRITE,
+  h.H := CreateFileW(PWideChar(NativeW(APath)), GENERIC_READ or GENERIC_WRITE,
     0, nil, OPEN_EXISTING,
     FILE_ATTRIBUTE_NORMAL or FILE_FLAG_OPEN_REPARSE_POINT_, 0);
   if h.H = INVALID_HANDLE_VALUE then
@@ -696,7 +696,7 @@ begin
     Exit(False);
   end;
   {$ELSE}
-  h.Fd := fpOpen(PChar(LocalNormalize(APath)), O_WRONLY or O_NOFOLLOW);
+  h.Fd := fpOpen(PChar(LocalNormalize(APath)), O_RDWR or O_NOFOLLOW);
   if h.Fd < 0 then
   begin
     AErr := LastErr('Reopening', APath);
