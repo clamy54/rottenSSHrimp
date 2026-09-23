@@ -5,7 +5,6 @@ rottensshrimp
 rottensshrimp.exe
 RottenSSHrimp.app/
 app/rottensshrimp.res
-tests/rsshscpsmoke.res
 app/rottensshrimp.lps
 *.ppu
 *.o
@@ -45,3 +44,11 @@ Thumbs.db
 
 # Notes de travail, pas de la documentation du projet
 CAHIER_DES_CHARGES_SCP_V2.md
+
+# Tests: locaux, hors depot
+tests/
+scripts/run-tests.ps1
+scripts/run-tests.sh
+/rsshtests
+/rsshscpsmoke
+/rsshsftpit

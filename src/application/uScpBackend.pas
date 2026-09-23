@@ -4,8 +4,7 @@
   serveur reel ne produit qu'au pire moment.
 
   Deux implementations concretes existent: uLocalFileSystem (disque local) et
-  le backend SFTP porte par uSftpTransport. Une troisieme, factice, vit dans
-  les tests.
+  le backend SFTP porte par uSftpTransport.
 
   Classe abstraite et non interface COM: ces objets appartiennent au thread de
   transport, qui les cree et les detruit; un comptage de references n'apporte

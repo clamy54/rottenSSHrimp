@@ -753,7 +753,9 @@ begin
     WriteInc;
     WriteXferInc;
     PatchLpi(LpiFile, False);
-    PatchLpi(SmokeLpiFile, True);
+    // Le projet de fumee ne vit que sur les postes de developpement.
+    if FileExists(SmokeLpiFile) then
+      PatchLpi(SmokeLpiFile, True);
 
     for i := 0 to Skipped.Count - 1 do
       WriteLn(Format('collision ignoree: %s deja fourni par le groupe %s',

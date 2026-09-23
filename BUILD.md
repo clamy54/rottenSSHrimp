@@ -41,100 +41,13 @@ into their on-dark and on-light variants and resamples to 16/24/32/48. For the
 across twelve sizes from 12 to 64, because that tab tints its icons at draw
 time and asks for whatever size the row height works out to. It then rewrites
 `uTreeIconCatalog.inc`, `uScpIconCatalog.inc` and the `<Resources>` block of
-both `app/rottensshrimp.lpi` and `tests/rsshscpsmoke.lpi` — the smoke suite
-paints the same panels, so it needs the same resources or it checks a fallback
-nobody sees. It depends on nothing but the FCL, so the toolchain you already
-installed to build the application is the whole requirement.
-
-The same "build from the project directory" rule applies to the smoke suite:
-`lazbuild` resolves resource paths against the current directory, so
-`scripts/run-tests.*` steps into `tests/` before building it.
+`app/rottensshrimp.lpi`. It depends on nothing but the FCL, so the toolchain
+you already installed to build the application is the whole requirement.
 
 It carries its own Lanczos resampler rather than using `TFPBaseInterpolation`
 from the FCL, which accumulates into the destination `Word`: a filter with
 negative lobes underflows there, wraps around, and turns every bit of ringing
 into an opaque white pixel. Ask how that was discovered.
-
-### Tests
-
-Three of them, and they answer different questions.
-
-**Unit tests.** No network, no server, no LCL. They cover the layers of the
-File Transfer tab that can be reasoned about in isolation: path joining, normalisation
-and containment on both platforms, the rules that decide which filenames from a
-server are acceptable to act on, the transfer queue's state machine, and the
-transfer engine driven against fake filesystems that inject access denied,
-disk full, short reads, short writes, premature EOF, lost connections and
-servers with no atomic rename.
-
-```sh
-lazbuild tests/rsshtests.lpi && ./rsshtests
-```
-
-It builds to the repository *root* on purpose: the last suite loads the real
-`libssh2` and checks that every SFTP symbol resolves and that
-`LIBSSH2_SFTP_ATTRIBUTES` has the layout the binding assumes. That record
-starts with an `unsigned long`, which is four bytes on Windows x64 and eight
-everywhere else, followed by a 64-bit integer that has to be aligned. Getting
-it wrong produces no error and no crash: it produces files of several petabytes
-dated 1970. The check runs on whichever platform you are on, which is the only
-place it can mean anything.
-
-Exit code is non-zero if anything fails, so it drops into CI unchanged.
-
-**A smoke test of the File Transfer tab.** A separate project because it needs the LCL,
-which the unit tests deliberately do not:
-
-```sh
-lazbuild tests/rsshscpsmoke.lpi && ./rsshscpsmoke
-```
-
-It builds the tab, shows it, lets it paint, starts its three threads against a
-port where nothing is listening, then shuts it down and frees it. Nothing
-leaves the machine. It exists because none of the unit tests touch a control,
-and an owner-drawn panel that measures text before it has a parent window
-raises inside its own constructor -- which is visible only when the tab is
-opened. It opens a window briefly, so it needs a graphical session.
-
-It also checks the rules of the drag between the two panels, which is the part
-that decides where files get written: a panel refuses its own selection,
-accepts the other one's, and resolves a drop to the folder under the cursor --
-never to a file, and never to a symlink. `--shot <file.png>` saves an image of
-the window, because a layout is not something you read in the source.
-
-Both test scripts run it after the unit tests:
-
-```sh
-scripts/run-tests.sh          # or: powershell -File scripts\run-tests.ps1
-```
-
-**An SFTP integration scenario.** Not part of any build, because it needs a
-document, its password and a reachable host:
-
-```sh
-fpc -Mobjfpc -Sh -O1 -Fusrc/util -Fusrc/application -Fusrc/platform -Fusrc/sessions/ssh -Fusrc/sessions/common -Fusrc/crypto -Fusrc/storage -Fusrc/domain -Fubindings/libsodium -Fubindings/libssh2 -Fubindings/libfido2 -Fubindings/sqlite -Futests -Fu<lazarus>/components/lazutils/lib/$(TargetCPU)-$(TargetOS) -FE. tests/rsshsftpit.lpr
-
-./rsshsftpit <document.rsh> <password> <host-name-in-the-tree> [--big]
-```
-
-It drives the *same* transport and the *same* engine the File Transfer tab uses, minus
-the LCL, against a real server: connect, list, round-trip empty, small and
-large files, names with spaces, quotes, accents and a leading dash, a recursive
-tree, duplication in place on both sides, the three conflict resolutions,
-rename, and recursive delete. Every downloaded file is compared byte for byte
-with what was sent.
-
-`uScpPaths` uses `LazUTF8`, so the LazUtils unit path has to be on the command
-line even though nothing here touches the LCL.
-
-It works in a directory it creates in the remote home and removes afterwards.
-`--cleanup` instead of `--big` removes what an interrupted run left behind.
-
-`--big` adds a file of just over 4 GiB, which is the size at which a 32-bit
-counter overflows in silence. It asks the server how much room it has first,
-via `statvfs@openssh.com`, and skips rather than proceed if the answer is not
-comfortable or not available: filling somebody else's disk is not a test
-result. No password or key ever reaches the output or a temporary file.
 
 ---
 
