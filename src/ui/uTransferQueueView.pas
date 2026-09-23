@@ -39,6 +39,8 @@ type
     FOnCommand: TQueueCommandEvent;
     FRate: TRateMeter;
     procedure CommandClick(Sender: TObject);
+    procedure ListSelectionChanged(Sender: TObject);
+    procedure ListCancelKey(Sender: TObject);
   public
     constructor CreateView(AOwner: TComponent; AQueue: TTransferQueue);
     destructor Destroy; override;
@@ -46,6 +48,10 @@ type
     procedure Refresh;
     function SelectedItemIds: TStringArray;
     procedure ClearSelection;
+    // Reselectionne par identifiant apres un « Clear completed »: les lignes
+    // restantes ont change de position, pas d'identite.
+    procedure RestoreSelection(const AIds: TStringArray; AFocusId: Integer);
+    function FocusedItemId: Integer;
     property OnCommand: TQueueCommandEvent read FOnCommand write FOnCommand;
     property List: TQueueListView read FList;
   end;
@@ -53,13 +59,26 @@ type
   TQueueListView = class(TCustomControl, IThemedScrollTarget)
   private
     FQueue: TTransferQueue;
+    // Par POSITION: la file n'ajoute qu'en queue, et seul le thread UI en
+    // retire, par « Clear completed », qui reselectionne par identifiant.
     FSelected: array of Boolean;
+    FFocus: Integer;         // -1 = aucune ligne
+    FAnchor: Integer;        // origine d'une plage au Maj+clic
     FTop: Integer;
     FRowHeight: Integer;
     FOnViewChanged: TNotifyEvent;
+    FOnSelectionChanged: TNotifyEvent;
+    FOnCancelKey: TNotifyEvent;
     procedure DrawRow(AIndex, AY: Integer);
+    procedure SelectRange(AFrom, ATo: Integer);
+    procedure SelectOnly(AIndex: Integer);
+    procedure SetFocusRow(AIndex: Integer);
+    procedure SelectionChanged;
   protected
     procedure Paint; override;
+    procedure KeyDown(var Key: Word; Shift: TShiftState); override;
+    procedure DoEnter; override;
+    procedure DoExit; override;
     procedure MouseDown(Button: TMouseButton; Shift: TShiftState;
       X, Y: Integer); override;
     function DoMouseWheel(Shift: TShiftState; WheelDelta: Integer;
@@ -69,8 +88,16 @@ type
     constructor CreateFor(AOwner: TComponent; AQueue: TTransferQueue);
     procedure SyncSelection;
     function SelectedIds: TStringArray;
+    function SelectionCount: Integer;
     procedure ClearSelection;
+    procedure SelectAll;
+    procedure SelectIds(const AIds: TStringArray; AFocusId: Integer);
+    function FocusedId: Integer;
     procedure RecomputeMetrics;
+    property OnSelectionChanged: TNotifyEvent
+      read FOnSelectionChanged write FOnSelectionChanged;
+    // Suppr: annuler la selection, comme le bouton du meme nom.
+    property OnCancelKey: TNotifyEvent read FOnCancelKey write FOnCancelKey;
 
     function ScrollViewportHeight: Integer;
     function ScrollMaxTop: Integer;
@@ -129,6 +156,8 @@ begin
   DoubleBuffered := True;
   TabStop := True;
   FQueue := AQueue;
+  FFocus := -1;
+  FAnchor := -1;
   RecomputeMetrics;
 end;
 
@@ -147,6 +176,8 @@ begin
   c := FQueue.Count;
   if Length(FSelected) <> c then
     SetLength(FSelected, c);
+  if FFocus >= c then FFocus := c - 1;
+  if FAnchor >= c then FAnchor := -1;
   if FTop > ScrollMaxTop then FTop := ScrollMaxTop;
   if Assigned(FOnViewChanged) then FOnViewChanged(Self);
 end;
@@ -171,12 +202,200 @@ begin
   end;
 end;
 
+function TQueueListView.SelectionCount: Integer;
+var
+  i: Integer;
+begin
+  Result := 0;
+  for i := 0 to High(FSelected) do
+    if FSelected[i] then Inc(Result);
+end;
+
+procedure TQueueListView.SelectionChanged;
+begin
+  Invalidate;
+  if Assigned(FOnSelectionChanged) then FOnSelectionChanged(Self);
+end;
+
 procedure TQueueListView.ClearSelection;
 var
   i: Integer;
 begin
   for i := 0 to High(FSelected) do FSelected[i] := False;
+  FAnchor := -1;
+  SelectionChanged;
+end;
+
+procedure TQueueListView.SelectAll;
+var
+  i: Integer;
+begin
+  SyncSelection;
+  for i := 0 to High(FSelected) do FSelected[i] := True;
+  SelectionChanged;
+end;
+
+procedure TQueueListView.SelectOnly(AIndex: Integer);
+var
+  i: Integer;
+begin
+  for i := 0 to High(FSelected) do FSelected[i] := False;
+  if (AIndex >= 0) and (AIndex < Length(FSelected)) then
+    FSelected[AIndex] := True;
+  FAnchor := AIndex;
+end;
+
+procedure TQueueListView.SelectRange(AFrom, ATo: Integer);
+var
+  i: Integer;
+begin
+  for i := 0 to High(FSelected) do
+    FSelected[i] := (i >= Min(AFrom, ATo)) and (i <= Max(AFrom, ATo));
+end;
+
+procedure TQueueListView.SetFocusRow(AIndex: Integer);
+var
+  rowTop: Integer;
+begin
+  if Length(FSelected) = 0 then
+  begin
+    FFocus := -1;
+    Exit;
+  end;
+  FFocus := Max(0, Min(AIndex, High(FSelected)));
+  rowTop := FFocus * FRowHeight;
+  if rowTop < FTop then
+    ScrollSetTop(rowTop)
+  else if rowTop + FRowHeight > FTop + ClientHeight then
+    ScrollSetTop(rowTop + FRowHeight - ClientHeight);
+end;
+
+function TQueueListView.FocusedId: Integer;
+begin
+  Result := -1;
+  FQueue.Lock;
+  try
+    if (FFocus >= 0) and (FFocus < FQueue.Count) then
+      Result := FQueue.Items[FFocus].Id;
+  finally
+    FQueue.Unlock;
+  end;
+end;
+
+// Liste triee: un Ctrl+A sur des milliers de fichiers suivi d'un « Clear
+// completed » ferait sinon des millions de comparaisons sur le thread UI.
+procedure TQueueListView.SelectIds(const AIds: TStringArray;
+  AFocusId: Integer);
+var
+  i, k, id: Integer;
+  wanted: TStringList;
+begin
+  SyncSelection;
+  for i := 0 to High(FSelected) do FSelected[i] := False;
+  FFocus := -1;
+  wanted := TStringList.Create;
+  try
+    wanted.Sorted := True;
+    wanted.Duplicates := dupIgnore;
+    for k := 0 to High(AIds) do wanted.Add(AIds[k]);
+    FQueue.Lock;
+    try
+      for i := 0 to Min(High(FSelected), FQueue.Count - 1) do
+      begin
+        id := FQueue.Items[i].Id;
+        if id = AFocusId then FFocus := i;
+        FSelected[i] := wanted.Find(IntToStr(id), k);
+      end;
+    finally
+      FQueue.Unlock;
+    end;
+  finally
+    wanted.Free;
+  end;
+  FAnchor := FFocus;
+  SelectionChanged;
+end;
+
+procedure TQueueListView.DoEnter;
+begin
+  inherited DoEnter;
   Invalidate;
+end;
+
+procedure TQueueListView.DoExit;
+begin
+  inherited DoExit;
+  Invalidate;
+end;
+
+// Memes gestes que dans les panneaux de fichiers. Ctrl et Cmd font la meme
+// chose: sous macOS la LCL rend Cmd dans ssMeta, et c'est lui qu'on y attend.
+procedure TQueueListView.KeyDown(var Key: Word; Shift: TShiftState);
+var
+  target, page: Integer;
+begin
+  SyncSelection;
+  page := Max(1, ClientHeight div Max(FRowHeight, 1));
+  case Key of
+    VK_UP: target := FFocus - 1;
+    VK_DOWN: target := FFocus + 1;
+    VK_PRIOR: target := FFocus - page;
+    VK_NEXT: target := FFocus + page;
+    VK_HOME: target := 0;
+    VK_END: target := High(FSelected);
+    VK_SPACE:
+      begin
+        if (FFocus >= 0) and (FFocus < Length(FSelected)) then
+        begin
+          FSelected[FFocus] := not FSelected[FFocus];
+          FAnchor := FFocus;
+          SelectionChanged;
+        end;
+        Key := 0;
+        Exit;
+      end;
+    VK_A:
+      begin
+        if (ssCtrl in Shift) or (ssMeta in Shift) then
+        begin
+          SelectAll;
+          Key := 0;
+        end
+        else
+          inherited KeyDown(Key, Shift);
+        Exit;
+      end;
+    VK_ESCAPE:
+      begin
+        ClearSelection;
+        Key := 0;
+        Exit;
+      end;
+    VK_DELETE:
+      begin
+        if Assigned(FOnCancelKey) then FOnCancelKey(Self);
+        Key := 0;
+        Exit;
+      end;
+  else
+    inherited KeyDown(Key, Shift);
+    Exit;
+  end;
+  Key := 0;
+  if Length(FSelected) = 0 then Exit;
+  // Sans ligne courante, la premiere fleche se pose sur la premiere ligne au
+  // lieu de la sauter.
+  if FFocus < 0 then target := 0;
+  target := Max(0, Min(target, High(FSelected)));
+  if ssShift in Shift then
+  begin
+    if FAnchor < 0 then FAnchor := Max(FFocus, 0);
+    SelectRange(FAnchor, target);
+  end
+  else if not ((ssCtrl in Shift) or (ssMeta in Shift)) then
+    SelectOnly(target);
+  SetFocusRow(target);
+  SelectionChanged;
 end;
 
 procedure TQueueListView.DrawRow(AIndex, AY: Integer);
@@ -277,6 +496,15 @@ begin
     s := s + ' - attributes not preserved';
   Canvas.TextRect(Rect(x, AY, ClientWidth - PAD, AY + FRowHeight), x,
     textTop, s);
+
+  // Ligne courante: celle que visent les fleches et Espace. Montree tant que
+  // la liste a le focus, sinon rien ne dirait ou il est.
+  if Focused and (AIndex = FFocus) then
+  begin
+    Canvas.Pen.Color := BlendColor(clAppFg, rowBg, 45);
+    Canvas.Brush.Style := bsClear;
+    Canvas.Rectangle(Rect(0, AY, ClientWidth, AY + FRowHeight));
+  end;
 end;
 
 procedure TQueueListView.Paint;
@@ -316,7 +544,7 @@ end;
 procedure TQueueListView.MouseDown(Button: TMouseButton; Shift: TShiftState;
   X, Y: Integer);
 var
-  idx, i: Integer;
+  idx: Integer;
 begin
   if CanFocus then SetFocus;
   SyncSelection;
@@ -324,14 +552,21 @@ begin
   // Contre FSelected et non contre la file: entre SyncSelection et ici, le
   // fil de transfert a pu ajouter des elements.
   if (idx < 0) or (idx >= Length(FSelected)) then Exit;
-  if (ssCtrl in Shift) or (ssMeta in Shift) then
-    FSelected[idx] := not FSelected[idx]
-  else
+  if ssShift in Shift then
   begin
-    for i := 0 to High(FSelected) do FSelected[i] := False;
-    FSelected[idx] := True;
-  end;
-  Invalidate;
+    if FAnchor < 0 then FAnchor := Max(FFocus, 0);
+    SelectRange(FAnchor, idx);
+  end
+  else if (ssCtrl in Shift) or (ssMeta in Shift) then
+  begin
+    FSelected[idx] := not FSelected[idx];
+    FAnchor := idx;
+  end
+  // Clic droit dans la selection: elle reste entiere.
+  else if not ((Button = mbRight) and FSelected[idx]) then
+    SelectOnly(idx);
+  SetFocusRow(idx);
+  SelectionChanged;
   inherited MouseDown(Button, Shift, X, Y);
 end;
 
@@ -442,6 +677,8 @@ begin
   FList := TQueueListView.CreateFor(Self, AQueue);
   FList.Parent := Self;
   FList.Align := alClient;
+  FList.OnSelectionChanged := @ListSelectionChanged;
+  FList.OnCancelKey := @ListCancelKey;
   FScroll.Bind(FList);
 
   ApplyTheme;
@@ -469,6 +706,17 @@ begin
       BlendColor(clAppFg, clPanelBg, 42));
   ApplyUiFont(Self);
   Invalidate;
+end;
+
+procedure TTransferQueueView.ListSelectionChanged(Sender: TObject);
+begin
+  FBtnCancel.Enabled := FList.SelectionCount > 0;
+end;
+
+procedure TTransferQueueView.ListCancelKey(Sender: TObject);
+begin
+  if (FList.SelectionCount > 0) and Assigned(FOnCommand) then
+    FOnCommand(qcCancelSelected);
 end;
 
 procedure TTransferQueueView.CommandClick(Sender: TObject);
@@ -512,6 +760,7 @@ begin
   FBtnResume.Enabled := FQueue.IsPaused;
   FBtnRetry.Enabled := s.Failed + s.Interrupted > 0;
   FBtnClear.Enabled := s.Completed + s.Skipped + s.Failed + s.Canceled > 0;
+  FBtnCancel.Enabled := FList.SelectionCount > 0;
   FList.Invalidate;
 end;
 
@@ -523,6 +772,17 @@ end;
 procedure TTransferQueueView.ClearSelection;
 begin
   FList.ClearSelection;
+end;
+
+procedure TTransferQueueView.RestoreSelection(const AIds: TStringArray;
+  AFocusId: Integer);
+begin
+  FList.SelectIds(AIds, AFocusId);
+end;
+
+function TTransferQueueView.FocusedItemId: Integer;
+begin
+  Result := FList.FocusedId;
 end;
 
 end.

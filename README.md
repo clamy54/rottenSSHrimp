@@ -110,7 +110,10 @@ landing on its target, and a folder is done after its contents, so a rights
 change cannot lock the walk out halfway. Owner and group are shown as the
 server reports them and are not editable.
 Transfers are recursive, and a queue says what is happening; cancelling one
-stops it where it is and leaves the destination as it was. A replaced file
+stops it where it is and leaves the destination as it was. Queue rows select
+like files do -- Shift and Ctrl (Cmd on macOS) with the mouse or the arrows,
+Ctrl+A for all, Delete to cancel the selection -- and *Clear completed* keeps
+what is still selected. A replaced file
 keeps its permissions -- on Windows its ACL; setuid, setgid and sticky bits
 are never carried onto new content -- and a new one gets its source's read
 and write bits, never widened and never executable. A new folder is created

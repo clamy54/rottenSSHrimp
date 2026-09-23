@@ -1153,10 +1153,12 @@ begin
       end;
     qcClearCompleted:
       begin
+        // Les lignes restantes changent de position: la selection est reprise
+        // par identifiant, sinon elle viserait d'autres elements.
+        ids := FQueueView.SelectedItemIds;
+        id := FQueueView.FocusedItemId;
         FQueue.ClearFinished;
-        // Les indices ont bouge: une selection par position viserait
-        // d'autres lignes.
-        FQueueView.ClearSelection;
+        FQueueView.RestoreSelection(ids, id);
       end;
     qcRetryFailed:
       if FState = rssConnected then
