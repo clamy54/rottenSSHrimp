@@ -193,6 +193,7 @@ type
     procedure CommandLoop;
     procedure RunCommand(ACmd: TSftpCommand);
     procedure DoRunQueue;
+    procedure FailIfFatal(const AErr: TScpError);
     function RemoveTree(const APath: string; ADepth: Integer;
       out AErr: TScpError): Boolean;
     // Octets libres sous APath, -1 si le serveur n'annonce pas
@@ -1765,6 +1766,14 @@ begin
     end;
     if Assigned(FOnQueueChanged) then
       Queue(@PublishQueueChanged);
+    // Connexion tombee EN PLEIN fichier: continuer a servir des commandes sur une
+    // socket fermee laisserait l'onglet « connected », Reconnect eteint.
+    if item.State = tsInterrupted then
+    begin
+      if not Terminated then
+        Fail(ScpErrorText(item.Error));
+      Break;
+    end;
     // Entre deux elements: une commande d'interface ne coupe pas un fichier, mais
     // n'attend pas la fin du lot. La boucle REVIENT ici des qu'elle est servie.
     if HasPendingCommand then Break;
@@ -1815,6 +1824,7 @@ begin
         r.Entries := entries;
         r.Error := err;
         PostResult(r);
+        FailIfFatal(err);
       end;
     sckRemoteHome:
       begin
@@ -1839,6 +1849,7 @@ begin
         r.Kind := srOpDone;
         r.Error := err;
         PostResult(r);
+        FailIfFatal(err);
       end;
     sckRemoteRename:
       begin
@@ -1847,6 +1858,7 @@ begin
         r.Kind := srOpDone;
         r.Error := err;
         PostResult(r);
+        FailIfFatal(err);
       end;
     sckRemoteDelete:
       begin
@@ -1855,6 +1867,7 @@ begin
         r.Kind := srOpDone;
         r.Error := err;
         PostResult(r);
+        FailIfFatal(err);
       end;
     sckEnqueueUpload, sckEnqueueDownload:
       begin
@@ -1945,11 +1958,20 @@ begin
   end;
 end;
 
+// Erreur qui condamne la session sur une operation ordinaire: l'onglet passe
+// en echec, il n'affiche pas un bandeau sous un etat « connected ».
+procedure TSftpTransport.FailIfFatal(const AErr: TScpError);
+begin
+  if Terminated then Exit;
+  if IsFatalToSession(AErr.Kind) then
+    Fail(ScpErrorText(AErr));
+end;
+
 procedure TSftpTransport.CommandLoop;
 var
   cmd: TSftpCommand;
 begin
-  while not Terminated do
+  while (not Terminated) and (FStates.State = rssConnected) do
   begin
     cmd := TakeCommand;
     if cmd = nil then

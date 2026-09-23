@@ -25,6 +25,9 @@ const
   // Au-dela de l'annonce du serveur on continue, mais pas indefiniment.
   SCP_GROWTH_SLACK = Int64(4) * 1024 * 1024 * 1024;
   SCP_PROGRESS_MS = 100;
+  // Periode de vidage du tampon, qui confirme l'offset de reprise. Trop petit:
+  // le debit s'effondre; trop grand, une coupure fait resservir l'intervalle.
+  SCP_CONFIRM_EVERY = Int64(4) * 1024 * 1024;
 
 type
   // Decision devant un conflit, sur le thread de travail. Peut bloquer le temps
@@ -93,6 +96,7 @@ type
     FLastProgressTick: QWord;
     FNonAtomicAllowedForAll: Boolean;
     FNonAtomicRefusedForAll: Boolean;
+    FConfirmEvery: Int64;
 
     procedure Note(const AText: string);
     procedure ReportProgress(AItem: TTransferItem; AForce: Boolean);
@@ -112,11 +116,15 @@ type
     // Un dossier n'a pas pu etre cree: tout ce qui devait y aller echoue avec lui,
     // tout de suite, plutot qu'un par un avec une raison qui egare.
     procedure FailSubtree(ADstFs: TScpFileSystem; AItem: TTransferItem);
-    // Remplace la cible par le temporaire. Gere l'absence de remplacement
-    // atomique en DEMANDANT, jamais en supprimant d'office.
-    function CommitTemp(ADstFs: TScpFileSystem;
+    // Remplace la cible par le temporaire. L'absence de remplacement atomique se
+    // DEMANDE, jamais ne se contourne, et l'annulation est relue apres l'attente.
+    function CommitTemp(ADstFs: TScpFileSystem; AItem: TTransferItem;
       const ATempPath, ATargetPath: string; ATargetExisted: Boolean;
       out AErr: TScpError): Boolean;
+    // Le partiel enregistre est-il encore ce qu'on croit? Fichier ordinaire,
+    // pas un lien, au moins aussi long que l'offset confirme.
+    function PartialUsable(ADstFs: TScpFileSystem; const ATempPath: string;
+      AConfirmed: Int64; out AWhy: string): Boolean;
   public
     constructor Create(AQueue: TTransferQueue);
     destructor Destroy; override;
@@ -141,6 +149,7 @@ type
     function CleanupPartials(ADstFs: TScpFileSystem): TStringArray;
 
     property Partials: TScpPartialRegistry read FPartials;
+    property ConfirmEvery: Int64 read FConfirmEvery write FConfirmEvery;
     property OnConflict: TScpConflictEvent read FOnConflict write FOnConflict;
     property OnNonAtomic: TScpNonAtomicEvent
       read FOnNonAtomic write FOnNonAtomic;
@@ -324,6 +333,7 @@ begin
   inherited Create;
   FQueue := AQueue;
   FPartials := TScpPartialRegistry.Create;
+  FConfirmEvery := SCP_CONFIRM_EVERY;
   SetLength(FBuffer, SCP_COPY_BUFFER);
 end;
 
@@ -779,11 +789,12 @@ function TScpTransferEngine.CopyStream(ASrcFs: TScpFileSystem;
   const ATempPath: string; out AErr: TScpError): Boolean;
 var
   got, put, offset: Integer;
-  total, cap: Int64;
+  total, cap, sinceConfirm: Int64;
 begin
   Result := False;
   AErr := NoScpError;
   total := AStartOffset;
+  sinceConfirm := 0;
   AItem.DoneBytes := total;
   cap := -1;
   if AExpected >= 0 then cap := AExpected + SCP_GROWTH_SLACK;
@@ -829,11 +840,19 @@ begin
       end;
       Inc(offset, put);
       Inc(total, put);
+      Inc(sinceConfirm, put);
     end;
 
     AItem.DoneBytes := total;
-    if ATempPath <> '' then
+    // Un offset n'est CONFIRME qu'une fois vide sur le support: reprendre
+    // sur des octets encore en tampon au moment de la coupure, c'est
+    // reprendre apres un trou.
+    if (ATempPath <> '') and (sinceConfirm >= FConfirmEvery) then
+    begin
+      if not ADstFs.Flush(ADstH, AErr) then Exit;
       FPartials.Confirm(ATempPath, total);
+      sinceConfirm := 0;
+    end;
     ReportProgress(AItem, False);
 
     if (cap > 0) and (total > cap) then
@@ -862,9 +881,44 @@ begin
   Result := True;
 end;
 
+function TScpTransferEngine.PartialUsable(ADstFs: TScpFileSystem;
+  const ATempPath: string; AConfirmed: Int64; out AWhy: string): Boolean;
+var
+  e: TScpEntry;
+  err: TScpError;
+begin
+  Result := False;
+  AWhy := '';
+  // lstat: c'est le chemin qu'on juge. Un lien pose a la place du partiel ferait
+  // ecrire la suite ailleurs.
+  if not ADstFs.Stat(ATempPath, False, e, err) then
+  begin
+    AWhy := 'it is no longer there';
+    Exit;
+  end;
+  if e.IsLink then
+  begin
+    AWhy := 'it has been replaced by a link';
+    Exit;
+  end;
+  if e.IsDir or e.IsSpecial then
+  begin
+    AWhy := 'it is no longer a regular file';
+    Exit;
+  end;
+  // Plus court que le confirme: tronque depuis. Rouvrir l'etendrait de zeros
+  // jusqu'a l'offset, pour un fichier de bonne taille au contenu faux.
+  if (e.Size >= 0) and (e.Size < AConfirmed) then
+  begin
+    AWhy := 'it is shorter than the confirmed offset';
+    Exit;
+  end;
+  Result := True;
+end;
+
 function TScpTransferEngine.CommitTemp(ADstFs: TScpFileSystem;
-  const ATempPath, ATargetPath: string; ATargetExisted: Boolean;
-  out AErr: TScpError): Boolean;
+  AItem: TTransferItem; const ATempPath, ATargetPath: string;
+  ATargetExisted: Boolean; out AErr: TScpError): Boolean;
 var
   allow: Boolean;
 begin
@@ -903,6 +957,14 @@ begin
       DisplaySafeName(ATargetPath),
       'atomic replacement is not available here and the non-atomic fallback ' +
       'was declined; the existing file was left untouched');
+    Exit(False);
+  end;
+  // La question a pu rester posee longtemps: une annulation arrivee entre-temps
+  // compte encore, la cible n'ayant pas ete touchee.
+  if AItem.CancelRequested then
+  begin
+    AErr := MakeScpError(sekCanceled, 'Replacing',
+      DisplaySafeName(ATargetPath), '');
     Exit(False);
   end;
 
@@ -950,7 +1012,8 @@ var
   resumeTemp: string;
   targetExisted, found, okCopy: Boolean;
   v: TNameVerdict;
-  prevMode, newMode: LongWord;
+  prevMode, newMode, tempMode: LongWord;
+  why: string;
 begin
   Result := False;
   srcH := nil;
@@ -1095,10 +1158,13 @@ begin
   // Refus = annule par l'interface pendant qu'on preparait: rien n'est ecrit.
   if not FQueue.SetState(AItem, tsTransferring) then Exit;
   parentDir := ADstFs.Parent(targetPath);
-  // Le mode est decide ICI et donne a la creation du temporaire: c'est ce
-  // qui laisse l'umask de la destination le restreindre. Un chmod apres coup
-  // passerait outre.
+  // Le mode d'un fichier NEUF est donne A LA CREATION du temporaire, ce qui
+  // laisse l'umask le restreindre; un chmod apres coup passerait outre. Si une
+  // cible EXISTE, le temporaire nait en 0600 et recoit les droits de la cible
+  // juste avant la publication.
   newMode := ModeForNewFile(srcEntry.Mode);
+  tempMode := newMode;
+  if targetExisted then tempMode := LongWord(&0600);
   try
     if not ASrcFs.OpenRead(AItem.SourcePath, srcH, err) then
     begin
@@ -1114,11 +1180,21 @@ begin
     if (resumeFrom > 0) and (resumeTemp <> '') then
     begin
       tempPath := resumeTemp;
-      if not ADstFs.OpenAppend(tempPath, resumeFrom, dstH, err) then
+      // Le registre dit ce que le partiel ETAIT, le disque ce qu'il est: tronque,
+      // devenu lien ou autre chose, on repart de zero.
+      if not PartialUsable(ADstFs, tempPath, resumeFrom, why) then
       begin
-        // Le partiel a disparu ou ne se rouvre pas: il ne vaut plus rien,
-        // et on repart de zero plutot que d'echouer sur un fichier que
-        // personne n'a demande de garder.
+        FPartials.Forget(tempPath);
+        Note(Format('The partial file for %s cannot be resumed (%s); ' +
+          'starting over.', [AItem.DisplayName, why]));
+        // Le nom est le notre et ce qu'il contient ne sert plus. Un lien se retire
+        // lui-meme, jamais ce qu'il designe.
+        ADstFs.DeleteFile(tempPath, closeErr);
+        tempPath := '';
+        resumeFrom := 0;
+      end
+      else if not ADstFs.OpenAppend(tempPath, resumeFrom, dstH, err) then
+      begin
         FPartials.Forget(tempPath);
         Note(Format('The partial file for %s could not be reopened; ' +
           'starting over.', [AItem.DisplayName]));
@@ -1136,7 +1212,7 @@ begin
     begin
       // Temporaire DANS le dossier de destination: ailleurs le rename traverserait
       // un systeme de fichiers et cesserait d'etre atomique.
-      if not ADstFs.CreateTemp(parentDir, newMode, tempPath, dstH, err) then
+      if not ADstFs.CreateTemp(parentDir, tempMode, tempPath, dstH, err) then
       begin
         if err.Kind = sekAccessDeniedRead then
           err.Kind := sekAccessDeniedWrite;
@@ -1157,6 +1233,8 @@ begin
     // conclure avant remplacerait une cible valide par un fichier tronque.
     if okCopy then
       okCopy := ADstFs.Flush(dstH, err);
+    if okCopy then
+      FPartials.Confirm(tempPath, AItem.DoneBytes);
 
     ADstFs.Close(dstH, closeErr);
     dstH := nil;
@@ -1182,8 +1260,28 @@ begin
       Exit;
     end;
 
-    // Derniere chance de s'arreter AVANT de toucher la cible: une annulation
-    // arrivee entre la derniere ecriture et ici doit encore compter.
+    // Un fichier REMPLACE garde ses droits: un 0600 devenu 0644 est une fuite.
+    // Ils sont reposes sur le temporaire AVANT publication, et s'ils ne peuvent
+    // pas l'etre la cible n'est pas remplacee.
+    if targetExisted and (prevMode <> 0) then
+      if not ADstFs.SetMode(tempPath, prevMode, attrErr) then
+      begin
+        AItem.Error := MakeScpError(attrErr.Kind, 'Setting the mode of',
+          AItem.DisplayName, 'the permissions of the existing file could ' +
+          'not be applied to the new content; the existing file was left ' +
+          'untouched');
+        if ADstFs.DeleteFile(tempPath, closeErr) then
+        begin
+          FPartials.Forget(tempPath);
+          tempPath := '';
+        end;
+        FQueue.SetState(AItem, tsFailed);
+        Exit;
+      end;
+
+    // Derniere chance de s'arreter AVANT de toucher la cible; CommitTemp relit la
+    // demande une fois de plus si une question a ete posee. Passe ces controles la
+    // publication va au bout: un element publie est termine.
     if AItem.CancelRequested then
     begin
       AItem.Error := MakeScpError(sekCanceled, 'Copying', AItem.DisplayName,
@@ -1192,10 +1290,14 @@ begin
       Exit;
     end;
 
-    if not CommitTemp(ADstFs, tempPath, targetPath, targetExisted, err) then
+    if not CommitTemp(ADstFs, AItem, tempPath, targetPath, targetExisted,
+       err) then
     begin
       AItem.Error := err;
-      FQueue.SetState(AItem, tsFailed);
+      if err.Kind = sekCanceled then
+        FQueue.SetState(AItem, tsCanceled)
+      else
+        FQueue.SetState(AItem, tsFailed);
       Exit;
     end;
     tempPath := '';
@@ -1205,14 +1307,6 @@ begin
       if not ADstFs.SetMTime(targetPath, srcEntry.MTimeUtc, attrErr) then
         AItem.Warning := ScpErrorText(MakeScpError(sekAttrRefused,
           'Setting the timestamp of', AItem.DisplayName, attrErr.Detail));
-    // Un fichier REMPLACE garde ses droits: c'est son proprietaire qui les
-    // avait choisis, et un 0600 qui devient 0644 est une fuite, pas un
-    // detail. Un fichier neuf a recu les siens a la creation du temporaire.
-    if targetExisted and (prevMode <> 0) then
-      if not ADstFs.SetMode(targetPath, prevMode, attrErr) then
-        if AItem.Warning = '' then
-          AItem.Warning := ScpErrorText(MakeScpError(sekAttrRefused,
-            'Setting the mode of', AItem.DisplayName, attrErr.Detail));
     if AItem.Warning <> '' then
       Note(AItem.Warning);
 

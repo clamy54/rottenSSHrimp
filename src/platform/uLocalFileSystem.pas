@@ -104,6 +104,7 @@ const
   // Absent de l'unite Windows de FPC 3.2, valeur de winbase.h: l'appel n'aboutit
   // qu'une fois l'operation SUR LE SUPPORT, ce qui la fait survivre a une coupure.
   MOVEFILE_WRITE_THROUGH_ = $00000008;
+  FILE_FLAG_OPEN_REPARSE_POINT_ = $00200000;
   {$ENDIF}
 
   // Prefixe des temporaires, reconnaissable a l'oeil: un partiel laisse par un
@@ -679,9 +680,15 @@ begin
   AErr := NoScpError;
   h := TLocalHandle.Create;
   h.Path := APath;
+  // Jamais a travers un lien: un partiel remplace par un lien entre la
+  // coupure et la reprise ferait ecrire la suite dans un autre fichier. Le
+  // moteur l'a deja verifie par lstat; l'ouverture le garantit sans course.
   {$IFDEF WINDOWS}
+  // FILE_FLAG_OPEN_REPARSE_POINT: sur un lien, l'ecriture echoue au lieu de
+  // traverser.
   h.H := CreateFileW(PWideChar(NativeW(APath)), GENERIC_WRITE,
-    0, nil, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+    0, nil, OPEN_EXISTING,
+    FILE_ATTRIBUTE_NORMAL or FILE_FLAG_OPEN_REPARSE_POINT_, 0);
   if h.H = INVALID_HANDLE_VALUE then
   begin
     AErr := LastErr('Reopening', APath);
@@ -689,7 +696,7 @@ begin
     Exit(False);
   end;
   {$ELSE}
-  h.Fd := fpOpen(PChar(LocalNormalize(APath)), O_WRONLY);
+  h.Fd := fpOpen(PChar(LocalNormalize(APath)), O_WRONLY or O_NOFOLLOW);
   if h.Fd < 0 then
   begin
     AErr := LastErr('Reopening', APath);
