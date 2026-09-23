@@ -93,6 +93,8 @@ type
     // cours de route n'envoie pas la suppression dans sa cible. Un lien, meme
     // vers un dossier, part seul.
     function RemoveTree(const APath: string; out AErr: TScpError): Boolean;
+    function CopyProtectionFrom(const ASourcePath, ATargetPath: string;
+      out AErr: TScpError): Boolean; override;
     function Join(const ABase, AName: string): string; override;
     function Parent(const APath: string): string; override;
     function BaseName(const APath: string): string; override;
@@ -784,6 +786,7 @@ function TLocalFileSystem.MakeDir(const APath: string; AMode: LongWord;
 {$IFDEF WINDOWS}
 var
   sa: TSecurityAttributes;
+  code: DWORD;
 {$ENDIF}
 begin
   AErr := NoScpError;
@@ -804,11 +807,15 @@ begin
           [GetLastError]));
       Exit(False);
     end;
+    code := 0;
     try
       Result := CreateDirectoryW(PWideChar(NativeW(APath)), @sa);
+      if not Result then code := GetLastError;
     finally
       LocalFree(HLOCAL(sa.lpSecurityDescriptor));
     end;
+    // LocalFree a pu ecraser l'erreur que LastErr va lire.
+    if not Result then SetLastError(code);
   end;
   {$ELSE}
   Result := fpMkdir(PChar(LocalNormalize(APath)), AMode and LongWord(&0777)) = 0;
@@ -918,10 +925,10 @@ begin
 end;
 
 {$IFDEF WINDOWS}
-// Donne a ATo la DACL de AFrom, protection contre l'heritage comprise. Un
-// fichier prive remplace par un temporaire ne aux droits du dossier deviendrait
-// sinon lisible par tout ce que le dossier autorise.
-function CopyDacl(const AFrom, ATo: string; out AErr: TScpError): Boolean;
+// Donne a ATo la DACL de AFrom, protection contre l'heritage comprise. False:
+// ACode dit l'erreur Windows, AReading si elle vient de la lecture.
+function CopyDaclRaw(const AFrom, ATo: string; out ACode: DWORD;
+  out AReading: Boolean): Boolean;
 var
   need: DWORD;
   sd: array of Byte;
@@ -930,52 +937,95 @@ var
   info: SECURITY_INFORMATION;
 begin
   Result := False;
-  AErr := NoScpError;
+  ACode := 0;
+  AReading := True;
   need := 0;
   GetFileSecurityW(PWideChar(NativeW(AFrom)), DACL_SECURITY_INFORMATION, nil,
     0, @need);
   if need = 0 then
   begin
-    AErr := MakeScpError(sekAttrRefused, 'Replacing', DisplaySafeName(ATo),
-      Format('the permissions of the existing file could not be read ' +
-        '(Windows error %d); the existing file was left untouched',
-        [GetLastError]));
+    ACode := GetLastError;
     Exit;
   end;
   SetLength(sd, need);
   if not GetFileSecurityW(PWideChar(NativeW(AFrom)), DACL_SECURITY_INFORMATION,
      PSECURITY_DESCRIPTOR(@sd[0]), need, @need) then
   begin
-    AErr := MakeScpError(sekAttrRefused, 'Replacing', DisplaySafeName(ATo),
-      Format('the permissions of the existing file could not be read ' +
-        '(Windows error %d); the existing file was left untouched',
-        [GetLastError]));
+    ACode := GetLastError;
     Exit;
   end;
-  info := DACL_SECURITY_INFORMATION or UNPROTECTED_DACL_SECURITY_INFORMATION_;
   control := 0;
   revision := 0;
-  if GetSecurityDescriptorControl(PSECURITY_DESCRIPTOR(@sd[0]), @control,
-     @revision) and ((control and SE_DACL_PROTECTED_) <> 0) then
-    info := DACL_SECURITY_INFORMATION or PROTECTED_DACL_SECURITY_INFORMATION_;
+  // Se tromper ici reactiverait l'heritage sur une cible qui l'avait coupe.
+  if not GetSecurityDescriptorControl(PSECURITY_DESCRIPTOR(@sd[0]), @control,
+     @revision) then
+  begin
+    ACode := GetLastError;
+    Exit;
+  end;
+  if (control and SE_DACL_PROTECTED_) <> 0 then
+    info := DACL_SECURITY_INFORMATION or PROTECTED_DACL_SECURITY_INFORMATION_
+  else
+    info := DACL_SECURITY_INFORMATION or UNPROTECTED_DACL_SECURITY_INFORMATION_;
+  AReading := False;
   if not SetFileSecurityW(PWideChar(NativeW(ATo)), info,
      PSECURITY_DESCRIPTOR(@sd[0])) then
   begin
-    AErr := MakeScpError(sekAttrRefused, 'Replacing', DisplaySafeName(ATo),
-      Format('the permissions of the existing file could not be applied to ' +
-        'the new content (Windows error %d); the existing file was left ' +
-        'untouched', [GetLastError]));
+    ACode := GetLastError;
     Exit;
   end;
   Result := True;
 end;
+
+// Un fichier prive remplace par un temporaire ne aux droits du dossier
+// deviendrait sinon lisible par tout ce que le dossier autorise.
+function CopyDacl(const AFrom, ATo: string; out AErr: TScpError): Boolean;
+var
+  code: DWORD;
+  reading: Boolean;
+begin
+  AErr := NoScpError;
+  Result := CopyDaclRaw(AFrom, ATo, code, reading);
+  if Result then Exit;
+  if reading then
+    AErr := MakeScpError(sekAttrRefused, 'Replacing', DisplaySafeName(ATo),
+      Format('the permissions of the existing file could not be read ' +
+        '(Windows error %d); the existing file was left untouched', [code]))
+  else
+    AErr := MakeScpError(sekAttrRefused, 'Replacing', DisplaySafeName(ATo),
+      Format('the permissions of the existing file could not be applied to ' +
+        'the new content (Windows error %d); the existing file was left ' +
+        'untouched', [code]));
+end;
 {$ENDIF}
+
+function TLocalFileSystem.CopyProtectionFrom(const ASourcePath,
+  ATargetPath: string; out AErr: TScpError): Boolean;
+{$IFDEF WINDOWS}
+var
+  code: DWORD;
+  reading: Boolean;
+{$ENDIF}
+begin
+  AErr := NoScpError;
+  {$IFDEF WINDOWS}
+  Result := CopyDaclRaw(ASourcePath, ATargetPath, code, reading);
+  if not Result then
+    AErr := MakeScpError(sekAttrRefused, 'Duplicating',
+      DisplaySafeName(ATargetPath),
+      Format('the permissions of the source could not be given to the copy ' +
+        '(Windows error %d)', [code]));
+  {$ELSE}
+  // Les modes suffisent: le moteur les a deja poses a la creation.
+  Result := True;
+  {$ENDIF}
+end;
 
 function TLocalFileSystem.ReplaceAtomic(const AFrom, ATo: string;
   out AErr: TScpError): Boolean;
 {$IFDEF WINDOWS}
 var
-  tattrs, keep: DWORD;
+  tattrs, keep, code: DWORD;
   readOnly: Boolean;
 {$ENDIF}
 begin
@@ -989,36 +1039,41 @@ begin
   // seule refuse d'etre remplacee; on lui retire le temps du rename, et le
   // nouveau contenu le porte a son tour.
   tattrs := GetFileAttributesW(PWideChar(NativeW(ATo)));
-  readOnly := (tattrs <> INVALID_FILE_ATTRIBUTES) and
-    ((tattrs and FILE_ATTRIBUTE_READONLY) <> 0);
-  if tattrs <> INVALID_FILE_ATTRIBUTES then
+  if tattrs = INVALID_FILE_ATTRIBUTES then
   begin
-    keep := tattrs and (FILE_ATTRIBUTE_READONLY or FILE_ATTRIBUTE_HIDDEN or
-      FILE_ATTRIBUTE_SYSTEM or FILE_ATTRIBUTE_ARCHIVE or
-      FILE_ATTRIBUTE_NOT_CONTENT_INDEXED_);
-    if keep = 0 then keep := FILE_ATTRIBUTE_NORMAL;
-    // Chaque refus arrete AVANT la publication: le nouveau contenu ne prend
-    // pas la place de l'ancien sans ses attributs.
-    if not SetFileAttributesW(PWideChar(NativeW(AFrom)), keep) then
-    begin
-      AErr := MakeScpError(sekAttrRefused, 'Replacing', DisplaySafeName(ATo),
-        Format('the attributes of the existing file could not be applied to ' +
-          'the new content (Windows error %d); the existing file was left ' +
-          'untouched', [GetLastError]));
-      Exit(False);
-    end;
-    if readOnly and (not SetFileAttributesW(PWideChar(NativeW(ATo)),
-       tattrs and (not FILE_ATTRIBUTE_READONLY))) then
-    begin
-      AErr := MakeScpError(sekReadOnlyTarget, 'Replacing',
-        DisplaySafeName(ATo),
-        Format('the existing file is read-only and the attribute could not ' +
-          'be lifted (Windows error %d); it was left untouched',
-          [GetLastError]));
-      // En lecture seule, le temporaire ne s'effacerait plus.
-      SetFileAttributesW(PWideChar(NativeW(AFrom)), FILE_ATTRIBUTE_NORMAL);
-      Exit(False);
-    end;
+    code := GetLastError;
+    AErr := MakeScpError(sekAttrRefused, 'Replacing', DisplaySafeName(ATo),
+      Format('the attributes of the existing file could not be read ' +
+        '(Windows error %d); the existing file was left untouched', [code]));
+    Exit(False);
+  end;
+  readOnly := (tattrs and FILE_ATTRIBUTE_READONLY) <> 0;
+  keep := tattrs and (FILE_ATTRIBUTE_READONLY or FILE_ATTRIBUTE_HIDDEN or
+    FILE_ATTRIBUTE_SYSTEM or FILE_ATTRIBUTE_ARCHIVE or
+    FILE_ATTRIBUTE_NOT_CONTENT_INDEXED_);
+  if keep = 0 then keep := FILE_ATTRIBUTE_NORMAL;
+  // Chaque refus arrete AVANT la publication: le nouveau contenu ne prend
+  // pas la place de l'ancien sans ses attributs.
+  if not SetFileAttributesW(PWideChar(NativeW(AFrom)), keep) then
+  begin
+    code := GetLastError;
+    AErr := MakeScpError(sekAttrRefused, 'Replacing', DisplaySafeName(ATo),
+      Format('the attributes of the existing file could not be applied to ' +
+        'the new content (Windows error %d); the existing file was left ' +
+        'untouched', [code]));
+    Exit(False);
+  end;
+  if readOnly and (not SetFileAttributesW(PWideChar(NativeW(ATo)),
+     tattrs and (not FILE_ATTRIBUTE_READONLY))) then
+  begin
+    code := GetLastError;
+    AErr := MakeScpError(sekReadOnlyTarget, 'Replacing',
+      DisplaySafeName(ATo),
+      Format('the existing file is read-only and the attribute could not ' +
+        'be lifted (Windows error %d); it was left untouched', [code]));
+    // En lecture seule, le temporaire ne s'effacerait plus.
+    SetFileAttributesW(PWideChar(NativeW(AFrom)), FILE_ATTRIBUTE_NORMAL);
+    Exit(False);
   end;
   // MOVEFILE_REPLACE_EXISTING sur un meme volume NTFS: pas d'etat
   // intermediaire. WRITE_THROUGH attend le support avant de rendre la main.

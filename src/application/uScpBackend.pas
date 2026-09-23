@@ -154,6 +154,11 @@ type
     // par lstat avant. Defaut: sekUnsupported.
     function SetModeAt(const APath: string; AMode: LongWord;
       out AErr: TScpError): Boolean; virtual;
+    // Copie SUR PLACE: donne a ATargetPath, tout juste cree, la protection de
+    // ASourcePath la ou les modes ne la portent pas (ACL Windows). Appele
+    // avant qu'un octet y soit ecrit. Defaut: rien a faire.
+    function CopyProtectionFrom(const ASourcePath, ATargetPath: string;
+      out AErr: TScpError): Boolean; virtual;
 
     // --- Chemins: chaque cote a ses regles, jamais de concatenation nue ---
     function Join(const ABase, AName: string): string; virtual; abstract;
@@ -185,6 +190,13 @@ begin
   AErr := MakeScpError(sekUnsupported, 'Setting the permissions of',
     DisplaySafeName(APath), '');
   Result := False;
+end;
+
+function TScpFileSystem.CopyProtectionFrom(const ASourcePath,
+  ATargetPath: string; out AErr: TScpError): Boolean;
+begin
+  AErr := NoScpError;
+  Result := True;
 end;
 
 end.

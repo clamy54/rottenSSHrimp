@@ -271,6 +271,10 @@ type
     property Partials: TScpPartialRegistry read FPartials;
     property ConfirmEvery: Int64 read FConfirmEvery write FConfirmEvery;
     property MaxQueueItems: Integer read FMaxQueueItems write FMaxQueueItems;
+    // La file peut-elle recevoir ACount selections de plus? Une commande est
+    // acceptee entiere ou pas du tout. Le compte ne peut que baisser entre ce
+    // test et les ajouts: seul le fil de transfert ajoute, l'interface retire.
+    function CanEnqueue(ACount: Integer): Boolean;
     property OnConflict: TScpConflictEvent read FOnConflict write FOnConflict;
     property OnNonAtomic: TScpNonAtomicEvent
       read FOnNonAtomic write FOnNonAtomic;
@@ -748,7 +752,7 @@ var
     sk: TTransferItem;
   begin
     sk := FQueue.Add(ADirection, tikFile, AChildSrc, ADstDir,
-      DisplaySafeName(AName), AOwner.Batch);
+      DisplaySafeName(AName), AOwner.Batch, AOwner);
     sk.Depth := ADepth;
     sk.TargetRoot := ATargetRoot;
     sk.Error := AChildErr;
@@ -887,7 +891,7 @@ begin
       begin
         // Jamais suivi: un cycle devient impossible plutot que detectable.
         item := FQueue.Add(ADirection, tikFile, childSrc, childDst,
-          DisplaySafeName(e.Name), AOwner.Batch);
+          DisplaySafeName(e.Name), AOwner.Batch, AOwner);
         item.Depth := ADepth;
         item.TargetRoot := ATargetRoot;
         item.Error := MakeScpError(sekSymlinkSkipped, 'Copying',
@@ -898,7 +902,7 @@ begin
       if e.IsSpecial then
       begin
         item := FQueue.Add(ADirection, tikFile, childSrc, childDst,
-          DisplaySafeName(e.Name), AOwner.Batch);
+          DisplaySafeName(e.Name), AOwner.Batch, AOwner);
         item.Depth := ADepth;
         item.TargetRoot := ATargetRoot;
         item.Error := MakeScpError(sekIsSpecialFile, 'Copying',
@@ -914,6 +918,9 @@ begin
         begin
           if IsFatalToSession(err.Kind) then
           begin
+            // Toute sortie sur coupure marque le dossier parcouru: sinon, deja
+            // en file, il passerait pour parcouru a la reprise.
+            MarkScanCut(AOwner, err);
             AErr := err;
             Exit;
           end;
@@ -932,7 +939,7 @@ begin
         if WalkMustStop(ASrcFs, ADstFs, AOwner, ASrcDir, AErr) then Exit;
         // L'ordre d'insertion EST la garantie que les parents precedent les enfants.
         item := FQueue.Add(ADirection, tikMakeDir, childSrc, childDst,
-          DisplaySafeName(e.Name), AOwner.Batch);
+          DisplaySafeName(e.Name), AOwner.Batch, AOwner);
         item.Depth := ADepth;
         item.TargetRoot := ATargetRoot;
         item.SourceMode := e2.Mode;
@@ -959,7 +966,7 @@ begin
         Continue;
       end;
       item := FQueue.Add(ADirection, tikFile, childSrc, childDst,
-        DisplaySafeName(e.Name), AOwner.Batch);
+        DisplaySafeName(e.Name), AOwner.Batch, AOwner);
       item.Depth := ADepth;
       item.TargetRoot := ATargetRoot;
       item.TotalBytes := e.Size;
@@ -984,6 +991,11 @@ begin
     'the folder is scanned again once reconnected');
   AOwner.ScanPending := True;
   FQueue.SetState(AOwner, tsInterrupted);
+end;
+
+function TScpTransferEngine.CanEnqueue(ACount: Integer): Boolean;
+begin
+  Result := FQueue.Count + ACount <= FMaxQueueItems;
 end;
 
 function TScpTransferEngine.WalkRootStopped(ASrcFs,
@@ -1048,6 +1060,7 @@ var
   known: TStringList;
   i: Integer;
   it: TTransferItem;
+  subtree: TFPList;
 begin
   Result := False;
   // lstat encore: le dossier a pu devenir un lien depuis le listing coupe.
@@ -1075,20 +1088,24 @@ begin
     known.CaseSensitive := True;
     known.Sorted := True;
     known.Duplicates := dupIgnore;
-    FQueue.Lock;
+    // Les descendants de CE dossier: un autre lot vers le meme endroit n'est
+    // pas « deja en file », il est un autre transfert.
+    subtree := TFPList.Create;
     try
-      for i := 0 to FQueue.Count - 1 do
-      begin
-        it := FQueue.Items[i];
-        // Du MEME lot: un lot precedent vers le meme dossier n'est pas « deja
-        // en file », il est un autre transfert.
-        if (it <> AItem) and (it.Batch = AItem.Batch) and
-           (it.Direction = AItem.Direction) and
-           ADstFs.IsUnder(AItem.TargetPath, it.TargetPath) then
+      FQueue.Lock;
+      try
+        FQueue.CollectDescendantsLocked(AItem, subtree);
+        for i := 0 to subtree.Count - 1 do
+        begin
+          it := TTransferItem(subtree[i]);
+          // Un sous-dossier encore a parcourir se reprendra par lui-meme.
           known.Add(it.TargetPath);
+        end;
+      finally
+        FQueue.Unlock;
       end;
     finally
-      FQueue.Unlock;
+      subtree.Free;
     end;
     FWalkRoot := AItem;
     FQueueFull := False;
@@ -1862,16 +1879,16 @@ procedure TScpTransferEngine.FailSubtree(ADstFs: TScpFileSystem;
 var
   i: Integer;
   it: TTransferItem;
+  subtree: TFPList;
 begin
+  subtree := TFPList.Create;
   FQueue.Lock;
   try
-    for i := 0 to FQueue.Count - 1 do
+    FQueue.CollectDescendantsLocked(AItem, subtree);
+    for i := 0 to subtree.Count - 1 do
     begin
-      it := FQueue.Items[i];
-      if it = AItem then Continue;
+      it := TTransferItem(subtree[i]);
       if not it.IsRunnable then Continue;
-      if it.Direction <> AItem.Direction then Continue;
-      if not ADstFs.IsUnder(AItem.TargetPath, it.TargetPath) then Continue;
       it.Error := MakeScpError(AItem.Error.Kind, 'Copying', it.DisplayName,
         Format('its folder "%s" could not be created', [AItem.DisplayName]));
       // La cause du dossier est celle de ses enfants: en « echec », seul le dossier
@@ -1883,6 +1900,7 @@ begin
     end;
   finally
     FQueue.Unlock;
+    subtree.Free;
   end;
 end;
 
@@ -1938,6 +1956,10 @@ begin
     if StopScan(AItem, err) then Exit;
     if not scanned then
     begin
+      // Filet: une coupure ne laisse jamais la selection en « Scanning »,
+      // ni reprise ni conclue.
+      if AItem.State = tsEnumerating then
+        MarkScanCut(AItem, err);
       NoteFatal(err);
       Exit;
     end;
@@ -2031,6 +2053,15 @@ begin
       if not ADstFs.MakeDir(targetPath,
          ModeForNewDir(AItem.SourceMode, AItem.SourceModeKnown), err) then
       begin
+        FailItem(AItem, err);
+        FailSubtree(ADstFs, AItem);
+        Exit;
+      end;
+      if (ASrcFs = ADstFs) and
+         (not ADstFs.CopyProtectionFrom(AItem.SourcePath, targetPath, err)) then
+      begin
+        // Vide, il n'a rien expose: il part, et son contenu n'ira nulle part.
+        ADstFs.DeleteDir(targetPath, closeErr);
         FailItem(AItem, err);
         FailSubtree(ADstFs, AItem);
         Exit;
@@ -2242,6 +2273,17 @@ begin
         srcEntry.MTimeUtc);
       resumeFrom := 0;
       FHash.Reset;
+      // Copie sur place: la protection de la source, la ou les modes ne la
+      // portent pas, est posee avant le premier octet.
+      if (ASrcFs = ADstFs) and (not targetExisted) and
+         (not ADstFs.CopyProtectionFrom(AItem.SourcePath, tempPath, err)) then
+      begin
+        ADstFs.Close(dstH, closeErr);
+        dstH := nil;
+        DiscardPartial(ADstFs, tempPath);
+        FailItem(AItem, err);
+        Exit;
+      end;
     end;
 
     okCopy := CopyStream(ASrcFs, srcH, ADstFs, dstH, AItem, srcEntry.Size,

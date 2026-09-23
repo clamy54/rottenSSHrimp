@@ -126,11 +126,14 @@ are never carried onto new content -- and a new one gets its source's read
 and write bits, never widened and never executable. A new folder is created
 with its source's permissions from the start, so a private folder is never
 readable by others while it fills, and its source is read again just before
-it is created. Windows has no such bits: there, whatever others could not
-read at the source -- a private file or folder, and any temporary file that
-will replace an existing one -- is created with an ACL for you, SYSTEM and
-Administrators only, and keeps it through an interruption; everything else
-inherits the folder's ACL like any new file. A selection that would take the
+it is created. Windows has no such bits: there, a download that the server
+keeps from others -- a private file or folder -- and any temporary file that
+will replace an existing one are created with an ACL for you, SYSTEM and
+Administrators only, and keep it through an interruption; everything else
+inherits the folder's ACL like any new file. A duplicate on the local disk
+takes its source's own ACL before a single byte is written. Windows ACLs are
+not translated into permission bits on upload: a new file there gets the
+server's usual read and write bits. A selection that would take the
 queue past 500,000 items is set aside whole, with the reason, rather than
 half-copied. If the connection drops,
 *Reconnect* replays the same prompts as opening the tab; interrupted

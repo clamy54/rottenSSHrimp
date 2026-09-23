@@ -2258,6 +2258,15 @@ begin
             dir := tdDuplicateLocal;
           end;
         end;
+        // Le plafond vaut aussi pour les selections elles-memes: sans ce test,
+        // une file en pause recevrait commande sur commande. Entiere ou rien.
+        if not FEngine.CanEnqueue(Length(ACmd.Sources)) then
+        begin
+          EngineNote(Format('Nothing was queued: the queue would hold more ' +
+            'than %d items. Clear completed transfers, or send fewer at a ' +
+            'time.', [FEngine.MaxQueueItems]));
+          SetLength(ACmd.Sources, 0);
+        end;
         for i := 0 to High(ACmd.Sources) do
         begin
           // Nom de la SOURCE, par ses regles: la destination prendrait un chemin

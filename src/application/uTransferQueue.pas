@@ -107,6 +107,10 @@ type
     FScanPending: Boolean;
     // Nom impose a la racine d'un lot (duplication); vide = celui de la source.
     FForcedName: string;
+    // Dossier qui a mis cet element en file, 0 pour une selection. C'est lui,
+    // et non le chemin cible, qui dit ce qui descend de quoi: deux lots vers
+    // un meme dossier, ou un nom distant contenant « \ », ne se melangent pas.
+    FParentId: Integer;
     procedure SetTargetPath(const AValue: string);
     procedure SetError(const AValue: TScpError);
     procedure SetWarning(const AValue: string);
@@ -143,6 +147,7 @@ type
     property Batch: Integer read FBatch;
     property ScanPending: Boolean read FScanPending write SetScanPending;
     property ForcedName: string read FForcedName write FForcedName;
+    property ParentId: Integer read FParentId;
   end;
 
   // Debit lisse: une moyenne sur la duree ment apres une pause, une mesure
@@ -204,9 +209,14 @@ type
 
     // ABatch: le lot de l'element; 0 = le lot courant, pour un appelant qui n'en
     // tient pas. Le fil de transfert passe celui de sa commande.
+    // AParent: le dossier dont le parcours ajoute cet element; nil pour une
+    // selection.
     function Add(ADirection: TTransferDirection; AKind: TTransferItemKind;
       const ASourcePath, ATargetPath, ADisplayName: string;
-      ABatch: Integer = 0): TTransferItem;
+      ABatch: Integer = 0; AParent: TTransferItem = nil): TTransferItem;
+    // Descendants de AItem par filiation, dans l'ordre de la file; verrou tenu
+    // par l'appelant.
+    procedure CollectDescendantsLocked(AItem: TTransferItem; AInto: TFPList);
     // Une selection examinee devient ce qu'elle est: fichier ou dossier.
     procedure Rekind(AItem: TTransferItem; AKind: TTransferItemKind;
       const ADisplayName: string);
@@ -571,13 +581,14 @@ end;
 function TTransferQueue.Add(ADirection: TTransferDirection;
   AKind: TTransferItemKind;
   const ASourcePath, ATargetPath, ADisplayName: string;
-  ABatch: Integer): TTransferItem;
+  ABatch: Integer; AParent: TTransferItem): TTransferItem;
 begin
   Lock;
   try
     Result := TTransferItem.Create(FNextId, ADirection, AKind,
       ASourcePath, ATargetPath, ADisplayName);
     Result.FOwner := Self;
+    if AParent <> nil then Result.FParentId := AParent.Id;
     if ABatch > 0 then
       Result.FBatch := ABatch
     else
@@ -848,42 +859,54 @@ begin
   end;
 end;
 
-// Confinement LEXICAL et volontairement grossier: les deux chemins viennent
-// de la meme jointure. La question n'est pas la securite, c'est « cet element
-// allait-il dans ce dossier ».
-function PathIsUnder(const ARoot, APath: string): Boolean;
+// Un parent precede toujours ses enfants, et les identifiants croissent avec
+// la position: un seul passage suffit, marque par identifiant.
+procedure TTransferQueue.CollectDescendantsLocked(AItem: TTransferItem;
+  AInto: TFPList);
+var
+  i, start, base: Integer;
+  it: TTransferItem;
+  inTree: TBits;
 begin
-  Result := (ARoot <> '') and (Length(APath) > Length(ARoot)) and
-    (Copy(APath, 1, Length(ARoot)) = ARoot) and
-    // Le separateur de la plateforme, plus '/' sous Windows pour les chemins
-    // distants. Sous POSIX '\' est un caractere de nom: l'accepter ici ferait
-    // annuler « d\x » avec le dossier « d ».
-    {$IFDEF WINDOWS}
-    ((APath[Length(ARoot) + 1] = '\') or (APath[Length(ARoot) + 1] = '/'));
-    {$ELSE}
-    (APath[Length(ARoot) + 1] = '/');
-    {$ENDIF}
+  start := FItems.IndexOf(AItem);
+  if start < 0 then Exit;
+  base := AItem.Id;
+  inTree := TBits.Create(TTransferItem(FItems[FItems.Count - 1]).Id - base + 1);
+  try
+    inTree[0] := True;
+    for i := start + 1 to FItems.Count - 1 do
+    begin
+      it := TTransferItem(FItems[i]);
+      if (it.FParentId >= base) and inTree[it.FParentId - base] then
+      begin
+        inTree[it.Id - base] := True;
+        AInto.Add(it);
+      end;
+    end;
+  finally
+    inTree.Free;
+  end;
 end;
 
 // Annuler un DOSSIER annule ce qui devait y aller: sans cela sa ligne passe a
-// « annule » et ses fichiers partent quand meme.
+// « annule » et ses fichiers partent quand meme. Ses descendants, pas ce qui
+// vise le meme dossier depuis un autre lot.
 procedure TTransferQueue.CancelItem(AItem: TTransferItem);
 var
   i: Integer;
-  it: TTransferItem;
+  subtree: TFPList;
 begin
   if AItem = nil then Exit;
   Lock;
   try
     CancelLocked(AItem);      // idempotent, silencieux
-    if AItem.Kind <> tikMakeDir then Exit;
-    for i := 0 to FItems.Count - 1 do
-    begin
-      it := TTransferItem(FItems[i]);
-      if it = AItem then Continue;
-      if it.Direction <> AItem.Direction then Continue;
-      if not PathIsUnder(AItem.TargetPath, it.TargetPath) then Continue;
-      CancelLocked(it);
+    subtree := TFPList.Create;
+    try
+      CollectDescendantsLocked(AItem, subtree);
+      for i := 0 to subtree.Count - 1 do
+        CancelLocked(TTransferItem(subtree[i]));
+    finally
+      subtree.Free;
     end;
   finally
     Unlock;
