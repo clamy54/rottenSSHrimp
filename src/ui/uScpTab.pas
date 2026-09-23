@@ -50,14 +50,19 @@ type
   private
     FItems: TStringList;
     FIndex: Integer;
+    FPending: Integer;
   public
     constructor Create;
     destructor Destroy; override;
     procedure Push(const APath: string);
     function CanBack: Boolean;
     function CanForward: Boolean;
-    function Back: string;
-    function Forward: string;
+    // Rendent le chemin vise SANS bouger l'index: Commit s'en charge, quand le
+    // dossier est reellement affiche.
+    function PendBack: string;
+    function PendForward: string;
+    procedure Commit;
+    procedure Abandon;
     function Current: string;
   end;
 
@@ -108,6 +113,13 @@ type
     FRemotePath: string;
     FLocalWanted: string;
     FRemoteWanted: string;
+    // Numero de la DERNIERE demande de chaque cote. Le chemin seul ne suffirait
+    // pas a reperer une reponse en retard: on peut revenir sur ses pas.
+    FLocalWantedSerial: Int64;
+    FRemoteWantedSerial: Int64;
+    // Fermeture en cours de confirmation ou de nettoyage: ces deux moments
+    // pompent la boucle, et un second clic detruirait l'onglet sous le premier.
+    FClosePending: Boolean;
     // Inscrite dans l'historique quand elle a REUSSI: un dossier jamais affiche
     // n'a rien a faire dans « arriere ».
     FLocalPushPending: Boolean;
@@ -154,13 +166,13 @@ type
     procedure RefreshTick(Sender: TObject);
 
     // --- relais du worker local (thread UI) ---
-    procedure LocalListed(const APath: string;
+    procedure LocalListed(const APath: string; ASerial: Int64;
       const AEntries: TScpEntryArray; const AError: TScpError);
     procedure LocalOpDone(const AError: TScpError);
     procedure LocalVolumes(const AVolumes: TLocalVolumeArray);
 
     // --- relais du transport (thread UI) ---
-    procedure RemoteListed(const APath: string;
+    procedure RemoteListed(const APath: string; ASerial: Int64;
       const AEntries: TScpEntryArray; const AError: TScpError);
     procedure RemoteHomeReady(const APath: string; const AError: TScpError);
     procedure RemoteOpDone(const AError: TScpError);
@@ -251,6 +263,7 @@ begin
   inherited Create;
   FItems := TStringList.Create;
   FIndex := -1;
+  FPending := -1;
 end;
 
 destructor TNavHistory.Destroy;
@@ -261,6 +274,7 @@ end;
 
 procedure TNavHistory.Push(const APath: string);
 begin
+  FPending := -1;
   if (FIndex >= 0) and (FIndex < FItems.Count) and
      (FItems[FIndex] = APath) then
     Exit;
@@ -282,18 +296,35 @@ begin
   Result := (FIndex >= 0) and (FIndex < FItems.Count - 1);
 end;
 
-function TNavHistory.Back: string;
+// L'index ne BOUGE PAS ici, mais quand le dossier sera affiche: un listing
+// qui echoue laisse le panneau en place, et un historique qui aurait avance
+// ferait sauter des entrees ou inverser Back et Forward.
+function TNavHistory.PendBack: string;
 begin
+  FPending := -1;
   if not CanBack then Exit('');
-  Dec(FIndex);
-  Result := FItems[FIndex];
+  FPending := FIndex - 1;
+  Result := FItems[FPending];
 end;
 
-function TNavHistory.Forward: string;
+function TNavHistory.PendForward: string;
 begin
+  FPending := -1;
   if not CanForward then Exit('');
-  Inc(FIndex);
-  Result := FItems[FIndex];
+  FPending := FIndex + 1;
+  Result := FItems[FPending];
+end;
+
+procedure TNavHistory.Commit;
+begin
+  if (FPending >= 0) and (FPending < FItems.Count) then
+    FIndex := FPending;
+  FPending := -1;
+end;
+
+procedure TNavHistory.Abandon;
+begin
+  FPending := -1;
 end;
 
 function TNavHistory.Current: string;
@@ -662,7 +693,7 @@ begin
     FLocalWanted := norm;
     FLocalPushPending := APushHistory;
     FLocalPanel.SetBusy(True, 'Reading ' + DisplaySafeName(norm) + '...');
-    FLocalWorker.RequestList(norm);
+    FLocalWantedSerial := FLocalWorker.RequestList(norm);
   end
   else
   begin
@@ -685,7 +716,7 @@ begin
     FRemoteWanted := norm;
     FRemotePushPending := APushHistory;
     FRemotePanel.SetBusy(True, 'Reading ' + DisplaySafeName(norm) + '...');
-    FTransport.RequestList(norm);
+    FRemoteWantedSerial := FTransport.RequestList(norm);
   end;
 end;
 
@@ -810,9 +841,9 @@ begin
       else
         NavigateTo(ASide, RemoteParent(cur), True);
     fpaBack:
-      if hist.CanBack then NavigateTo(ASide, hist.Back, False);
+      if hist.CanBack then NavigateTo(ASide, hist.PendBack, False);
     fpaForward:
-      if hist.CanForward then NavigateTo(ASide, hist.Forward, False);
+      if hist.CanForward then NavigateTo(ASide, hist.PendForward, False);
     fpaHome:
       if ASide = fpsLocal then
         NavigateTo(ASide, LocalHomePath, True)
@@ -1158,23 +1189,35 @@ begin
 end;
 
 procedure TScpTab.CloseClick(Sender: TObject);
+var
+  ok: Boolean;
 begin
-  if ConfirmClose then
-    Free;
+  // Confirmation et nettoyage pompent la boucle: un second clic traite pendant
+  // ce temps detruirait l'onglet sous le premier appel, encore sur sa pile.
+  if FClosePending or FClosing then Exit;
+  FClosePending := True;
+  try
+    ok := ConfirmClose;
+  finally
+    FClosePending := False;
+  end;
+  // Rien ne pompe la boucle entre ces deux lignes: destruction atomique.
+  if ok then Free;
 end;
 
 // --- Relais du worker local ----------------------------------------------
 
-procedure TScpTab.LocalListed(const APath: string;
+procedure TScpTab.LocalListed(const APath: string; ASerial: Int64;
   const AEntries: TScpEntryArray; const AError: TScpError);
 var
   norm: string;
 begin
   if FClosing then Exit;
   norm := LocalNormalize(APath);
-  // En retard pour un dossier qu'on ne veut plus: un autre listing est en
-  // route, c'est lui qui aura le dernier mot.
-  if norm <> FLocalWanted then Exit;
+  // En retard: un autre listing aura le dernier mot. Le NUMERO et pas le
+  // chemin, sinon aller en A, en B, puis revenir en A ferait prendre la
+  // premiere reponse A pour la troisieme.
+  if ASerial <> FLocalWantedSerial then Exit;
   FLocalPanel.SetBusy(False, '');
   if AError.Kind <> sekNone then
   begin
@@ -1183,11 +1226,16 @@ begin
     FLocalPanel.ShowError(AError);
     FLocalPanel.SetPathText(FLocalPath);
     FLocalWanted := FLocalPath;
+    FLocalWantedSerial := 0;
+    FLocalHistory.Abandon;
     Exit;
   end;
   FLocalPanel.ClearError;
   FLocalPath := norm;
-  if FLocalPushPending then FLocalHistory.Push(norm);
+  if FLocalPushPending then
+    FLocalHistory.Push(norm)
+  else
+    FLocalHistory.Commit;
   FLocalPushPending := False;
   FLocalPanel.SelectVolumeFor(norm);
   FLocalPanel.SetEntries(norm, AEntries, LocalParent(norm) <> norm);
@@ -1223,27 +1271,32 @@ end;
 
 // --- Relais du transport --------------------------------------------------
 
-procedure TScpTab.RemoteListed(const APath: string;
+procedure TScpTab.RemoteListed(const APath: string; ASerial: Int64;
   const AEntries: TScpEntryArray; const AError: TScpError);
 var
   norm: string;
 begin
   if FClosing then Exit;
   norm := RemoteNormalize(APath);
-  if norm <> FRemoteWanted then Exit;      // en retard, un autre suit
+  if ASerial <> FRemoteWantedSerial then Exit;
   FRemotePanel.SetBusy(False, '');
   if AError.Kind <> sekNone then
   begin
     FRemotePanel.ShowError(AError);
     FRemotePanel.SetPathText(FRemotePath);
     FRemoteWanted := FRemotePath;
+    FRemoteWantedSerial := 0;
+    FRemoteHistory.Abandon;
     // Une erreur de listing n'invalide pas la connexion: seule une perte reseau
     // le fait, par TransportFailed.
     Exit;
   end;
   FRemotePanel.ClearError;
   FRemotePath := norm;
-  if FRemotePushPending then FRemoteHistory.Push(norm);
+  if FRemotePushPending then
+    FRemoteHistory.Push(norm)
+  else
+    FRemoteHistory.Commit;
   FRemotePushPending := False;
   FRemotePanel.SetEntries(norm, AEntries, RemoteParent(norm) <> norm);
   FRemotePanel.List.RestoreView(FRemoteSavedSel, FRemoteSavedFocus,
@@ -1448,7 +1501,10 @@ begin
   if Result and (FTransport <> nil) then
   begin
     FQueue.CancelAll;
-    if partials > 0 then
+    // Le compte a ete pris AVANT l'annulation, et un transfert en cours peut
+    // n'avoir pas encore enregistre son temporaire: on nettoie des qu'un
+    // transfert etait en vie, pas seulement si un partiel etait compte.
+    if (partials > 0) or (s.Running > 0) or (s.Interrupted > 0) then
       WaitForPartialCleanup;
   end;
 end;
@@ -1482,7 +1538,10 @@ begin
     while waited < PARTIAL_CLEANUP_GRACE_MS do
     begin
       Application.ProcessMessages;
-      if FEngine.Partials.ActiveCount = 0 then Break;
+      // Plus de partiel ET plus rien en cours: un element qui ecrit encore peut en
+      // creer un a l'instant qui suit.
+      if (FEngine.Partials.ActiveCount = 0) and
+         (FQueue.Summary.Running = 0) then Break;
       Sleep(20);
       Inc(waited, 20);
     end;

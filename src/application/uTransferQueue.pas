@@ -195,6 +195,9 @@ type
     // qu'il rend est TENU jusqu'a ReleaseCurrent.
     function NextRunnable: TTransferItem;
     procedure ReleaseCurrent;
+    // Filet: l'element tenu est declare en echec et relache. Quand le fil sort
+    // par une exception, personne d'autre ne le ferait.
+    procedure FailCurrent(const AErr: TScpError);
     function HasRunnable: Boolean;
     procedure RewindCursor;
 
@@ -636,6 +639,25 @@ begin
   end;
 end;
 
+procedure TTransferQueue.FailCurrent(const AErr: TScpError);
+var
+  it: TTransferItem;
+begin
+  Lock;
+  try
+    it := FCurrent;
+    if it = nil then Exit;
+    if not it.IsTerminal then
+    begin
+      it.FError := AErr;
+      SetState(it, tsFailed);
+    end;
+    FCurrent := nil;
+  finally
+    Unlock;
+  end;
+end;
+
 procedure TTransferQueue.ReleaseCurrent;
 begin
   Lock;
@@ -674,18 +696,35 @@ end;
 
 procedure TTransferQueue.PauseQueue;
 begin
-  FPaused := True;
+  // Sous verrou: le fil de transfert lit ce drapeau entre deux elements
+  // pendant que l'interface l'ecrit.
+  Lock;
+  try
+    FPaused := True;
+  finally
+    Unlock;
+  end;
 end;
 
 procedure TTransferQueue.ResumeQueue;
 begin
-  FPaused := False;
+  Lock;
+  try
+    FPaused := False;
+  finally
+    Unlock;
+  end;
   RewindCursor;
 end;
 
 function TTransferQueue.IsPaused: Boolean;
 begin
-  Result := FPaused;
+  Lock;
+  try
+    Result := FPaused;
+  finally
+    Unlock;
+  end;
 end;
 
 // Sous verrou. Un element que personne ne traite passe a tsCanceled; un
@@ -712,12 +751,36 @@ begin
   end;
 end;
 
+// Confinement LEXICAL et volontairement grossier: les deux chemins viennent
+// de la meme jointure. La question n'est pas la securite, c'est « cet element
+// allait-il dans ce dossier ».
+function PathIsUnder(const ARoot, APath: string): Boolean;
+begin
+  Result := (ARoot <> '') and (Length(APath) > Length(ARoot)) and
+    (Copy(APath, 1, Length(ARoot)) = ARoot) and
+    ((APath[Length(ARoot) + 1] = '/') or (APath[Length(ARoot) + 1] = '\'));
+end;
+
+// Annuler un DOSSIER annule ce qui devait y aller: sans cela sa ligne passe a
+// « annule » et ses fichiers partent quand meme.
 procedure TTransferQueue.CancelItem(AItem: TTransferItem);
+var
+  i: Integer;
+  it: TTransferItem;
 begin
   if AItem = nil then Exit;
   Lock;
   try
     CancelLocked(AItem);      // idempotent, silencieux
+    if AItem.Kind <> tikMakeDir then Exit;
+    for i := 0 to FItems.Count - 1 do
+    begin
+      it := TTransferItem(FItems[i]);
+      if it = AItem then Continue;
+      if it.Direction <> AItem.Direction then Continue;
+      if not PathIsUnder(AItem.TargetPath, it.TargetPath) then Continue;
+      CancelLocked(it);
+    end;
   finally
     Unlock;
   end;

@@ -118,7 +118,9 @@ type
     Serial: Int64;   // rapproche une reponse de sa demande
   end;
 
-  TSftpListEvent = procedure(const APath: string;
+  // ASerial: le numero de la demande servie. Sans lui, aller en A, en B, puis
+  // revenir en A ferait prendre la premiere reponse A pour la troisieme.
+  TSftpListEvent = procedure(const APath: string; ASerial: Int64;
     const AEntries: TScpEntryArray; const AError: TScpError) of object;
   TSftpPathEvent = procedure(const APath: string;
     const AError: TScpError) of object;
@@ -185,7 +187,7 @@ type
     procedure PublishQueueChanged;
     procedure PublishConnected;
 
-    procedure PostCommand(ACmd: TSftpCommand);
+    function PostCommand(ACmd: TSftpCommand): Int64;
     function TakeCommand: TSftpCommand;
     function HasPendingCommand: Boolean;
     procedure ClearCommands;
@@ -222,7 +224,8 @@ type
     destructor Destroy; override;
 
     // --- appelables depuis le thread UI ---
-    procedure RequestList(const APath: string);
+    // Rend le numero de la demande: l'appelant ignore ce qui ne le porte pas.
+    function RequestList(const APath: string): Int64;
     procedure RequestHome;
     procedure RequestMkdir(const APath: string);
     procedure RequestRename(const AFrom, ATo: string);
@@ -311,6 +314,7 @@ type
     Error: TScpError;
     FreeBytes: Int64;
     Text: string;
+    Serial: Int64;
   end;
 
 function RandomSuffix: string;
@@ -450,7 +454,8 @@ begin
   AEntry.AttrsUnknown := AAttrs.flags = 0;
   if (AAttrs.flags and LIBSSH2_SFTP_ATTR_SIZE) <> 0 then
     AEntry.Size := Int64(AAttrs.filesize);
-  if (AAttrs.flags and LIBSSH2_SFTP_ATTR_PERMISSIONS) <> 0 then
+  AEntry.ModeKnown := (AAttrs.flags and LIBSSH2_SFTP_ATTR_PERMISSIONS) <> 0;
+  if AEntry.ModeKnown then
     AEntry.Mode := LongWord(AAttrs.permissions);
   if (AAttrs.flags and LIBSSH2_SFTP_ATTR_ACMODTIME) <> 0 then
     AEntry.MTimeUtc := Int64(AAttrs.mtime);
@@ -720,11 +725,9 @@ begin
   until not WaitAgain(deadline);
   if rc = 0 then Exit(True);
   AErr := LastError('Replacing', ATo, rc, False);
-  // Un serveur qui n'annonce pas l'extension repond « operation non
-  // supportee ». C'est le seul cas ou un repli a du sens: un refus de DROIT
-  // se reproduirait a l'identique et detruirait la cible pour rien.
-  if AErr.Kind in [sekUnsupported, sekOther] then
-    AErr.Kind := sekUnsupported;
+  // SSH_FX_OP_UNSUPPORTED est le SEUL cas ou un repli a du sens. SSH_FX_FAILURE
+  // arrive aussi pour un disque plein ou une erreur d'E/S: le ranger ici ferait
+  // supprimer la cible pour un echec qui se reproduirait a l'identique.
   Result := False;
 end;
 
@@ -1287,12 +1290,15 @@ end;
 
 // --- File de commandes ----------------------------------------------------
 
-procedure TSftpTransport.PostCommand(ACmd: TSftpCommand);
+// Rend le numero attribue, lu SOUS le verrou: des l'ajout, le fil de travail
+// peut servir la commande et la liberer, et ACmd.Serial serait un objet mort.
+function TSftpTransport.PostCommand(ACmd: TSftpCommand): Int64;
 begin
   FCmdLock.Acquire;
   try
     Inc(FSerial);
     ACmd.Serial := FSerial;
+    Result := FSerial;
     FCmds.Add(ACmd);
   finally
     FCmdLock.Release;
@@ -1373,7 +1379,8 @@ begin
   try
     case r.Kind of
       srListed:
-        if Assigned(FOnListed) then FOnListed(r.Path, r.Entries, r.Error);
+        if Assigned(FOnListed) then
+          FOnListed(r.Path, r.Serial, r.Entries, r.Error);
       srHome:
         if Assigned(FOnHome) then FOnHome(r.Path, r.Error);
       srOpDone:
@@ -1497,14 +1504,14 @@ end;
 
 // --- Commandes ------------------------------------------------------------
 
-procedure TSftpTransport.RequestList(const APath: string);
+function TSftpTransport.RequestList(const APath: string): Int64;
 var
   c: TSftpCommand;
 begin
   c := TSftpCommand.Create;
   c.Kind := sckListRemote;
   c.PathA := APath;
-  PostCommand(c);
+  Result := PostCommand(c);
 end;
 
 procedure TSftpTransport.RequestHome;
@@ -1841,6 +1848,7 @@ begin
         r := TSftpResult.Create;
         r.Kind := srListed;
         r.Path := ACmd.PathA;
+        r.Serial := ACmd.Serial;
         r.Entries := entries;
         r.Error := err;
         PostResult(r);
@@ -1861,6 +1869,7 @@ begin
         r.Path := path;
         r.Error := err;
         PostResult(r);
+        FailIfFatal(err);
       end;
     sckRemoteMkdir:
       begin
@@ -1908,7 +1917,12 @@ begin
           if Terminated then Break;
           if not FEngine.EnumerateInto(srcFs, dstFs, dir, ACmd.Sources[i],
              ACmd.TargetDir, ACmd.TargetRoot, SCP_MAX_DEPTH, err) then
+          begin
             EngineNote(ScpErrorText(err));
+            // Un parcours coupe par la session doit la faire tomber, pas laisser une
+            // note: sinon l'onglet se croit connecte et Reconnect reste eteint.
+            FailIfFatal(err);
+          end;
         end;
         if Assigned(FOnQueueChanged) then
           Queue(@PublishQueueChanged);
@@ -1941,7 +1955,10 @@ begin
           if not FEngine.EnumerateInto(srcFs, srcFs, dir,
              ACmd.Sources[i], ACmd.TargetDir, ACmd.TargetRoot,
              SCP_MAX_DEPTH, err, copyName) then
+          begin
             EngineNote(ScpErrorText(err));
+            FailIfFatal(err);
+          end;
         end;
         if Assigned(FOnQueueChanged) then
           Queue(@PublishQueueChanged);
@@ -1990,6 +2007,8 @@ end;
 procedure TSftpTransport.CommandLoop;
 var
   cmd: TSftpCommand;
+  rc: cint;
+  secondsToNext: cint;
 begin
   while (not Terminated) and (FStates.State = rssConnected) do
   begin
@@ -2003,6 +2022,20 @@ begin
         DoRunQueue;
         Continue;
       end;
+      // Configurer le keepalive ne l'envoie pas: c'est cet appel qui emet la sonde.
+      // Sans lui, une session sans trafic est jetee par le premier NAT venu, reglage
+      // en place ou non. Pendant un transfert les donnees suffisent; ici, a vide, non.
+      if FParams.KeepaliveS > 0 then
+      begin
+        secondsToNext := 0;
+        rc := libssh2_keepalive_send(FSession, @secondsToNext);
+        if (rc < 0) and (rc <> LIBSSH2_ERROR_EAGAIN) and
+           (rc <> LIBSSH2_ERROR_SOCKET_SEND) then
+        begin
+          Fail('Connection lost (keepalive): ' + LastErrorText);
+          Exit;
+        end;
+      end;
       // Attente REVEILLABLE et bornee: le reveil periodique fait revoir Terminated
       // meme si l'evenement s'est perdu.
       FCmdEvent.WaitFor(200);
@@ -2013,7 +2046,13 @@ begin
         RunCommand(cmd);
       except
         on E: Exception do
+        begin
           EngineNote('SFTP: ' + E.Message);
+          // Une exception a pu laisser un element tenu: personne d'autre ne le
+          // relachera, et il resterait « en cours » sans meme etre reessayable.
+          FQueue.FailCurrent(MakeScpError(sekOther, 'Transferring', '',
+            E.Message));
+        end;
       end;
     finally
       cmd.Free;

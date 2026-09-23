@@ -30,7 +30,7 @@ uses
 type
   TLocalOpKind = (lokList, lokMkdir, lokRename, lokDelete, lokVolumes);
 
-  TLocalListEvent = procedure(const APath: string;
+  TLocalListEvent = procedure(const APath: string; ASerial: Int64;
     const AEntries: TScpEntryArray; const AError: TScpError) of object;
   TLocalOpEvent = procedure(const AError: TScpError) of object;
   TLocalVolumesEvent = procedure(const AVolumes: TLocalVolumeArray) of object;
@@ -46,13 +46,14 @@ type
     FPubLock: TCriticalSection;
 
     FOnListed: TLocalListEvent;
+    FSerial: Int64;
     FOnOpDone: TLocalOpEvent;
     FOnVolumes: TLocalVolumesEvent;
 
     procedure PostResult(AResult: TObject);
     procedure PublishNext;
-    procedure Post(AKind: TLocalOpKind; const AArg1: string = '';
-      const AArg2: string = '');
+    function Post(AKind: TLocalOpKind; const AArg1: string = '';
+      const AArg2: string = ''): Int64;
     function RemoveTree(const APath: string; ADepth: Integer;
       out AErr: TScpError): Boolean;
   protected
@@ -61,7 +62,8 @@ type
     constructor Create(AFs: TLocalFileSystem);
     destructor Destroy; override;
 
-    procedure RequestList(const APath: string);
+    // Rend le numero de la demande: l'appelant ignore ce qui ne le porte pas.
+    function RequestList(const APath: string): Int64;
     procedure RequestVolumes;
     procedure RequestMkdir(const APath: string);
     procedure RequestRename(const AFrom, ATo: string);
@@ -85,6 +87,9 @@ type
   TLocalOp = class
     Kind: TLocalOpKind;
     Arg1, Arg2: string;
+    // Numero rendu avec la reponse: un chemin ne suffit pas, car aller en A,
+    // en B, puis revenir en A ferait prendre la premiere reponse pour la seconde.
+    Serial: Int64;
   end;
 
   TLocalResultKind = (lrListed, lrOpDone, lrVolumes);
@@ -95,6 +100,7 @@ type
     Entries: TScpEntryArray;
     Error: TScpError;
     Volumes: TLocalVolumeArray;
+    Serial: Int64;
   end;
 
 constructor TLocalFsWorker.Create(AFs: TLocalFileSystem);
@@ -134,11 +140,12 @@ begin
   FWake.SetEvent;
 end;
 
-procedure TLocalFsWorker.Post(AKind: TLocalOpKind;
-  const AArg1, AArg2: string);
+function TLocalFsWorker.Post(AKind: TLocalOpKind;
+  const AArg1, AArg2: string): Int64;
 var
   op: TLocalOp;
 begin
+  Result := 0;
   if Terminated then Exit;
   op := TLocalOp.Create;
   op.Kind := AKind;
@@ -146,6 +153,9 @@ begin
   op.Arg2 := AArg2;
   FLock.Acquire;
   try
+    Inc(FSerial);
+    op.Serial := FSerial;
+    Result := FSerial;
     FOps.Add(op);
   finally
     FLock.Release;
@@ -153,9 +163,9 @@ begin
   FWake.SetEvent;
 end;
 
-procedure TLocalFsWorker.RequestList(const APath: string);
+function TLocalFsWorker.RequestList(const APath: string): Int64;
 begin
-  Post(lokList, APath);
+  Result := Post(lokList, APath);
 end;
 
 procedure TLocalFsWorker.RequestVolumes;
@@ -210,7 +220,8 @@ begin
   try
     case r.Kind of
       lrListed:
-        if Assigned(FOnListed) then FOnListed(r.Path, r.Entries, r.Error);
+        if Assigned(FOnListed) then
+          FOnListed(r.Path, r.Serial, r.Entries, r.Error);
       lrOpDone:
         if Assigned(FOnOpDone) then FOnOpDone(r.Error);
       lrVolumes:
@@ -323,6 +334,7 @@ begin
               r.Path := op.Arg1;
               r.Entries := entries;
               r.Error := err;
+              r.Serial := op.Serial;
               PostResult(r);
             end;
           lokVolumes:

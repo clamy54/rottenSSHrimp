@@ -215,6 +215,7 @@ begin
     AEntry.Mode := &0100000 or &0644;
   if AEntry.IsLink then
     AEntry.Mode := (AEntry.Mode and not LongWord(&0170000)) or &0120000;
+  AEntry.ModeKnown := True;
 end;
 
 {$ELSE}
@@ -231,6 +232,7 @@ end;
 procedure FillEntryFromStat(var AEntry: TScpEntry; const ASt: Stat);
 begin
   AEntry.Mode := ASt.st_mode;
+  AEntry.ModeKnown := True;
   AEntry.IsDir := ModeIsDir(ASt.st_mode);
   AEntry.IsLink := ModeIsLink(ASt.st_mode);
   AEntry.IsSpecial := ModeIsSpecial(ASt.st_mode);
@@ -515,6 +517,8 @@ function TLocalFileSystem.Rename(const AFrom, ATo: string;
 var
   found: Boolean;
   chkErr: TScpError;
+  code: Integer;
+  f, t: string;
 {$ENDIF}
 begin
   AErr := NoScpError;
@@ -523,9 +527,35 @@ begin
   // est ReplaceAtomic, demande explicitement.
   Result := MoveFileExW(PWideChar(NativeW(AFrom)), PWideChar(NativeW(ATo)), 0);
   {$ELSE}
-  // rename() POSIX ecrase la cible en silence. Ce n'est pas ce que promet
-  // cette methode: on verifie d'abord, en assumant la course residuelle --
-  // l'appelant ne passe ici que pour une cible qu'il a vue absente.
+  f := LocalNormalize(AFrom);
+  t := LocalNormalize(ATo);
+  // rename() POSIX ecrase en silence, et verifier avant laisse une course.
+  // link() ECHOUE atomiquement si le nom existe: c'est le « ne pas ecraser »
+  // qu'on veut. Temporaire et cible sont dans le meme dossier, ce qu'il exige.
+  if fpLink(PChar(f), PChar(t)) = 0 then
+  begin
+    // La cible EST ce fichier; le temporaire n'en est qu'un second nom. Si son
+    // retrait echoue, c'est un dechet, pas une cible fausse.
+    fpUnlink(PChar(f));
+    Exit(True);
+  end;
+  code := fpGetErrno;
+  if code = ESysEEXIST then
+  begin
+    AErr := MakeScpError(sekAlreadyExists, 'Renaming to',
+      DisplaySafeName(ATo), '');
+    Exit(False);
+  end;
+  // Tout systeme de fichiers ne sait pas faire de lien dur (FAT, certains
+  // montages reseau). Dans ce cas seulement, on retombe sur verifier puis
+  // renommer, avec la course residuelle que cela suppose.
+  if (code <> ESysEPERM) and (code <> ESysEOPNOTSUPP) and
+     (code <> ESysEMLINK) and (code <> ESysEXDEV) and
+     (code <> ESysEACCES) then
+  begin
+    AErr := LastErr('Renaming to', ATo);
+    Exit(False);
+  end;
   if not Exists(ATo, found, chkErr) then
   begin
     AErr := chkErr;
@@ -537,8 +567,7 @@ begin
       DisplaySafeName(ATo), '');
     Exit(False);
   end;
-  Result := fpRename(PChar(LocalNormalize(AFrom)),
-    PChar(LocalNormalize(ATo))) = 0;
+  Result := fpRename(PChar(f), PChar(t)) = 0;
   {$ENDIF}
   if not Result then
     AErr := LastErr('Renaming to', ATo);
@@ -597,10 +626,13 @@ begin
   h := TLocalHandle.Create;
   h.Path := APath;
   {$IFDEF WINDOWS}
-  // FILE_SHARE_READ seulement: on ne veut pas lire un fichier qu'un autre
-  // processus est en train de reecrire.
+  // FILE_SHARE_READ seul: ne pas lire ce qu'un autre processus reecrit.
+  // FILE_FLAG_OPEN_REPARSE_POINT: le lstat du moteur repondait avant cette
+  // ouverture, et le nom a pu changer de fichier entre les deux. Ouvrir le
+  // point de reanalyse LUI-MEME fait echouer au lieu de lire ailleurs.
   h.H := CreateFileW(PWideChar(NativeW(APath)), GENERIC_READ,
-    FILE_SHARE_READ, nil, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+    FILE_SHARE_READ, nil, OPEN_EXISTING,
+    FILE_ATTRIBUTE_NORMAL or FILE_FLAG_OPEN_REPARSE_POINT_, 0);
   if h.H = INVALID_HANDLE_VALUE then
   begin
     AErr := LastErr('Opening', APath);
@@ -608,7 +640,10 @@ begin
     Exit(False);
   end;
   {$ELSE}
-  h.Fd := fpOpen(PChar(LocalNormalize(APath)), O_RDONLY);
+  // O_NOFOLLOW pour la meme raison: c'est l'ouverture, et elle seule, qui
+  // peut refuser un lien sans course. Elle ne protege que le DERNIER
+  // composant; les dossiers traverses restent resolus par leur nom.
+  h.Fd := fpOpen(PChar(LocalNormalize(APath)), O_RDONLY or O_NOFOLLOW);
   if h.Fd < 0 then
   begin
     AErr := LastErr('Opening', APath);

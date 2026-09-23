@@ -549,6 +549,10 @@ begin
     SetLength(r, Length(r) - 1);
   if r = p then Exit(True);
   if r = '' then Exit(False);
+  // La racine POSIX est un separateur a elle seule: exiger un separateur de
+  // PLUS sortirait /tmp/x de /. Tout chemin absolu est sous la racine.
+  if (Length(r) = 1) and IsSep(r[1]) then
+    Exit((Length(p) > 1) and IsSep(p[1]));
   Result := (Length(p) > Length(r)) and
     (Copy(p, 1, Length(r)) = r) and IsSep(p[Length(r) + 1]);
 end;

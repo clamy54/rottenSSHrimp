@@ -39,6 +39,9 @@ type
     BrokenLink: Boolean;
     Size: Int64;           // -1 si inconnue
     Mode: LongWord;        // 0 si le serveur ne l'a pas envoye
+    // Mode reellement connu? Sans ce drapeau, 0 voudrait dire « inconnu » ET
+    // « aucun droit », et un fichier en 0000 serait publie autrement.
+    ModeKnown: Boolean;
     MTimeUtc: Int64;       // secondes Unix, 0 si inconnue
     Owner: string;
     Group: string;
@@ -61,6 +64,9 @@ type
     // Distant ou local: change les regles de nommage, pas le protocole d'appel.
     function IsRemote: Boolean; virtual; abstract;
     function DisplayName: string; virtual; abstract;
+    // Relire un prefixe est-il bon marche ici? Sur un disque oui; sur une session
+    // distante cela coute ce que la reprise economise, et n'a plus de sens.
+    function CheapReRead: Boolean; virtual;
 
     // Annulation cooperative: le moteur l'interroge a chaque tour de boucle.
     function Canceled: Boolean; virtual; abstract;
@@ -157,5 +163,12 @@ const
   SCP_DEFAULT_DIR_MODE = &0755;
 
 implementation
+
+// La reponse suit la distance: un disque relit pour rien, une session
+// distante pour le prix d'un telechargement.
+function TScpFileSystem.CheapReRead: Boolean;
+begin
+  Result := not IsRemote;
+end;
 
 end.
