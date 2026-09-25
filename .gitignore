@@ -52,3 +52,4 @@ scripts/run-tests.sh
 /rsshtests
 /rsshscpsmoke
 /rsshsftpit
+/rsshrdpit
