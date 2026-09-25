@@ -289,11 +289,13 @@ end;
 
 procedure RdpClipRemoveTree(const APath: string);
 
-  procedure RemoveLevel(const ADir: string; ADepth: Integer);
+  procedure RemoveLevel(const ADir: string; ADepth: Integer;
+    const AWant: TRdpFileId);
   var
     h: THandle;
     info: TByHandleInfo_;
     entries: TDirEntryArray_;
+    want: TRdpFileId;
     code: LongWord;
     e: Integer;
     sub: string;
@@ -313,6 +315,14 @@ procedure RdpClipRemoveTree(const APath: string);
          ((info.dwFileAttributes and FA_SYMLINK_) <> 0) or
          ((info.dwFileAttributes and FILE_ATTRIBUTE_DIRECTORY_) = 0) then
         Exit;
+      // Et ce doit etre LE dossier que le parent a liste -- meme volume, meme
+      // numero. Un VRAI dossier (pas une jonction) substitue sous ce nom ne
+      // serait pas suivi non plus: on le laisse plutot que de le vider.
+      if AWant.Known and
+         ((info.dwVolumeSerialNumber <> AWant.Volume) or
+          (info.nFileIndexHigh <> AWant.IdHigh) or
+          (info.nFileIndexLow <> AWant.IdLow)) then
+        Exit;
       if not ListDirByHandle(h, entries, code) then
         Exit;
       for e := 0 to High(entries) do
@@ -327,7 +337,11 @@ procedure RdpClipRemoveTree(const APath: string);
         end
         else if (entries[e].Attrs and FILE_ATTRIBUTE_DIRECTORY_) <> 0 then
         begin
-          RemoveLevel(sub, ADepth + 1);
+          want.Known := True;
+          want.Volume := info.dwVolumeSerialNumber;
+          want.IdHigh := entries[e].IdHigh;
+          want.IdLow := entries[e].IdLow;
+          RemoveLevel(sub, ADepth + 1, want);
           RemoveDir(sub);
         end
         else
@@ -338,10 +352,15 @@ procedure RdpClipRemoveTree(const APath: string);
     end;
   end;
 
+var
+  noWant: TRdpFileId;
 begin
   if APath = '' then
     Exit;
-  RemoveLevel(APath, 0);
+  // La racine n'a pas de listing parent qui dise son identite: elle est A
+  // NOUS par construction (creee en exclusif, DACL proprietaire seul).
+  noWant := Default(TRdpFileId);
+  RemoveLevel(APath, 0, noWant);
   RemoveDir(APath);
 end;
 
