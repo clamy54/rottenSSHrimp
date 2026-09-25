@@ -2422,7 +2422,9 @@ begin
   B(FreeRDP_AudioPlayback, False);
   B(FreeRDP_AudioCapture, False);
 
-  B(FreeRDP_RedirectClipboard, FParams.ClipboardText);   // texte seulement
+  // Un seul reglage pour le presse-papiers entier: texte, et fichiers la ou
+  // la plateforme les porte.
+  B(FreeRDP_RedirectClipboard, FParams.ClipboardText);
 
   B(FreeRDP_DynamicResolutionUpdate, FParams.DynamicResolution);
   B(FreeRDP_SupportDisplayControl, FParams.DynamicResolution);
