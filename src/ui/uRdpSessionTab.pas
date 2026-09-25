@@ -52,6 +52,11 @@ type
     // renvoyer ni ce qui vient d'un serveur ni deux fois la meme copie.
     FClipFilesSig: string;
     FFilesPrimed: Boolean;
+    // Lot arrive pendant que l'onglet etait cache: il attend le retour au
+    // premier plan, et le numero de sequence dit si le presse-papiers a bouge
+    // entre-temps -- auquel cas il ne sera PAS pose.
+    FPendingFiles: TStringArray;
+    FPendingSeq: LongWord;
     FReconnectMsg: string;
     // Un echec d'ETABLISSEMENT garde l'onglet ouvert avec sa raison.
     FEverConnected: Boolean;
@@ -130,7 +135,7 @@ type
 implementation
 
 uses
-  uRdpCertDialog, uClipDropFiles;
+  uRdpCertDialog, uClipDropFiles, uRdpClipFiles;
 
 var
   // Signature du dernier LOT de fichiers ecrit par un serveur, tous onglets
@@ -596,9 +601,24 @@ begin
 end;
 
 procedure TRdpSessionTab.ClipPoll(Sender: TObject);
+var
+  pending: TStringArray;
 begin
   if (FTransport = nil) or (FState <> rssConnected) then
     Exit;
+  // Lot arrive en arriere-plan: pose au retour au premier plan, et seulement
+  // si personne n'a rien copie d'autre entre-temps.
+  if (Length(FPendingFiles) > 0) and ClipForeground then
+  begin
+    pending := FPendingFiles;
+    FPendingFiles := nil;
+    if ClipSequence = FPendingSeq then
+      ClipboardFilesFromRemote(pending)
+    else if Assigned(FOnNotice) then
+      FOnNotice(Format('%s: the clipboard changed while this tab was in ' +
+        'the background; the remote files were not placed on it.',
+        [FDisplayName]));
+  end;
   FClipBridge.Poll;
   PollLocalFiles;
 end;
@@ -633,6 +653,16 @@ begin
     Exit;
   if (GFilesRemoteSig <> '') and (sig = GFilesRemoteSig) then
     Exit;   // recu d'un serveur: adopte, jamais retransmis
+  // Refus MOTIVE plutot qu'une selection tronquee en silence; la signature
+  // est adoptee, le message ne se repete donc pas a chaque sondage.
+  if Length(paths) > RDPCLIP_MAX_FILES then
+  begin
+    if Assigned(FOnNotice) then
+      FOnNotice(Format('%s: more than %d items on the clipboard; they were ' +
+        'not offered to the remote desktop.',
+        [FDisplayName, RDPCLIP_MAX_FILES]));
+    Exit;
+  end;
   FTransport.AnnounceLocalFiles(paths);
 end;
 {$ELSE}
@@ -650,6 +680,17 @@ var
 begin
   if Length(APaths) = 0 then
     Exit;
+  if not ClipForeground then
+  begin
+    // L'onglet n'est plus devant: poser le lot maintenant ecraserait ce que
+    // l'utilisateur manipule AILLEURS. Il attend le retour.
+    FPendingFiles := APaths;
+    FPendingSeq := ClipSequence;
+    if Assigned(FOnNotice) then
+      FOnNotice(Format('%s: the remote files are ready; they will be placed ' +
+        'on the clipboard when you come back to this tab.', [FDisplayName]));
+    Exit;
+  end;
   sig := FilesSig(APaths);
   prevSig := FClipFilesSig;
   prevPrimed := FFilesPrimed;

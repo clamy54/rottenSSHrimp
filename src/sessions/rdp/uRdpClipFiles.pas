@@ -17,7 +17,7 @@ unit uRdpClipFiles;
 interface
 
 uses
-  SysUtils;
+  SysUtils, Classes;
 
 const
   // Bornes contre un serveur hostile ou un exces involontaire: des REFUS.
@@ -45,6 +45,14 @@ const
   FILEDESC_NAME_MAX = 259;
 
 type
+  // Identite d'un fichier local: volume et numero de fichier, captures a
+  // l'ENUMERATION. C'est elle que le service verifie avant d'envoyer, pas le
+  // chemin, qu'un lien ou une jonction poses entre-temps feraient mentir.
+  TRdpFileId = record
+    Known: Boolean;
+    Volume, IdHigh, IdLow: LongWord;
+  end;
+
   TRdpClipFile = record
     RelPath: UnicodeString;  // tel que sur le fil, separateurs '\'
     LocalRel: string;        // le meme, rejoue et valide pour CE poste
@@ -53,6 +61,7 @@ type
     Size: Int64;
     WriteTime: Int64;        // FILETIME (100 ns depuis 1601), 0 = inconnue
     LocalPath: string;       // cote envoi seulement: le fichier reel
+    Id: TRdpFileId;          // cote envoi seulement: capturee a l'enumeration
   end;
   TRdpClipFileArray = array of TRdpClipFile;
 
@@ -79,7 +88,94 @@ function RdpClipSafeRelPath(const ARel: UnicodeString; out ALocalRel: string;
 function EnumerateLocalTree(const ARoots: array of string;
   out AFiles: TRdpClipFileArray; out AWhy: string): Boolean;
 
+// Capture l'identite du fichier a APath. False = impossible de l'ouvrir, et
+// il ne faut alors PAS l'annoncer: on ne saurait pas verifier qu'on sert bien
+// lui. Hors Windows: Known reste faux, rien ne se sert.
+function CaptureLocalFileId(const APath: string; out AId: TRdpFileId): Boolean;
+
+// La poignee ouverte designe-t-elle le fichier capture? Refus par defaut:
+// une identite inconnue ne se sert pas.
+function HandleMatchesId(AHandle: THandle; const AId: TRdpFileId): Boolean;
+
 implementation
+
+{$IFDEF WINDOWS}
+type
+  // BY_HANDLE_FILE_INFORMATION: champs de 4 octets et FILETIME de 2 x 4,
+  // aucun bourrage.
+  TByHandleInfo_ = record
+    dwFileAttributes: LongWord;
+    ftCreation, ftAccess, ftWrite: array[0..1] of LongWord;
+    dwVolumeSerialNumber, nFileSizeHigh, nFileSizeLow, nNumberOfLinks,
+    nFileIndexHigh, nFileIndexLow: LongWord;
+  end;
+
+const
+  FILE_READ_ATTRIBUTES_ = $0080;
+  FILE_SHARE_ALL_ = 7;   // read + write + delete: on ne bloque personne
+  OPEN_EXISTING_ = 3;
+  FILE_FLAG_BACKUP_SEMANTICS_ = $02000000;
+  ERROR_FILE_NOT_FOUND_ = 2;
+  ERROR_NO_MORE_FILES_ = 18;
+
+function CreateFileW(AName: PWideChar; AAccess, AShare: LongWord;
+  ASecurity: Pointer; ADisposition, AFlags: LongWord;
+  ATemplate: THandle): THandle; stdcall; external 'kernel32.dll';
+function CloseHandle(AHandle: THandle): LongBool; stdcall;
+  external 'kernel32.dll';
+function GetFileInformationByHandle(AHandle: THandle;
+  var AInfo: TByHandleInfo_): LongBool; stdcall; external 'kernel32.dll';
+
+function CaptureLocalFileId(const APath: string; out AId: TRdpFileId): Boolean;
+var
+  h: THandle;
+  info: TByHandleInfo_;
+begin
+  AId := Default(TRdpFileId);
+  Result := False;
+  h := CreateFileW(PWideChar(UTF8Decode(APath)), FILE_READ_ATTRIBUTES_,
+    FILE_SHARE_ALL_, nil, OPEN_EXISTING_, FILE_FLAG_BACKUP_SEMANTICS_, 0);
+  if h = THandle(-1) then
+    Exit;
+  try
+    info := Default(TByHandleInfo_);
+    if not GetFileInformationByHandle(h, info) then
+      Exit;
+    AId.Known := True;
+    AId.Volume := info.dwVolumeSerialNumber;
+    AId.IdHigh := info.nFileIndexHigh;
+    AId.IdLow := info.nFileIndexLow;
+    Result := True;
+  finally
+    CloseHandle(h);
+  end;
+end;
+
+function HandleMatchesId(AHandle: THandle; const AId: TRdpFileId): Boolean;
+var
+  info: TByHandleInfo_;
+begin
+  Result := False;
+  if not AId.Known then
+    Exit;
+  info := Default(TByHandleInfo_);
+  if not GetFileInformationByHandle(AHandle, info) then
+    Exit;
+  Result := (info.dwVolumeSerialNumber = AId.Volume) and
+    (info.nFileIndexHigh = AId.IdHigh) and (info.nFileIndexLow = AId.IdLow);
+end;
+{$ELSE}
+function CaptureLocalFileId(const APath: string; out AId: TRdpFileId): Boolean;
+begin
+  AId := Default(TRdpFileId);
+  Result := True;
+end;
+
+function HandleMatchesId(AHandle: THandle; const AId: TRdpFileId): Boolean;
+begin
+  Result := False;
+end;
+{$ENDIF}
 
 function BuildFileGroupDescriptor(const AFiles: TRdpClipFileArray): TBytes;
 var
@@ -193,12 +289,13 @@ end;
 function ParseFileGroupDescriptor(AData: PByte; ALen: SizeUInt;
   out AFiles: TRdpClipFileArray; out AWhy: string): Boolean;
 var
-  count: LongWord;
+  count, sizeHi: LongWord;
   i, j, nameLen: Integer;
   base: SizeUInt;
   flags, attrs: LongWord;
   name: UnicodeString;
   w: Word;
+  seen: TStringList;
 
   function Refuse(const AReason: string): Boolean;
   begin
@@ -220,6 +317,12 @@ begin
   if ALen < 4 + SizeUInt(count) * FILEDESC_W_SIZE then
     Exit(Refuse('descriptor shorter than its own count'));
   SetLength(AFiles, count);
+  // Sur ce disque, deux noms qui ne different que par la casse designent le
+  // MEME fichier: le second ecraserait le premier en silence.
+  seen := TStringList.Create;
+  seen.Sorted := True;
+  seen.CaseSensitive := False;
+  try
   for i := 0 to Integer(count) - 1 do
   begin
     base := 4 + SizeUInt(i) * FILEDESC_W_SIZE;
@@ -232,8 +335,15 @@ begin
     AFiles[i].SizeKnown := (not AFiles[i].IsDir) and
       ((flags and FD_FILESIZE) <> 0);
     if AFiles[i].SizeKnown then
-      AFiles[i].Size := (Int64(PLongWord(AData + base + 64)^) shl 32) or
+    begin
+      sizeHi := PLongWord(AData + base + 64)^;
+      // Bit de signe du mot haut: la taille deviendrait NEGATIVE en Int64, et
+      // « position >= taille » declarerait complet un fichier tronque.
+      if (sizeHi and $80000000) <> 0 then
+        Exit(Refuse('a file size beyond what a signed 64-bit count holds'));
+      AFiles[i].Size := (Int64(sizeHi) shl 32) or
         Int64(PLongWord(AData + base + 68)^);
+    end;
     if (flags and FD_WRITESTIME) <> 0 then
       AFiles[i].WriteTime := PInt64(AData + base + 56)^;
     nameLen := -1;
@@ -255,6 +365,13 @@ begin
     AFiles[i].RelPath := name;
     if not RdpClipSafeRelPath(name, AFiles[i].LocalRel, AWhy) then
       Exit(Refuse(AWhy));
+    if seen.IndexOf(AFiles[i].LocalRel) >= 0 then
+      Exit(Refuse(Format('two entries resolve to the same local name "%s"',
+        [AFiles[i].LocalRel])));
+    seen.Add(AFiles[i].LocalRel);
+  end;
+  finally
+    seen.Free;
   end;
   Result := True;
 end;
@@ -298,6 +415,11 @@ var
     AFiles[n].SizeKnown := not AIsDir;
     AFiles[n].Size := ASize;
     AFiles[n].WriteTime := AWTime;
+    // Un fichier dont l'identite ne se capture pas ne s'annonce pas: le
+    // service ne pourrait jamais verifier qu'il sert bien LUI.
+    if (not AIsDir) and (not CaptureLocalFileId(ALocal, AFiles[n].Id)) then
+      Exit(Refuse(Format('"%s" could not be opened to pin down which file ' +
+        'it is', [ExtractFileName(ALocal)])));
     Inc(n);
     Result := True;
   end;
@@ -306,29 +428,50 @@ var
     ADepth: Integer): Boolean;
   var
     sr: TSearchRec;
+    rc: Integer;
   begin
     Result := False;
     if ADepth > RDPCLIP_MAX_DEPTH then
       Exit(Refuse('folder tree too deep'));
-    if FindFirst(ADir + PathDelim + '*', faAnyFile, sr) <> 0 then
-      Exit(True);   // un dossier vide ou illisible part vide, pas en erreur
+    rc := FindFirst(ADir + PathDelim + '*', faAnyFile, sr);
+    {$IFDEF WINDOWS}
+    // FindFirst rend le code Windows. Seul « rien a rendre » est un dossier
+    // vide; un refus d'acces ou une E/S qui casse annoncerait une copie
+    // REUSSIE a laquelle il manque des fichiers.
+    if (rc = ERROR_FILE_NOT_FOUND_) or (rc = ERROR_NO_MORE_FILES_) then
+      Exit(True);
+    if rc <> 0 then
+      Exit(Refuse(Format('"%s" could not be listed (Windows error %d)',
+        [ExtractFileName(ADir), rc])));
+    {$ELSE}
+    if rc <> 0 then
+      Exit(True);
+    {$ENDIF}
     try
       repeat
-        if (sr.Name = '.') or (sr.Name = '..') or (sr.Name = '') then
-          Continue;
-        if (sr.Attr and FA_SYMLINK_) <> 0 then
-          Continue;   // jamais suivi, jamais annonce: sa cible n'est pas la
-        if (sr.Attr and faDirectory) <> 0 then
+        if (sr.Name <> '.') and (sr.Name <> '..') and (sr.Name <> '') and
+           ((sr.Attr and FA_SYMLINK_) = 0) then
         begin
-          if not AddEntry(ARel + '\' + UnicodeString(sr.Name),
-             ADir + PathDelim + sr.Name, True, 0, WriteTimeOf(sr)) then Exit;
-          if not Walk(ADir + PathDelim + sr.Name,
-             ARel + '\' + UnicodeString(sr.Name), ADepth + 1) then Exit;
-        end
-        else if not AddEntry(ARel + '\' + UnicodeString(sr.Name),
-           ADir + PathDelim + sr.Name, False, sr.Size, WriteTimeOf(sr)) then
-          Exit;
-      until FindNext(sr) <> 0;
+          // Un lien n'est ni suivi ni annonce: sa cible n'est pas la.
+          if (sr.Attr and faDirectory) <> 0 then
+          begin
+            if not AddEntry(ARel + '\' + UnicodeString(sr.Name),
+               ADir + PathDelim + sr.Name, True, 0, WriteTimeOf(sr)) then Exit;
+            if not Walk(ADir + PathDelim + sr.Name,
+               ARel + '\' + UnicodeString(sr.Name), ADepth + 1) then Exit;
+          end
+          else if not AddEntry(ARel + '\' + UnicodeString(sr.Name),
+             ADir + PathDelim + sr.Name, False, sr.Size, WriteTimeOf(sr)) then
+            Exit;
+        end;
+        rc := FindNext(sr);
+      until rc <> 0;
+      {$IFDEF WINDOWS}
+      // La fin normale a un code a elle; tout autre est un listing coupe.
+      if rc <> ERROR_NO_MORE_FILES_ then
+        Exit(Refuse(Format('listing "%s" stopped early (Windows error %d)',
+          [ExtractFileName(ADir), rc])));
+      {$ENDIF}
     finally
       FindClose(sr);
     end;

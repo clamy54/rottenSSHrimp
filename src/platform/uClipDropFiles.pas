@@ -22,6 +22,10 @@ function ClipReadHdrop(out APaths: TStringArray): Boolean;
 // rien n'a ete change.
 function ClipWriteHdrop(const APaths: TStringArray): Boolean;
 
+// Numero de sequence du presse-papiers systeme: il change a CHAQUE ecriture,
+// par qui que ce soit. Zero la ou la plateforme ne le donne pas.
+function ClipSequence: LongWord;
+
 implementation
 
 {$IFDEF WINDOWS}
@@ -30,9 +34,6 @@ const
   CF_HDROP_ = 15;
   GMEM_MOVEABLE_ = 2;
   DROPEFFECT_COPY_ = 1;
-  // Personne ne colle plus de fichiers que ca d'un coup dans une session; la
-  // borne PROFONDE (arbres compris) est ailleurs, a l'enumeration.
-  HDROP_MAX_ITEMS = 512;
 
 type
   // DROPFILES de shellapi.h: 20 octets, alignement naturel.
@@ -64,6 +65,13 @@ function GlobalLock(AMem: PtrUInt): Pointer; stdcall; external 'kernel32.dll';
 function GlobalUnlock(AMem: PtrUInt): LongBool; stdcall;
   external 'kernel32.dll';
 function GlobalFree(AMem: PtrUInt): PtrUInt; stdcall; external 'kernel32.dll';
+function GetClipboardSequenceNumber: LongWord; stdcall;
+  external 'user32.dll';
+
+function ClipSequence: LongWord;
+begin
+  Result := GetClipboardSequenceNumber;
+end;
 
 function ClipReadHdrop(out APaths: TStringArray): Boolean;
 var
@@ -82,9 +90,9 @@ begin
     h := GetClipboardData(CF_HDROP_);
     if h = 0 then
       Exit;
+    // La liste part ENTIERE: tronquer ici enverrait au serveur une selection
+    // qui n'est pas celle copiee. C'est l'annonce qui refuse, avec un motif.
     n := DragQueryFileW(h, $FFFFFFFF, nil, 0);
-    if n > HDROP_MAX_ITEMS then
-      n := HDROP_MAX_ITEMS;
     SetLength(APaths, n);
     for i := 0 to n - 1 do
     begin
@@ -205,6 +213,11 @@ end;
 function ClipWriteHdrop(const APaths: TStringArray): Boolean;
 begin
   Result := False;
+end;
+
+function ClipSequence: LongWord;
+begin
+  Result := 0;
 end;
 
 {$ENDIF}

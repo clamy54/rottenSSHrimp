@@ -1033,6 +1033,27 @@ begin
   FInputIdle := TEvent.Create(nil, True, True, '');   // manuel, SIGNALE au depart
   FClipNotes := TStringList.Create;
   FClipServedIdx := -1;
+  // Pour les noms de dossiers temporaires. La garantie, c'est la creation
+  // EXCLUSIVE; la graine n'evite que les collisions de bonne foi.
+  Randomize;
+end;
+
+// Cree un dossier NEUF sous un nom frais: l'echec si le nom existe est LA
+// garantie qu'on n'ecrira jamais dans un dossier (ou une jonction) pose la
+// par un autre. Jamais de reutilisation.
+function ClipMakeFreshDir(const APrefix: string; out ADir: string): Boolean;
+var
+  i: Integer;
+begin
+  Result := False;
+  for i := 1 to 8 do
+  begin
+    ADir := APrefix + IntToHex(Int64(GetTickCount64 and $FFFFFF), 6) +
+      IntToHex(Random($1000000), 6);
+    if CreateDir(ADir) then
+      Exit(True);
+  end;
+  ADir := '';
 end;
 
 // Efface un arbre A NOUS (temporaire du presse-papiers) sans jamais suivre un
@@ -1811,6 +1832,19 @@ begin
       // DenyNone: l'utilisateur garde la main sur ses propres fichiers.
       FClipServedStream := TFileStream.Create(
         FClipServed[req^.listIndex].LocalPath, fmOpenRead or fmShareDenyNone);
+      // La POIGNEE doit designer le fichier vu a l'enumeration: un lien ou
+      // une jonction poses depuis feraient lire autre chose sous le meme
+      // chemin, et l'envoyer au serveur.
+      if not HandleMatchesId(FClipServedStream.Handle,
+         FClipServed[req^.listIndex].Id) then
+      begin
+        FreeAndNil(FClipServedStream);
+        ClipNote(Format('"%s" is not the file that was copied any more; it ' +
+          'was not sent.',
+          [ExtractFileName(FClipServed[req^.listIndex].LocalPath)]));
+        Respond(False, 0);
+        Exit;
+      end;
       FClipServedIdx := Integer(req^.listIndex);
     end;
     if (req^.dwFlags and FILECONTENTS_SIZE) <> 0 then
@@ -1866,8 +1900,17 @@ begin
     if not AFiles[i].IsDir then
     begin
       Inc(files);
+      // Chaque taille est bornee AVANT la somme: 4096 tailles enormes
+      // feraient deborder le total, et un debordement passe les plafonds.
       if AFiles[i].SizeKnown then
-        Inc(total, AFiles[i].Size);
+      begin
+        if AFiles[i].Size > RDPCLIP_MAX_TOTAL_BYTES then
+          total := RDPCLIP_MAX_TOTAL_BYTES + 1
+        else
+          Inc(total, AFiles[i].Size);
+      end;
+      if total > RDPCLIP_MAX_TOTAL_BYTES then
+        Break;
     end;
   if total > RDPCLIP_MAX_TOTAL_BYTES then
   begin
@@ -1878,20 +1921,20 @@ begin
   end;
   try
     if FClipTempRoot = '' then
-    begin
-      FClipTempRoot := IncludeTrailingPathDelimiter(GetTempDir) +
-        'rssh-rdpclip-' + IntToStr(GetProcessID) + '-' +
-        IntToStr(Random(1000000));
-      if not ForceDirectories(FClipTempRoot) then
+      if not ClipMakeFreshDir(IncludeTrailingPathDelimiter(GetTempDir) +
+         'rssh-rdpclip-' + IntToStr(GetProcessID) + '-', FClipTempRoot) then
         raise EInOutError.Create('temp folder refused');
-    end;
     // Le lot precedent meurt: le presse-papiers local ne designe de toute
     // facon que le dernier, et deux lots empiles grossiraient sans fin.
     if FClipFetchDir <> '' then
       ClipRemoveTree(FClipFetchDir);
     Inc(FClipBatchSeq);
+    // CreateDir et pas ForceDirectories: dans NOTRE racine fraiche, un nom
+    // deja pris ne peut etre que pose par un autre -- refus. Les DESCENDANTS,
+    // eux, vivent dans ce lot tout juste cree; un processus du meme
+    // utilisateur qui y ecrirait joue deja avec nos droits.
     FClipFetchDir := FClipTempRoot + PathDelim + 'b' + IntToStr(FClipBatchSeq);
-    if not ForceDirectories(FClipFetchDir) then
+    if not CreateDir(FClipFetchDir) then
       raise EInOutError.Create('temp folder refused');
     for i := 0 to High(AFiles) do
       if AFiles[i].IsDir then
