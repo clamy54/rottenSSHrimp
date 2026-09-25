@@ -167,6 +167,7 @@ type
     procedure MultiSshClick(Sender: TObject);
     procedure ClusterSelectedClick(Sender: TObject);
     procedure MultiSelectedClick(Sender: TObject);
+    procedure DualTerminalClick(Sender: TObject);
     procedure DeleteSelectedClick(Sender: TObject);
     procedure DeleteSelectedHosts(AUuids: TStrings);
     function SelectionIsHostsOnly: Boolean;
@@ -2477,6 +2478,9 @@ begin
     try
       n := FModel.GetNode(ref.Uuid);
       try
+        // Deux sessions vers CE meme hote, cote a cote dans le meme onglet.
+        if n.Protocol = rpSsh then
+          Add('Connect Side by Side', @DualTerminalClick);
         if n.Protocol in [rpSsh, rpRdp, rpVnc] then
           Add('Ping Host', @PingHostClick);
       finally
@@ -3052,6 +3056,59 @@ begin
   end;
 end;
 
+// Deux sessions vers le MEME hote SSH, cote a cote dans un onglet: la grille
+// Multi-Terminal a deux cellules. Suivre un journal d'un cote pendant qu'on
+// agit de l'autre, sans changer d'onglet.
+procedure TfrmMain.DualTerminalClick(Sender: TObject);
+var
+  ref: TNodeRef;
+  n: TRshNode;
+  list: TRshQuickList;
+  e: TRshQuickEntry;
+  i: Integer;
+  tabName: string;
+begin
+  if (FModel = nil) or (FDoc = nil) then Exit;
+  ref := SelectedRef;
+  if (ref = nil) or (ref.Uuid = '') or (ref.Kind <> nkConnection) then Exit;
+  // Le message generique parlerait de « none of these connections » pour un
+  // seul hote: la cause se dit ici, au singulier.
+  if SshConnectWouldPrompt(FModel, ref.Uuid) then
+  begin
+    MessageDlg('Connect Side by Side', 'This host asks for credentials at ' +
+      'connect time, and this view opens its sessions without dialogs. ' +
+      'Give it a stored or inherited credential first.',
+      mtInformation, [mbOK], 0);
+    Exit;
+  end;
+  try
+    n := FModel.GetNode(ref.Uuid);
+  except
+    on EModelError do Exit;
+  end;
+  list := TRshQuickList.Create(True);
+  try
+    try
+      if n.Protocol <> rpSsh then Exit;
+      tabName := n.DisplayName;
+      for i := 1 to 2 do
+      begin
+        e := TRshQuickEntry.Create;
+        e.ConnUuid := n.Uuid;
+        e.DisplayName := n.DisplayName;
+        e.Hostname := n.Hostname;
+        e.Protocol := n.Protocol;
+        list.Add(e);
+      end;
+    finally
+      n.Free;
+    end;
+    StartClusterFor(list, tabName, cmMulti);
+  finally
+    list.Free;
+  end;
+end;
+
 // Ouvre la grille (Broadcast ou Multi-Terminal) pour les connexions SSH
 // d'AList, les autres protocoles sont ignores. AName nomme l'onglet.
 procedure TfrmMain.StartClusterFor(AList: TRshQuickList; const AName: string;
@@ -3066,8 +3123,9 @@ var
   p: TSshConnectParams;
   tun: TSshTunnel;
   broker: TSshTunnelBroker;
-  jumpUuid, dn, err, grpName: string;
-  i, cnt, totalSsh, nbPrompt, nbFido, localPort: Integer;
+  jumpUuid, dn, err, grpName, newEntry: string;
+  i, j, cnt, totalSsh, nbPrompt, nbFido, localPort, unknownCnt: Integer;
+  isDup: Boolean;
   tab: TClusterSshTab;
   transferred: Boolean;
   newHosts: array of string;
@@ -3195,21 +3253,31 @@ begin
 
       // trancher AVANT le demarrage: apres, les AskHostKey s'empilent en modales
       SetLength(newHosts, 0);
+      unknownCnt := 0;
       kh := TSshKnownHosts.Create(FDoc);
       try
         for i := 0 to High(params) do
           if Length(kh.KnownKeyTypes(params[i].Host, params[i].Port)) = 0 then
           begin
-            SetLength(newHosts, Length(newHosts) + 1);
-            newHosts[High(newHosts)] := Format('%s  (%s:%d)',
+            // Le meme hote deux fois (vue cote a cote) ne se liste qu'une
+            // fois, mais compte pour deux: c'est le nombre de SESSIONS qui
+            // dit si les questions s'empileraient.
+            Inc(unknownCnt);
+            newEntry := Format('%s  (%s:%d)',
               [displays[i], params[i].Host, params[i].Port]);
+            isDup := False;
+            for j := 0 to High(newHosts) do
+              if newHosts[j] = newEntry then isDup := True;
+            if isDup then Continue;
+            SetLength(newHosts, Length(newHosts) + 1);
+            newHosts[High(newHosts)] := newEntry;
           end;
       finally
         kh.Free;
       end;
       bulkAsked := False;
       bulkDecision := hkdReject;
-      if Length(newHosts) > 1 then
+      if unknownCnt > 1 then
       begin
         if AskBulkUnknownHostKeys(newHosts, bulkDecision, bulkCancelled) then
           bulkAsked := True
