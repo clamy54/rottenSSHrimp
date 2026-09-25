@@ -71,6 +71,7 @@ type
     FSavedShortcutItems: array of TMenuItem;
     FSavedShortcutKeys: array of TShortCut;
     procedure ActiveControlChanged(Sender: TObject; LastControl: TControl);
+    procedure LayoutStatusBar;
     procedure SetSessionKeyCapture(ACaptured: Boolean);
     procedure SessionEscapeCapture(Sender: TObject);
     procedure BuildMenu;
@@ -251,6 +252,8 @@ type
     procedure RecoverAsCurrent(const AItem: TRecoveryItem);
     function RecoverToFile(const AItem: TRecoveryItem): Boolean;
     procedure HandleAppException(Sender: TObject; E: Exception);
+  protected
+    procedure Resize; override;
   public
     constructor Create(TheOwner: TComponent); override;
     destructor Destroy; override;
@@ -687,6 +690,44 @@ begin
   FStatusBar.Panels[1].Style := psOwnerDraw;
   FStatusBar.Panels[2].Style := psOwnerDraw;
   {$ENDIF}
+  LayoutStatusBar;
+end;
+
+// Des largeurs figees (400 + 200 + 380 px) depassaient la fenetre a sa
+// largeur minimale (480 px): les panneaux de droite -- dont le rappel qui dit
+// COMMENT liberer le clavier capture -- etaient coupes sans recours. Le
+// chemin du document cede en premier (tronque, il reste reconnaissable), le
+// compte de sessions ensuite, le message de capture en dernier.
+procedure TfrmMain.LayoutStatusBar;
+var
+  w, docW, sesW, over, d: Integer;
+begin
+  if (FStatusBar = nil) or (FStatusBar.Panels.Count < 3) then Exit;
+  w := FStatusBar.ClientWidth;
+  docW := 400;
+  sesW := 200;
+  over := (docW + sesW + 380) - w;
+  if over > 0 then
+  begin
+    d := Min(over, docW - 120);
+    if d > 0 then
+    begin
+      Dec(docW, d);
+      Dec(over, d);
+    end;
+    d := Min(over, sesW - 90);
+    if d > 0 then
+      Dec(sesW, d);
+  end;
+  FStatusBar.Panels[0].Width := docW;
+  FStatusBar.Panels[1].Width := sesW;
+  FStatusBar.Panels[2].Width := Max(w - docW - sesW, 100);
+end;
+
+procedure TfrmMain.Resize;
+begin
+  inherited Resize;
+  LayoutStatusBar;
 end;
 
 procedure TfrmMain.BuildLockPanel;

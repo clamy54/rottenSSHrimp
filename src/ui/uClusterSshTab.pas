@@ -146,7 +146,7 @@ type
 implementation
 
 uses
-  uHostKeyDialog, uTheme, uFidoPrompt;
+  Math, uHostKeyDialog, uTheme, uFidoPrompt;
 
 const
   CLUSTER_ACCENTS: array[0..15] of TColor = (
@@ -784,7 +784,11 @@ begin
   FCols := cols;
   cw := FGridHost.ClientWidth div cols;
   ch := FGridHost.ClientHeight div rows;
-  if (cw < 40) or (ch < 40) then Exit;
+  // Meme minuscules, les cellules se REPOSITIONNENT: renoncer ici les
+  // laisserait a leurs anciennes bornes, et apres un retrecissement elles se
+  // chevaucheraient sans que personne ne les remette jamais en place.
+  if cw < 1 then cw := 1;
+  if ch < 1 then ch := 1;
   for i := 0 to n - 1 do
   begin
     if FCells[i] = nil then Continue;
@@ -792,9 +796,10 @@ begin
     y := (i div cols) * ch;
     FCells[i].SetBounds(x, y, cw, ch);
     FCells[i].FLabel.SetBounds(CELL_BORDER, CELL_BORDER,
-      cw - 2 * CELL_BORDER, HEADER_H);
+      Max(cw - 2 * CELL_BORDER, 1), HEADER_H);
     FCells[i].FTerm.SetBounds(CELL_BORDER, CELL_BORDER + HEADER_H,
-      cw - 2 * CELL_BORDER, ch - 2 * CELL_BORDER - HEADER_H);
+      Max(cw - 2 * CELL_BORDER, 1),
+      Max(ch - 2 * CELL_BORDER - HEADER_H, 1));
   end;
 end;
 

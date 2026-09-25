@@ -294,8 +294,19 @@ end;
 
 procedure TFileListView.LayoutColumns;
 var
-  avail, fixed: Integer;
+  avail: Integer;
   charW: Integer;
+
+  // Panneau trop etroit: la colonne s'EFFACE (largeur nulle, comme mode et
+  // proprietaire en local) plutot que d'etre coupee a droite sans defilement
+  // pour la ravoir. Elle revient d'elle-meme quand la place revient.
+  procedure ShedIfCramped(ACol: TFileSortColumn);
+  begin
+    if (FColWidths[ACol] = 0) or (avail >= charW * 12) then Exit;
+    Inc(avail, FColWidths[ACol]);
+    FColWidths[ACol] := 0;
+  end;
+
 begin
   charW := UiTextWidth('0');
   if charW < 4 then charW := 7;
@@ -313,11 +324,16 @@ begin
     FColWidths[fscMode] := 0;
     FColWidths[fscOwner] := 0;
   end;
-  fixed := FColWidths[fscSize] + FColWidths[fscModified] +
-    FColWidths[fscMode] + FColWidths[fscOwner];
-  avail := ClientWidth - fixed - PANEL_PAD * 2;
-  // Le nom prend le reste, avec un plancher: une fenetre etroite reduirait
-  // sinon la colonne la plus utile a rien.
+  avail := ClientWidth - PANEL_PAD * 2 - FColWidths[fscSize] -
+    FColWidths[fscModified] - FColWidths[fscMode] - FColWidths[fscOwner];
+  // Tant que le nom n'a pas une largeur lisible, les colonnes cedent de la
+  // moins utile a la plus utile.
+  ShedIfCramped(fscOwner);
+  ShedIfCramped(fscMode);
+  ShedIfCramped(fscModified);
+  ShedIfCramped(fscSize);
+  // Le nom prend le reste, avec un plancher: la colonne la plus utile en
+  // dernier recours, meme si elle depasse.
   FColWidths[fscName] := Max(avail, charW * 12);
 end;
 
