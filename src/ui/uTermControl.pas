@@ -822,7 +822,11 @@ begin
   if Button = mbMiddle then
   begin
     if reportToApp then
-      SendMouseReport(1, X, Y, False, False, Shift);
+      SendMouseReport(1, X, Y, False, False, Shift)
+    else
+      // Collage au clic du milieu, sur TOUTES les plateformes: la selection
+      // part deja dans le presse-papiers, l'habitude X11 suit.
+      DoPasteClipboard;
     Exit;
   end;
 
