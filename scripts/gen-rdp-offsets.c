@@ -83,6 +83,14 @@ int main(void)
 	    ClientFormatDataResponse);
 	OFF(CLIPRDR_OFF_SERVER_FORMAT_DATA_RESPONSE, CliprdrClientContext,
 	    ServerFormatDataResponse);
+	OFF(CLIPRDR_OFF_CLIENT_FILECONTENTS_REQUEST, CliprdrClientContext,
+	    ClientFileContentsRequest);
+	OFF(CLIPRDR_OFF_SERVER_FILECONTENTS_REQUEST, CliprdrClientContext,
+	    ServerFileContentsRequest);
+	OFF(CLIPRDR_OFF_CLIENT_FILECONTENTS_RESPONSE, CliprdrClientContext,
+	    ClientFileContentsResponse);
+	OFF(CLIPRDR_OFF_SERVER_FILECONTENTS_RESPONSE, CliprdrClientContext,
+	    ServerFileContentsResponse);
 
 	/* ---- resolution dynamique et evenement de canal ---- */
 	OFF(DISP_OFF_SENDLAYOUT, DispClientContext, SendMonitorLayout);

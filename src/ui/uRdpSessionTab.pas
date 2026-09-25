@@ -48,6 +48,10 @@ type
     // Pas de notification presse-papiers sur Cocoa: on sonde.
     FClipTimer: TTimer;
     FClipBridge: TClipboardBridge;
+    // Copier-coller de FICHIERS: signature du dernier CF_HDROP vu, pour ne
+    // renvoyer ni ce qui vient d'un serveur ni deux fois la meme copie.
+    FClipFilesSig: string;
+    FFilesPrimed: Boolean;
     FReconnectMsg: string;
     // Un echec d'ETABLISSEMENT garde l'onglet ouvert avec sa raison.
     FEverConnected: Boolean;
@@ -73,6 +77,13 @@ type
     procedure TransportResized(AWidth, AHeight: Integer);
     procedure TransportFinished;
     procedure ClipboardFromRemote(const AText: UnicodeString);
+    procedure ClipboardFilesFromRemote(const APaths: TStringArray);
+    procedure ClipNoteFromTransport(const AText: string);
+    {$IFDEF WINDOWS}
+    function TryReadLocalFiles(out APaths: TStringArray): Boolean;
+    function WriteLocalFiles(const APaths: TStringArray): Boolean;
+    {$ENDIF}
+    procedure PollLocalFiles;
     procedure ClipPoll(Sender: TObject);
     function TryReadLocalClipboard(out AText: string): Boolean;
     function WriteLocalClipboard(const AText: string): Boolean;
@@ -119,7 +130,24 @@ type
 implementation
 
 uses
-  uRdpCertDialog;
+  uRdpCertDialog, uClipDropFiles;
+
+var
+  // Signature du dernier LOT de fichiers ecrit par un serveur, tous onglets
+  // confondus: ce qui vient du serveur A ne repart jamais vers B. Thread UI
+  // seulement, comme la signature texte du pont.
+  GFilesRemoteSig: string = '';
+
+// Les chemins eux-memes font la signature: courts, sur le thread UI, et deux
+// lots differents dans le meme dossier temporaire different par leurs noms.
+function FilesSig(const APaths: TStringArray): string;
+var
+  i: Integer;
+begin
+  Result := '';
+  for i := 0 to High(APaths) do
+    Result := Result + APaths[i] + #1;
+end;
 
 constructor TRdpSessionHandle.Create(ATab: TRdpSessionTab);
 begin
@@ -203,6 +231,8 @@ begin
   FTransport.OnCertLookup := @CertLookup;
   FTransport.OnCertSave := @CertSave;
   FTransport.OnClipboardText := @ClipboardFromRemote;
+  FTransport.OnClipboardFiles := @ClipboardFilesFromRemote;
+  FTransport.OnClipNote := @ClipNoteFromTransport;
   FTransport.OnReconnect := @TransportReconnect;
 
   FHandle := TRdpSessionHandle.Create(Self);
@@ -439,6 +469,7 @@ begin
       // Ligne de base, PAS un renvoi: le premier sondage expedierait au serveur
       // ce qui etait copie avant la session.
       FClipBridge.PrimeBaseline;
+      FFilesPrimed := False;
       FClipTimer.Enabled := True;
     end;
   end
@@ -569,7 +600,95 @@ begin
   if (FTransport = nil) or (FState <> rssConnected) then
     Exit;
   FClipBridge.Poll;
+  PollLocalFiles;
 end;
+
+// Fichiers copies localement -> annonces au serveur. Memes regles que le
+// texte: premier plan seulement, jamais ce qui vient d'un serveur, et une
+// lecture qui echoue (presse-papiers verrouille) se retente au tick suivant.
+procedure TRdpSessionTab.PollLocalFiles;
+{$IFDEF WINDOWS}
+var
+  paths: TStringArray;
+  sig: string;
+begin
+  if not TryReadLocalFiles(paths) then
+    Exit;
+  sig := FilesSig(paths);
+  if not FFilesPrimed then
+  begin
+    // Ligne de base: ce qui etait copie avant la session n'est pas envoye.
+    FClipFilesSig := sig;
+    FFilesPrimed := True;
+    Exit;
+  end;
+  if sig = FClipFilesSig then
+    Exit;
+  // Arriere-plan: ni envoi ni adoption, la copie partira au retour au premier
+  // plan, comme le ferait un client RDP classique.
+  if not ClipForeground then
+    Exit;
+  FClipFilesSig := sig;
+  if Length(paths) = 0 then
+    Exit;
+  if (GFilesRemoteSig <> '') and (sig = GFilesRemoteSig) then
+    Exit;   // recu d'un serveur: adopte, jamais retransmis
+  FTransport.AnnounceLocalFiles(paths);
+end;
+{$ELSE}
+begin
+end;
+{$ENDIF}
+
+// Lot COMPLET arrive du serveur: pose en CF_HDROP local, provenance marquee
+// AVANT l'ecriture pour que le sondage suivant ne le renvoie pas.
+procedure TRdpSessionTab.ClipboardFilesFromRemote(const APaths: TStringArray);
+{$IFDEF WINDOWS}
+var
+  sig, prevSig, prevRemote: string;
+  prevPrimed: Boolean;
+begin
+  if Length(APaths) = 0 then
+    Exit;
+  sig := FilesSig(APaths);
+  prevSig := FClipFilesSig;
+  prevPrimed := FFilesPrimed;
+  prevRemote := GFilesRemoteSig;
+  FClipFilesSig := sig;
+  FFilesPrimed := True;
+  GFilesRemoteSig := sig;
+  if not WriteLocalFiles(APaths) then
+  begin
+    FClipFilesSig := prevSig;
+    FFilesPrimed := prevPrimed;
+    GFilesRemoteSig := prevRemote;
+    if Assigned(FOnNotice) then
+      FOnNotice(Format('%s: the remote files could not be placed on the ' +
+        'clipboard.', [FDisplayName]));
+  end;
+end;
+{$ELSE}
+begin
+end;
+{$ENDIF}
+
+procedure TRdpSessionTab.ClipNoteFromTransport(const AText: string);
+begin
+  if Assigned(FOnNotice) then
+    FOnNotice(Format('%s: %s', [FDisplayName, AText]));
+end;
+
+{$IFDEF WINDOWS}
+function TRdpSessionTab.TryReadLocalFiles(out APaths: TStringArray): Boolean;
+begin
+  Result := ClipReadHdrop(APaths);
+end;
+
+function TRdpSessionTab.WriteLocalFiles(const APaths: TStringArray): Boolean;
+begin
+  Result := ClipWriteHdrop(APaths);
+end;
+{$ENDIF}
 
 procedure TRdpSessionTab.TransportFinished;
 begin

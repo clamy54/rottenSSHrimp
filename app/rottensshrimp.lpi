@@ -1870,6 +1870,14 @@
         <IsPartOfProject Value="True"/>
       </Unit>
       <Unit>
+        <Filename Value="../src/sessions/rdp/uRdpClipFiles.pas"/>
+        <IsPartOfProject Value="True"/>
+      </Unit>
+      <Unit>
+        <Filename Value="../src/platform/uClipDropFiles.pas"/>
+        <IsPartOfProject Value="True"/>
+      </Unit>
+      <Unit>
         <Filename Value="../src/ui/uRdpCertDialog.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit>

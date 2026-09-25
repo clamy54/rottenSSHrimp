@@ -34,8 +34,9 @@
  *      Pascal par decalage devine quand le shim est la.
  *   4: emplacements rdpgfx (surfaces et cache du pipeline graphique), pour
  *      borner ce qu'un serveur peut faire allouer.
+ *   5: emplacements cliprdr FileContents (copier-coller de fichiers).
  */
-#define RSSH_SHIM_ABI 4u
+#define RSSH_SHIM_ABI 5u
 
 RSSH_API uint32_t rssh_abi_version(void)
 {
@@ -367,7 +368,11 @@ enum rssh_cliprdr_slot {
 	RSSH_CLIP_CLIENT_FORMAT_DATA_REQUEST = 7,
 	RSSH_CLIP_SERVER_FORMAT_DATA_REQUEST = 8,
 	RSSH_CLIP_CLIENT_FORMAT_DATA_RESPONSE = 9,
-	RSSH_CLIP_SERVER_FORMAT_DATA_RESPONSE = 10
+	RSSH_CLIP_SERVER_FORMAT_DATA_RESPONSE = 10,
+	RSSH_CLIP_CLIENT_FILECONTENTS_REQUEST = 11,
+	RSSH_CLIP_SERVER_FILECONTENTS_REQUEST = 12,
+	RSSH_CLIP_CLIENT_FILECONTENTS_RESPONSE = 13,
+	RSSH_CLIP_SERVER_FILECONTENTS_RESPONSE = 14
 };
 
 /* NULL si slot inconnu: jamais d'adresse approchante */
@@ -398,6 +403,14 @@ static void** rssh_cliprdr_slot_addr(CliprdrClientContext* c, uint32_t slot)
 		return (void**)&c->ClientFormatDataResponse;
 	case RSSH_CLIP_SERVER_FORMAT_DATA_RESPONSE:
 		return (void**)&c->ServerFormatDataResponse;
+	case RSSH_CLIP_CLIENT_FILECONTENTS_REQUEST:
+		return (void**)&c->ClientFileContentsRequest;
+	case RSSH_CLIP_SERVER_FILECONTENTS_REQUEST:
+		return (void**)&c->ServerFileContentsRequest;
+	case RSSH_CLIP_CLIENT_FILECONTENTS_RESPONSE:
+		return (void**)&c->ClientFileContentsResponse;
+	case RSSH_CLIP_SERVER_FILECONTENTS_RESPONSE:
+		return (void**)&c->ServerFileContentsResponse;
 	default:
 		return NULL;
 	}

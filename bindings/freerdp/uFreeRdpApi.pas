@@ -71,6 +71,10 @@ const
   CLIPRDR_OFF_SERVER_FORMAT_DATA_REQUEST = 120;
   CLIPRDR_OFF_CLIENT_FORMAT_DATA_RESPONSE = 128;
   CLIPRDR_OFF_SERVER_FORMAT_DATA_RESPONSE = 136;
+  CLIPRDR_OFF_CLIENT_FILECONTENTS_REQUEST = 144;
+  CLIPRDR_OFF_SERVER_FILECONTENTS_REQUEST = 152;
+  CLIPRDR_OFF_CLIENT_FILECONTENTS_RESPONSE = 160;
+  CLIPRDR_OFF_SERVER_FILECONTENTS_RESPONSE = 168;
 
   CB_MONITOR_READY = 1;
   CB_FORMAT_LIST = 2;
@@ -78,11 +82,19 @@ const
   CB_FORMAT_DATA_REQUEST = 4;
   CB_FORMAT_DATA_RESPONSE = 5;
   CB_CLIP_CAPS = 7;
+  CB_FILECONTENTS_REQUEST = 8;
+  CB_FILECONTENTS_RESPONSE = 9;
   CB_RESPONSE_OK = 1;
   CB_RESPONSE_FAIL = 2;
   CB_CAPSTYPE_GENERAL = 1;
   CB_CAPS_VERSION_2 = 2;
   CB_USE_LONG_FORMAT_NAMES = 2;
+  // Copier-coller de fichiers en flux (FileContents), sans chemins CF_HDROP:
+  // rien du poste ne se lit par un chemin envoye du serveur.
+  CB_STREAM_FILECLIP_ENABLED = 4;
+  CB_FILECLIP_NO_FILE_PATHS = 8;
+  FILECONTENTS_SIZE = 1;
+  FILECONTENTS_RANGE = 2;
 
   CF_TEXT = 1;
   CF_OEMTEXT = 7;
@@ -317,6 +329,29 @@ type
   end;
   PCliprdrFormatDataResponse = ^TCliprdrFormatDataResponse;
 
+  // CLIPRDR_FILE_CONTENTS_REQUEST: tous les champs font 4 octets, aucun
+  // bourrage a reproduire.
+  TCliprdrFileContentsRequest = packed record
+    common: TCliprdrHeader;
+    streamId: cuint32;
+    listIndex: cuint32;
+    dwFlags: cuint32;
+    nPositionLow: cuint32;
+    nPositionHigh: cuint32;
+    cbRequested: cuint32;
+    haveClipDataId: LongBool;
+    clipDataId: cuint32;
+  end;
+  PCliprdrFileContentsRequest = ^TCliprdrFileContentsRequest;
+
+  TCliprdrFileContentsResponse = packed record
+    common: TCliprdrHeader;
+    streamId: cuint32;
+    cbRequested: cuint32;
+    requestedData: PByte;
+  end;
+  PCliprdrFileContentsResponse = ^TCliprdrFileContentsResponse;
+
   TCliprdrFn = function(context: Pointer; msg: Pointer): cuint32; cdecl;
   // variadique en C: 'varargs' obligatoire sur arm64 (meme piege que sqlite3)
   TPubSub_Subscribe = function(pubSub: Pointer;
@@ -515,8 +550,8 @@ var
 const
   // Contrat binding<->shim; autre version = shim ignore, offsets en dur.
   // 2: poseurs rssh_instance_set_*. 3: poseurs rssh_ep_set_client_new/_free.
-  // 4: emplacements rdpgfx.
-  RSSH_SHIM_ABI = 4;
+  // 4: emplacements rdpgfx. 5: emplacements cliprdr FileContents.
+  RSSH_SHIM_ABI = 5;
 
 type
   Tsh_u32 = function: cuint32; cdecl;
@@ -1465,6 +1500,10 @@ begin
     CLIPRDR_OFF_SERVER_FORMAT_DATA_REQUEST:   ASlot := 8;
     CLIPRDR_OFF_CLIENT_FORMAT_DATA_RESPONSE:  ASlot := 9;
     CLIPRDR_OFF_SERVER_FORMAT_DATA_RESPONSE:  ASlot := 10;
+    CLIPRDR_OFF_CLIENT_FILECONTENTS_REQUEST:  ASlot := 11;
+    CLIPRDR_OFF_SERVER_FILECONTENTS_REQUEST:  ASlot := 12;
+    CLIPRDR_OFF_CLIENT_FILECONTENTS_RESPONSE: ASlot := 13;
+    CLIPRDR_OFF_SERVER_FILECONTENTS_RESPONSE: ASlot := 14;
   else
     ASlot := 0;
     Result := False;

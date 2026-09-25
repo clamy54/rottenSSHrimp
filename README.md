@@ -83,6 +83,16 @@ yourself, during which the honest option is to watch a graph, and the
 alternative is to retry the connection every four seconds while calling it
 diagnostics.
 
+**Clipboard.** Text copied on either side of an RDP or VNC session follows
+you to the other, from the tab you are looking at only, and what a server put
+there is never forwarded to another server. On Windows, an RDP session also
+carries **files**: copy in the remote Explorer and paste locally, or the
+other way around. Remote files are fetched when you copy, into a temporary
+folder that lives as long as the tab, up to 256 MB per copy; every path the
+server announces is validated component by component before it touches the
+disk, and links are never followed in either direction. In SSH terminals the
+middle mouse button pastes, on every platform.
+
 **Jump hosts.** Any SSH host in the tree can serve as a bastion for any other
 connection, and that includes RDP and VNC, not just SSH. The session is
 tunnelled through it, so the target only has to be reachable from the bastion,
