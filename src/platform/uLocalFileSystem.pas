@@ -133,6 +133,7 @@ const
   // Ouvertures relatives a un dossier (ntdll) et suppression par poignee.
   DELETE_ = $00010000;
   READ_CONTROL_ = $00020000;
+  WRITE_DAC_ = $00040000;
   SYNCHRONIZE_ = $00100000;
   FILE_READ_ATTRIBUTES_ = $0080;
   FILE_WRITE_ATTRIBUTES_ = $0100;
@@ -1033,8 +1034,13 @@ end;
 {$IFDEF WINDOWS}
 // La DACL est lue par une POIGNEE sur la source, point de reanalyse refuse:
 // c'est le dossier copie qui la donne, pas ce que son nom designerait devenu
-// jonction. Elle part dans CreateDirectoryW, protection contre l'heritage
-// comprise: aucun instant ou le dossier neuf porterait les droits du parent.
+// jonction. Le dossier nait VIDE sous les droits herites du parent -- le
+// createur garde ainsi de quoi agir dessus -- puis recoit attributs et
+// protection de la source par une meme poignee AVANT tout contenu. Une DACL
+// de source qui ne nous accorde ni DELETE ni WRITE_ATTRIBUTES ne peut donc
+// plus laisser un dossier orphelin: posee en premier, elle interdisait
+// jusqu'au retrait. En cas d'echec tout repart par la poignee, et un residu
+// impossible a retirer est NOMME dans l'erreur.
 function TLocalFileSystem.MakeDirFromSource(const ASourcePath, APath: string;
   AMode: LongWord; out AErr: TScpError): Boolean;
 var
@@ -1042,9 +1048,30 @@ var
   info, made: TByHandleFileInformation;
   need, code: DWORD;
   sd: array of Byte;
-  sa: TSecurityAttributes;
   basic: TFileBasicInfo;
-  disp: TFileDispositionInfo;
+  control: SECURITY_DESCRIPTOR_CONTROL;
+  revision: DWORD;
+  secInfo: SECURITY_INFORMATION;
+
+  // Retrait par la poignee (droit DELETE demande a l'ouverture). False = le
+  // dossier reste, et le message doit le dire.
+  function DropByHandle: Boolean;
+  var
+    disp: TFileDispositionInfo;
+  begin
+    disp.DeleteFile := True;
+    Result := SetFileInformationByHandle(h, FileDispositionInfo_, @disp,
+      SizeOf(disp));
+  end;
+
+  function Residue(ADropped: Boolean): string;
+  begin
+    if ADropped then
+      Result := 'the copy was not created'
+    else
+      Result := 'an empty folder was left behind';
+  end;
+
 begin
   Result := False;
   AErr := NoScpError;
@@ -1102,33 +1129,49 @@ begin
   finally
     CloseHandle(h);
   end;
-  sa.nLength := SizeOf(sa);
-  sa.bInheritHandle := False;
-  sa.lpSecurityDescriptor := @sd[0];
-  if not CreateDirectoryW(PWideChar(NativeW(APath)), @sa) then
+  if not CreateDirectoryW(PWideChar(NativeW(APath)), nil) then
   begin
     AErr := LastErr('Creating folder', APath);
     Exit;
   end;
-  // Les attributs (cache, systeme, hors index...) par une POIGNEE sur le
-  // dossier cree, et non par son nom: il est encore vide, et s'ils ne tiennent
-  // pas il repart par cette meme poignee.
+  // Attributs et protection par une POIGNEE sur le dossier cree, et non par
+  // son nom: il est encore vide, et si quoi que ce soit ne tient pas il
+  // repart par cette meme poignee. WRITE_DAC en plus: la protection de la
+  // source se pose en DERNIER, quand plus rien ne peut echouer apres elle.
   h := CreateFileW(PWideChar(NativeW(APath)), DELETE_ or
-    FILE_READ_ATTRIBUTES_ or FILE_WRITE_ATTRIBUTES_,
+    FILE_READ_ATTRIBUTES_ or FILE_WRITE_ATTRIBUTES_ or WRITE_DAC_,
     FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE_, nil,
     OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS or FILE_FLAG_OPEN_REPARSE_POINT_,
     0);
   if h = INVALID_HANDLE_VALUE then
   begin
-    AErr := LastErr('Setting the attributes of', APath);
+    code := GetLastError;
+    // Cree VIDE et par nous a l'instant: le retrait par nom ne peut viser que
+    // lui, et RemoveDirectory retirerait une jonction sans la suivre.
+    if RemoveDirectoryW(PWideChar(NativeW(APath))) then
+      AErr := MakeScpError(sekAttrRefused, 'Creating folder',
+        DisplaySafeName(APath), Format('the new folder could not be opened ' +
+          'to receive the protections of the source (Windows error %d); ' +
+          'the copy was not created', [code]))
+    else
+      AErr := MakeScpError(sekAttrRefused, 'Creating folder',
+        DisplaySafeName(APath), Format('the new folder could not be opened ' +
+          'to receive the protections of the source (Windows error %d); ' +
+          'an empty folder was left behind', [code]));
     Exit;
   end;
   try
     if not GetFileInformationByHandle(h, made) then
     begin
-      AErr := LastErr('Setting the attributes of', APath);
+      code := GetLastError;
+      AErr := MakeScpError(sekAttrRefused, 'Creating folder',
+        DisplaySafeName(APath), Format('the new folder could not be ' +
+          'examined (Windows error %d); %s',
+          [code, Residue(DropByHandle)]));
       Exit;
     end;
+    // Remplace entre la creation et l'ouverture: ce n'est PAS le notre, il ne
+    // se retire pas -- retirer detruirait ce qu'un autre vient de poser.
     if (made.dwFileAttributes and (FILE_ATTRIBUTE_DIRECTORY or
         FILE_ATTRIBUTE_REPARSE_POINT)) <> FILE_ATTRIBUTE_DIRECTORY then
     begin
@@ -1143,12 +1186,42 @@ begin
        SizeOf(basic)) then
     begin
       code := GetLastError;
-      disp.DeleteFile := True;
-      SetFileInformationByHandle(h, FileDispositionInfo_, @disp, SizeOf(disp));
       AErr := MakeScpError(sekAttrRefused, 'Creating folder',
         DisplaySafeName(APath), Format('the attributes of the source could ' +
-          'not be given to the copy (Windows error %d); the copy was not ' +
-          'created', [code]));
+          'not be given to the copy (Windows error %d); %s',
+          [code, Residue(DropByHandle)]));
+      Exit;
+    end;
+    // La protection de la source en dernier: posee avant, une DACL qui ne
+    // nous accorde ni DELETE ni WRITE_ATTRIBUTES aurait interdit les etapes
+    // precedentes -- et le retrait lui-meme, d'ou les dossiers orphelins.
+    // Comme CopyDaclRaw: se tromper de drapeau reactiverait l'heritage sur
+    // une source qui l'avait coupe.
+    control := 0;
+    revision := 0;
+    if not GetSecurityDescriptorControl(PSECURITY_DESCRIPTOR(@sd[0]),
+       @control, @revision) then
+    begin
+      code := GetLastError;
+      AErr := MakeScpError(sekAttrRefused, 'Creating folder',
+        DisplaySafeName(APath), Format('the permissions of the source could ' +
+          'not be read back (Windows error %d); %s',
+          [code, Residue(DropByHandle)]));
+      Exit;
+    end;
+    if (control and SE_DACL_PROTECTED_) <> 0 then
+      secInfo := DACL_SECURITY_INFORMATION or
+        PROTECTED_DACL_SECURITY_INFORMATION_
+    else
+      secInfo := DACL_SECURITY_INFORMATION or
+        UNPROTECTED_DACL_SECURITY_INFORMATION_;
+    if not SetKernelObjectSecurity(h, secInfo, @sd[0]) then
+    begin
+      code := GetLastError;
+      AErr := MakeScpError(sekAttrRefused, 'Creating folder',
+        DisplaySafeName(APath), Format('the permissions of the source could ' +
+          'not be given to the copy (Windows error %d); %s',
+          [code, Residue(DropByHandle)]));
       Exit;
     end;
   finally

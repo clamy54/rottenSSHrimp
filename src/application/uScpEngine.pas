@@ -2311,8 +2311,10 @@ begin
       resumeFrom := 0;
       FHash.Reset;
       // Copie sur place: la protection de la source, la ou les modes ne la
-      // portent pas, est posee avant le premier octet.
-      if (ASrcFs = ADstFs) and (not targetExisted) and
+      // portent pas, est posee avant le premier octet. « Pas de remplacement »
+      // et non « cible absente »: un LIEN remplace laisse un fichier neuf, qui
+      // sans cela heriterait du dossier -- plus ouvert que la source, peut-etre.
+      if (ASrcFs = ADstFs) and (not replacesFile) and
          (not ADstFs.CopyProtectionFrom(AItem.SourcePath, tempPath, err)) then
       begin
         ADstFs.Close(dstH, closeErr);
@@ -2381,8 +2383,9 @@ begin
       end;
 
     // Copie sur place: les attributs de la source en DERNIER, par la poignee.
-    // Un refus arrete avant la publication, comme pour la protection.
-    if okCopy and (ASrcFs = ADstFs) and (not targetExisted) and
+    // Un refus arrete avant la publication, comme pour la protection. Meme
+    // regle qu'elle: tout ce qui ne REMPLACE pas un fichier est une creation.
+    if okCopy and (ASrcFs = ADstFs) and (not replacesFile) and
        (not ADstFs.CopyAttributesFrom(srcH, dstH, attrErr)) then
     begin
       ADstFs.Close(dstH, closeErr);
