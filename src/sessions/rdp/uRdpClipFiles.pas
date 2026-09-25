@@ -84,9 +84,24 @@ function RdpClipSafeRelPath(const ARel: UnicodeString; out ALocalRel: string;
 // Fichiers et dossiers sous ARoots, en pre-ordre (un dossier precede son
 // contenu), chemins relatifs au parent de chaque racine. Les liens et points
 // de reanalyse ne sont JAMAIS suivis: un cycle de jonctions enumererait sans
-// fin, et une jonction vers C:\ enverrait le disque entier.
+// fin, et une jonction vers C:\ enverrait le disque entier. Chaque dossier
+// s'enumere PAR SA POIGNEE et la descente reverifie l'identite (volume +
+// numero) que le parent vient de lister: une jonction glissee sous un nom
+// deja controle ne detourne rien, elle fait refuser. Hors Windows: refus
+// franc, le pont de fichiers est Windows<->Windows.
 function EnumerateLocalTree(const ARoots: array of string;
   out AFiles: TRdpClipFileArray; out AWhy: string): Boolean;
+
+// Cree APath en EXCLUSIF (echec si le nom existe deja: c'est LA garantie) et,
+// sous Windows, avec une DACL proprietaire seul heritee par les descendants:
+// les fichiers rapatries n'appartiennent qu'a la session, et personne d'autre
+// ne pose quoi que ce soit dans l'arbre avant sa suppression.
+function RdpClipMakeDirOwnerOnly(const APath: string): Boolean;
+
+// Efface un arbre A NOUS (temporaires du presse-papiers). Le sort de chaque
+// entree se decide d'apres une poignee ouverte SANS suivre les points de
+// reanalyse: un lien part seul, meme pose en pleine course, sa cible reste.
+procedure RdpClipRemoveTree(const APath: string);
 
 // Capture l'identite du fichier a APath. False = impossible de l'ouvrir, et
 // il ne faut alors PAS l'annoncer: on ne saurait pas verifier qu'on sert bien
@@ -112,11 +127,43 @@ type
 
 const
   FILE_READ_ATTRIBUTES_ = $0080;
+  FILE_LIST_DIRECTORY_ = 1;   // sur un fichier, le meme bit = READ_DATA
   FILE_SHARE_ALL_ = 7;   // read + write + delete: on ne bloque personne
   OPEN_EXISTING_ = 3;
   FILE_FLAG_BACKUP_SEMANTICS_ = $02000000;
-  ERROR_FILE_NOT_FOUND_ = 2;
+  // Ne PAS suivre un point de reanalyse en bout de chemin: la poignee designe
+  // alors le lien lui-meme, et ses attributs le disent.
+  FILE_FLAG_OPEN_REPARSE_POINT_ = $00200000;
   ERROR_NO_MORE_FILES_ = 18;
+  // Classe GetFileInformationByHandleEx: les entrees d'un dossier, lues par
+  // sa POIGNEE, avec le numero de fichier de chacune.
+  FILE_ID_BOTH_DIR_INFO_ = 10;
+
+type
+  // FILE_ID_BOTH_DIR_INFO, bourrage EXPLICITE: ShortName commence a 70,
+  // FileId se realigne a 96, le nom (non termine) suit a 104.
+  TIdBothDirInfo_ = packed record
+    NextEntryOffset, FileIndex: LongWord;
+    CreationTime, LastAccessTime, LastWriteTime, ChangeTime: Int64;
+    EndOfFile, AllocationSize: Int64;
+    FileAttributes, FileNameLength, EaSize: LongWord;
+    ShortNameLength, Pad1: Byte;
+    ShortName: array[0..11] of WideChar;
+    Pad2: Word;
+    FileId: Int64;
+    FileName: array[0..0] of WideChar;
+  end;
+  PIdBothDirInfo_ = ^TIdBothDirInfo_;
+
+  // Une entree relue depuis la poignee du parent: nom, attributs, taille et
+  // IDENTITE font foi -- aucun chemin n'a ete re-resolu pour les obtenir.
+  TDirEntry_ = record
+    Name: UnicodeString;
+    Attrs: LongWord;
+    Size, WriteTime: Int64;
+    IdHigh, IdLow: LongWord;
+  end;
+  TDirEntryArray_ = array of TDirEntry_;
 
 function CreateFileW(AName: PWideChar; AAccess, AShare: LongWord;
   ASecurity: Pointer; ADisposition, AFlags: LongWord;
@@ -125,6 +172,178 @@ function CloseHandle(AHandle: THandle): LongBool; stdcall;
   external 'kernel32.dll';
 function GetFileInformationByHandle(AHandle: THandle;
   var AInfo: TByHandleInfo_): LongBool; stdcall; external 'kernel32.dll';
+function GetFileInformationByHandleEx(AHandle: THandle; AClass: LongWord;
+  AInfo: Pointer; ASize: LongWord): LongBool; stdcall;
+  external 'kernel32.dll';
+function CreateDirectoryW(APath: PWideChar; ASecurity: Pointer): LongBool;
+  stdcall; external 'kernel32.dll';
+function ConvertStringSecurityDescriptorToSecurityDescriptorW(
+  AText: PWideChar; ARevision: LongWord; out ASd: Pointer;
+  ASize: PLongWord): LongBool; stdcall; external 'advapi32.dll';
+function LocalFree(AMem: Pointer): Pointer; stdcall; external 'kernel32.dll';
+
+// Ouvre APath sans suivre un eventuel lien FINAL. Les composants
+// intermediaires, eux, se re-resolvent: c'est pour cela que l'appelant
+// verifie ensuite l'identite de ce que la poignee designe.
+function OpenNoFollow(const APath: string): THandle;
+begin
+  Result := CreateFileW(PWideChar(UTF8Decode(APath)),
+    FILE_READ_ATTRIBUTES_ or FILE_LIST_DIRECTORY_, FILE_SHARE_ALL_, nil,
+    OPEN_EXISTING_, FILE_FLAG_BACKUP_SEMANTICS_ or
+    FILE_FLAG_OPEN_REPARSE_POINT_, 0);
+end;
+
+// Toutes les entrees d'un dossier, lues PAR SA POIGNEE ('.', '..' filtres).
+// False = listing coupe (code Windows dans ACode) et AEntries VIDE: un
+// partiel qui passerait pour complet ferait annoncer une copie a laquelle il
+// manque des fichiers.
+function ListDirByHandle(AHandle: THandle; out AEntries: TDirEntryArray_;
+  out ACode: LongWord): Boolean;
+var
+  buf: array of Byte;
+  p: PIdBothDirInfo_;
+  off: LongWord;
+  n: Integer;
+  name: UnicodeString;
+begin
+  Result := False;
+  AEntries := nil;
+  ACode := 0;
+  n := 0;
+  buf := nil;
+  SetLength(buf, 64 * 1024);
+  while True do
+  begin
+    if not GetFileInformationByHandleEx(AHandle, FILE_ID_BOTH_DIR_INFO_,
+       @buf[0], Length(buf)) then
+    begin
+      ACode := GetLastOSError;
+      if ACode = ERROR_NO_MORE_FILES_ then
+        Break;
+      SetLength(AEntries, 0);
+      Exit;
+    end;
+    off := 0;
+    repeat
+      p := PIdBothDirInfo_(@buf[off]);
+      name := '';
+      SetLength(name, p^.FileNameLength div 2);
+      if name <> '' then
+        Move(p^.FileName[0], name[1], p^.FileNameLength);
+      if (name <> '.') and (name <> '..') and (name <> '') then
+      begin
+        if n = Length(AEntries) then
+          SetLength(AEntries, 16 + n * 2);
+        AEntries[n].Name := name;
+        AEntries[n].Attrs := p^.FileAttributes;
+        AEntries[n].Size := p^.EndOfFile;
+        AEntries[n].WriteTime := p^.LastWriteTime;
+        AEntries[n].IdHigh := LongWord(p^.FileId shr 32);
+        AEntries[n].IdLow := LongWord(p^.FileId);
+        Inc(n);
+      end;
+      if p^.NextEntryOffset = 0 then
+        Break;
+      Inc(off, p^.NextEntryOffset);
+    until False;
+  end;
+  SetLength(AEntries, n);
+  ACode := 0;
+  Result := True;
+end;
+
+const
+  // Proprietaire seul (« OW » = droits du proprietaire de chaque objet,
+  // herite tel quel), SYSTEM en plus (antivirus, indexation), heritage du
+  // parent COUPE (D:P): personne d'autre ne lit les fichiers rapatries ni ne
+  // pose quoi que ce soit dans l'arbre avant sa suppression.
+  CLIP_DIR_SDDL: WideString = 'D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)';
+
+function RdpClipMakeDirOwnerOnly(const APath: string): Boolean;
+type
+  TSecAttrs_ = record
+    nLength: LongWord;
+    lpSd: Pointer;
+    bInherit: LongBool;
+  end;
+var
+  sd: Pointer;
+  sa: TSecAttrs_;
+begin
+  Result := False;
+  sd := nil;
+  if not ConvertStringSecurityDescriptorToSecurityDescriptorW(
+     PWideChar(CLIP_DIR_SDDL), 1, sd, nil) then
+    Exit;
+  try
+    sa.nLength := SizeOf(sa);
+    sa.lpSd := sd;
+    sa.bInherit := False;
+    // CreateDirectoryW echoue si le nom existe deja: jamais de reutilisation
+    // d'un dossier (ou d'une jonction) pose la par un autre.
+    Result := CreateDirectoryW(PWideChar(UTF8Decode(APath)), @sa);
+  finally
+    LocalFree(sd);
+  end;
+end;
+
+procedure RdpClipRemoveTree(const APath: string);
+
+  procedure RemoveLevel(const ADir: string; ADepth: Integer);
+  var
+    h: THandle;
+    info: TByHandleInfo_;
+    entries: TDirEntryArray_;
+    code: LongWord;
+    e: Integer;
+    sub: string;
+  begin
+    // Au pire, du temporaire reste sur place: on ne suit rien d'anormal.
+    if ADepth > RDPCLIP_MAX_DEPTH * 2 then
+      Exit;
+    h := OpenNoFollow(ADir);
+    if h = THandle(-1) then
+      Exit;
+    try
+      info := Default(TByHandleInfo_);
+      // Le sort de l'entree se decide d'apres sa POIGNEE, pas son chemin: un
+      // lien pose sous ce nom entre-temps se voit ici, et on ne descend pas.
+      // L'appelant efface alors le lien SEUL, sa cible reste.
+      if (not GetFileInformationByHandle(h, info)) or
+         ((info.dwFileAttributes and FA_SYMLINK_) <> 0) or
+         ((info.dwFileAttributes and FILE_ATTRIBUTE_DIRECTORY_) = 0) then
+        Exit;
+      if not ListDirByHandle(h, entries, code) then
+        Exit;
+      for e := 0 to High(entries) do
+      begin
+        sub := ADir + PathDelim + UTF8Encode(entries[e].Name);
+        if (entries[e].Attrs and FA_SYMLINK_) <> 0 then
+        begin
+          if (entries[e].Attrs and FILE_ATTRIBUTE_DIRECTORY_) <> 0 then
+            RemoveDir(sub)
+          else
+            SysUtils.DeleteFile(sub);
+        end
+        else if (entries[e].Attrs and FILE_ATTRIBUTE_DIRECTORY_) <> 0 then
+        begin
+          RemoveLevel(sub, ADepth + 1);
+          RemoveDir(sub);
+        end
+        else
+          SysUtils.DeleteFile(sub);
+      end;
+    finally
+      CloseHandle(h);
+    end;
+  end;
+
+begin
+  if APath = '' then
+    Exit;
+  RemoveLevel(APath, 0);
+  RemoveDir(APath);
+end;
 
 function CaptureLocalFileId(const APath: string; out AId: TRdpFileId): Boolean;
 var
@@ -174,6 +393,44 @@ end;
 function HandleMatchesId(AHandle: THandle; const AId: TRdpFileId): Boolean;
 begin
   Result := False;
+end;
+
+function RdpClipMakeDirOwnerOnly(const APath: string): Boolean;
+begin
+  Result := CreateDir(APath);   // exclusif aussi: echec si le nom existe
+end;
+
+// Ici pas de poignees: le pont de fichiers n'alimente pas ces plateformes,
+// il ne reste qu'a balayer un reliquat eventuel sans suivre les liens.
+procedure RdpClipRemoveTree(const APath: string);
+var
+  sr: TSearchRec;
+begin
+  if APath = '' then
+    Exit;
+  if FindFirst(APath + PathDelim + '*', faAnyFile, sr) = 0 then
+  begin
+    try
+      repeat
+        if (sr.Name = '.') or (sr.Name = '..') or (sr.Name = '') then
+          Continue;
+        if (sr.Attr and FA_SYMLINK_) <> 0 then
+        begin
+          if (sr.Attr and faDirectory) <> 0 then
+            RemoveDir(APath + PathDelim + sr.Name)
+          else
+            SysUtils.DeleteFile(APath + PathDelim + sr.Name);
+        end
+        else if (sr.Attr and faDirectory) <> 0 then
+          RdpClipRemoveTree(APath + PathDelim + sr.Name)
+        else
+          SysUtils.DeleteFile(APath + PathDelim + sr.Name);
+      until FindNext(sr) <> 0;
+    finally
+      FindClose(sr);
+    end;
+  end;
+  RemoveDir(APath);
 end;
 {$ENDIF}
 
@@ -376,10 +633,12 @@ begin
   Result := True;
 end;
 
+{$IFDEF WINDOWS}
 function EnumerateLocalTree(const ARoots: array of string;
   out AFiles: TRdpClipFileArray; out AWhy: string): Boolean;
 var
   n: Integer;
+  rootVol: LongWord;
 
   function Refuse(const AReason: string): Boolean;
   begin
@@ -388,18 +647,9 @@ var
     Result := False;
   end;
 
-  function WriteTimeOf(const ASr: TSearchRec): Int64;
-  begin
-    {$IFDEF WINDOWS}
-    Result := (Int64(ASr.FindData.ftLastWriteTime.dwHighDateTime) shl 32) or
-      Int64(LongWord(ASr.FindData.ftLastWriteTime.dwLowDateTime));
-    {$ELSE}
-    Result := 0;
-    {$ENDIF}
-  end;
-
   function AddEntry(const ARel: UnicodeString; const ALocal: string;
-    AIsDir: Boolean; ASize, AWTime: Int64): Boolean;
+    AIsDir: Boolean; ASize, AWTime: Int64;
+    AIdHigh, AIdLow: LongWord): Boolean;
   begin
     if Length(ARel) > FILEDESC_NAME_MAX then
       Exit(Refuse(Format('the relative path of "%s" does not fit the ' +
@@ -415,65 +665,80 @@ var
     AFiles[n].SizeKnown := not AIsDir;
     AFiles[n].Size := ASize;
     AFiles[n].WriteTime := AWTime;
-    // Un fichier dont l'identite ne se capture pas ne s'annonce pas: le
-    // service ne pourrait jamais verifier qu'il sert bien LUI.
-    if (not AIsDir) and (not CaptureLocalFileId(ALocal, AFiles[n].Id)) then
-      Exit(Refuse(Format('"%s" could not be opened to pin down which file ' +
-        'it is', [ExtractFileName(ALocal)])));
+    // L'identite vient du LISTING DU PARENT (par poignee), pas d'une seconde
+    // resolution du chemin: c'est elle que le service reverifiera avant
+    // d'envoyer le premier octet.
+    AFiles[n].Id.Known := True;
+    AFiles[n].Id.Volume := rootVol;
+    AFiles[n].Id.IdHigh := AIdHigh;
+    AFiles[n].Id.IdLow := AIdLow;
     Inc(n);
     Result := True;
   end;
 
-  function Walk(const ADir: string; const ARel: UnicodeString;
-    ADepth: Integer): Boolean;
+  function WalkHandle(AHandle: THandle; const ADir: string;
+    const ARel: UnicodeString; ADepth: Integer): Boolean;
   var
-    sr: TSearchRec;
-    rc: Integer;
+    entries: TDirEntryArray_;
+    code: LongWord;
+    e: Integer;
+    sub: string;
+    child: THandle;
+    info: TByHandleInfo_;
+    ok: Boolean;
   begin
     Result := False;
     if ADepth > RDPCLIP_MAX_DEPTH then
       Exit(Refuse('folder tree too deep'));
-    rc := FindFirst(ADir + PathDelim + '*', faAnyFile, sr);
-    {$IFDEF WINDOWS}
-    // FindFirst rend le code Windows. Seul « rien a rendre » est un dossier
-    // vide; un refus d'acces ou une E/S qui casse annoncerait une copie
-    // REUSSIE a laquelle il manque des fichiers.
-    if (rc = ERROR_FILE_NOT_FOUND_) or (rc = ERROR_NO_MORE_FILES_) then
-      Exit(True);
-    if rc <> 0 then
+    // Enumeration par la POIGNEE: rien a re-resoudre. Un listing coupe (refus
+    // d'acces, E/S qui casse) refuse tout: une copie « reussie » a laquelle
+    // il manque des fichiers serait un mensonge. Un dossier vide, lui, rend
+    // simplement zero entree.
+    if not ListDirByHandle(AHandle, entries, code) then
       Exit(Refuse(Format('"%s" could not be listed (Windows error %d)',
-        [ExtractFileName(ADir), rc])));
-    {$ELSE}
-    if rc <> 0 then
-      Exit(True);
-    {$ENDIF}
-    try
-      repeat
-        if (sr.Name <> '.') and (sr.Name <> '..') and (sr.Name <> '') and
-           ((sr.Attr and FA_SYMLINK_) = 0) then
-        begin
-          // Un lien n'est ni suivi ni annonce: sa cible n'est pas la.
-          if (sr.Attr and faDirectory) <> 0 then
-          begin
-            if not AddEntry(ARel + '\' + UnicodeString(sr.Name),
-               ADir + PathDelim + sr.Name, True, 0, WriteTimeOf(sr)) then Exit;
-            if not Walk(ADir + PathDelim + sr.Name,
-               ARel + '\' + UnicodeString(sr.Name), ADepth + 1) then Exit;
-          end
-          else if not AddEntry(ARel + '\' + UnicodeString(sr.Name),
-             ADir + PathDelim + sr.Name, False, sr.Size, WriteTimeOf(sr)) then
+        [ExtractFileName(ADir), code])));
+    for e := 0 to High(entries) do
+    begin
+      // Un lien n'est ni suivi ni annonce: sa cible n'est pas la.
+      if (entries[e].Attrs and FA_SYMLINK_) <> 0 then
+        Continue;
+      sub := ADir + PathDelim + UTF8Encode(entries[e].Name);
+      if (entries[e].Attrs and FILE_ATTRIBUTE_DIRECTORY_) <> 0 then
+      begin
+        if not AddEntry(ARel + '\' + entries[e].Name, sub, True, 0,
+           entries[e].WriteTime, entries[e].IdHigh, entries[e].IdLow) then
+          Exit;
+        // Descendre oblige a rouvrir un chemin; la poignee obtenue doit etre
+        // LE dossier que le parent vient de lister: meme volume, meme numero,
+        // pas un point de reanalyse. Une jonction glissee entre le listing et
+        // la descente ne correspond plus -- refus, plutot qu'enumerer sa
+        // cible et faire sortir la selection du dossier copie.
+        child := OpenNoFollow(sub);
+        if child = THandle(-1) then
+          Exit(Refuse(Format('"%s" could not be opened to walk into it',
+            [entries[e].Name])));
+        try
+          info := Default(TByHandleInfo_);
+          ok := GetFileInformationByHandle(child, info) and
+            ((info.dwFileAttributes and FA_SYMLINK_) = 0) and
+            ((info.dwFileAttributes and FILE_ATTRIBUTE_DIRECTORY_) <> 0) and
+            (info.dwVolumeSerialNumber = rootVol) and
+            (info.nFileIndexHigh = entries[e].IdHigh) and
+            (info.nFileIndexLow = entries[e].IdLow);
+          if not ok then
+            Exit(Refuse(Format('"%s" changed while it was being listed; ' +
+              'nothing was sent', [entries[e].Name])));
+          if not WalkHandle(child, sub, ARel + '\' + entries[e].Name,
+             ADepth + 1) then
             Exit;
+        finally
+          CloseHandle(child);
         end;
-        rc := FindNext(sr);
-      until rc <> 0;
-      {$IFDEF WINDOWS}
-      // La fin normale a un code a elle; tout autre est un listing coupe.
-      if rc <> ERROR_NO_MORE_FILES_ then
-        Exit(Refuse(Format('listing "%s" stopped early (Windows error %d)',
-          [ExtractFileName(ADir), rc])));
-      {$ENDIF}
-    finally
-      FindClose(sr);
+      end
+      else if not AddEntry(ARel + '\' + entries[e].Name, sub, False,
+         entries[e].Size, entries[e].WriteTime, entries[e].IdHigh,
+         entries[e].IdLow) then
+        Exit;
     end;
     Result := True;
   end;
@@ -481,37 +746,62 @@ var
 var
   i: Integer;
   root, base: string;
-  sr: TSearchRec;
+  h: THandle;
+  info: TByHandleInfo_;
   isDir: Boolean;
 begin
   Result := False;
   SetLength(AFiles, 0);
   AWhy := '';
   n := 0;
+  rootVol := 0;
   for i := 0 to High(ARoots) do
   begin
     root := ExcludeTrailingPathDelimiter(ARoots[i]);
     base := ExtractFileName(root);
     if base = '' then
       Exit(Refuse('a drive root cannot be copied whole'));
-    if FindFirst(root, faAnyFile, sr) <> 0 then
+    h := OpenNoFollow(root);
+    if h = THandle(-1) then
       Exit(Refuse(Format('"%s" is not there any more', [base])));
     try
-      if (sr.Attr and FA_SYMLINK_) <> 0 then
+      info := Default(TByHandleInfo_);
+      if not GetFileInformationByHandle(h, info) then
+        Exit(Refuse(Format('"%s" could not be identified', [base])));
+      if (info.dwFileAttributes and FA_SYMLINK_) <> 0 then
         Exit(Refuse(Format('"%s" is a link, and links are not carried',
           [base])));
-      isDir := (sr.Attr and faDirectory) <> 0;
-      if not AddEntry(UnicodeString(base), root, isDir, sr.Size,
-         WriteTimeOf(sr)) then Exit;
+      rootVol := info.dwVolumeSerialNumber;
+      isDir := (info.dwFileAttributes and FILE_ATTRIBUTE_DIRECTORY_) <> 0;
+      if not AddEntry(UnicodeString(base), root, isDir,
+         (Int64(info.nFileSizeHigh) shl 32) or Int64(info.nFileSizeLow),
+         (Int64(info.ftWrite[1]) shl 32) or Int64(info.ftWrite[0]),
+         info.nFileIndexHigh, info.nFileIndexLow) then
+        Exit;
+      // La racine s'enumere par la poignee DEJA verifiee: aucun retour au
+      // chemin, donc rien a re-verifier pour elle.
+      if isDir then
+        if not WalkHandle(h, root, UnicodeString(base), 1) then
+          Exit;
     finally
-      FindClose(sr);
+      CloseHandle(h);
     end;
-    if isDir then
-      if not Walk(root, UnicodeString(base), 1) then Exit;
   end;
   if n = 0 then Exit(Refuse('nothing to copy'));
   SetLength(AFiles, n);
   Result := True;
 end;
+{$ELSE}
+function EnumerateLocalTree(const ARoots: array of string;
+  out AFiles: TRdpClipFileArray; out AWhy: string): Boolean;
+begin
+  SetLength(AFiles, 0);
+  // Refus FRANC plutot qu'un FindFirst dont l'echec ne se distingue pas d'un
+  // dossier vide: le pont de fichiers est Windows<->Windows, sans CF_HDROP
+  // local on promettrait un envoi qu'on ne sait pas tenir.
+  AWhy := 'copying files works between Windows machines only';
+  Result := False;
+end;
+{$ENDIF}
 
 end.

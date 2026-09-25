@@ -289,7 +289,6 @@ const
   CLIP_FILES_FMT: AnsiString = 'FileGroupDescriptorW';
   // Un serveur peut demander la taille qu'il veut: on borne ce qu'on alloue.
   RDPCLIP_SERVE_MAX = 4 * 1024 * 1024;
-  FA_SYMLINK_ = $0400;   // faSymLink, sans l'avertissement de portabilite
 
   FULL_BLIT_MIN_MS = 50;   // plancher entre deux recopies integrales
   EP_BUF_BYTES = 512;   // couvre les deux tailles d'entry points, shim ou non
@@ -1040,7 +1039,8 @@ end;
 
 // Cree un dossier NEUF sous un nom frais: l'echec si le nom existe est LA
 // garantie qu'on n'ecrira jamais dans un dossier (ou une jonction) pose la
-// par un autre. Jamais de reutilisation.
+// par un autre. Jamais de reutilisation, et sous Windows une DACL
+// proprietaire seul, heritee par tout l'arbre (voir uRdpClipFiles).
 function ClipMakeFreshDir(const APrefix: string; out ADir: string): Boolean;
 var
   i: Integer;
@@ -1050,41 +1050,10 @@ begin
   begin
     ADir := APrefix + IntToHex(Int64(GetTickCount64 and $FFFFFF), 6) +
       IntToHex(Random($1000000), 6);
-    if CreateDir(ADir) then
+    if RdpClipMakeDirOwnerOnly(ADir) then
       Exit(True);
   end;
   ADir := '';
-end;
-
-// Efface un arbre A NOUS (temporaire du presse-papiers) sans jamais suivre un
-// lien: un lien part seul, sa cible reste.
-procedure ClipRemoveTree(const APath: string);
-var
-  sr: TSearchRec;
-begin
-  if FindFirst(APath + PathDelim + '*', faAnyFile, sr) = 0 then
-  begin
-    try
-      repeat
-        if (sr.Name = '.') or (sr.Name = '..') or (sr.Name = '') then
-          Continue;
-        if (sr.Attr and FA_SYMLINK_) <> 0 then
-        begin
-          if (sr.Attr and faDirectory) <> 0 then
-            RemoveDir(APath + PathDelim + sr.Name)
-          else
-            SysUtils.DeleteFile(APath + PathDelim + sr.Name);
-        end
-        else if (sr.Attr and faDirectory) <> 0 then
-          ClipRemoveTree(APath + PathDelim + sr.Name)
-        else
-          SysUtils.DeleteFile(APath + PathDelim + sr.Name);
-      until FindNext(sr) <> 0;
-    finally
-      FindClose(sr);
-    end;
-  end;
-  RemoveDir(APath);
 end;
 
 destructor TRdpTransport.Destroy;
@@ -1095,7 +1064,7 @@ begin
   // Les fichiers rapatries meurent avec l'onglet: un collage doit se faire
   // pendant que la session existe, comme le texte.
   if FClipTempRoot <> '' then
-    ClipRemoveTree(FClipTempRoot);
+    RdpClipRemoveTree(FClipTempRoot);
   FClipNotes.Free;
   FInputIdle.Free;
   FCertEvent.Free;
@@ -1433,9 +1402,13 @@ begin
   genSet.capabilitySetLength := 12;
   genSet.version := CB_CAPS_VERSION_2;
   // FILECLIP_NO_FILE_PATHS: les contenus passent en FLUX, jamais par un
-  // chemin CF_HDROP que l'autre bout lirait lui-meme.
-  genSet.generalFlags := CB_USE_LONG_FORMAT_NAMES or
-    CB_STREAM_FILECLIP_ENABLED or CB_FILECLIP_NO_FILE_PATHS;
+  // chemin CF_HDROP que l'autre bout lirait lui-meme. Le pont de FICHIERS ne
+  // s'annonce que la ou il tient sa promesse: hors Windows, pas de CF_HDROP
+  // local -- annoncer ferait rapatrier des temporaires que personne ne peut
+  // coller.
+  genSet.generalFlags := CB_USE_LONG_FORMAT_NAMES
+    {$IFDEF WINDOWS} or CB_STREAM_FILECLIP_ENABLED or
+    CB_FILECLIP_NO_FILE_PATHS {$ENDIF};
   caps.common.msgType := CB_CLIP_CAPS;
   caps.cCapabilitiesSets := 1;
   caps.capabilitySets := @genSet;
@@ -1515,6 +1488,9 @@ begin
       id := fmt^.formatId;
       // Des fichiers d'abord: une copie de fichiers annonce souvent AUSSI du
       // texte (les noms), et coller les noms a la place des fichiers surprend.
+      // Hors Windows le format fichiers est IGNORE, pas seulement non
+      // annonce: sans CF_HDROP local, tirer le lot ne le rendrait a personne.
+      {$IFDEF WINDOWS}
       if (fmt^.formatName <> nil) and
          SameText(string(AnsiString(fmt^.formatName)),
            string(CLIP_FILES_FMT)) then
@@ -1524,6 +1500,7 @@ begin
         isFiles := True;
         Break;
       end;
+      {$ENDIF}
       if id = CF_UNICODETEXT then
       begin
         chosen := CF_UNICODETEXT;
@@ -1927,12 +1904,13 @@ begin
     // Le lot precedent meurt: le presse-papiers local ne designe de toute
     // facon que le dernier, et deux lots empiles grossiraient sans fin.
     if FClipFetchDir <> '' then
-      ClipRemoveTree(FClipFetchDir);
+      RdpClipRemoveTree(FClipFetchDir);
     Inc(FClipBatchSeq);
     // CreateDir et pas ForceDirectories: dans NOTRE racine fraiche, un nom
     // deja pris ne peut etre que pose par un autre -- refus. Les DESCENDANTS,
-    // eux, vivent dans ce lot tout juste cree; un processus du meme
-    // utilisateur qui y ecrirait joue deja avec nos droits.
+    // eux, vivent dans ce lot tout juste cree, sous la DACL proprietaire seul
+    // heritee de la racine; un processus du meme utilisateur qui y ecrirait
+    // joue deja avec nos droits.
     FClipFetchDir := FClipTempRoot + PathDelim + 'b' + IntToStr(FClipBatchSeq);
     if not CreateDir(FClipFetchDir) then
       raise EInOutError.Create('temp folder refused');
@@ -2054,7 +2032,7 @@ begin
   // Un demi-lot collable serait un mensonge: tout le lot part.
   if FClipFetchDir <> '' then
   begin
-    ClipRemoveTree(FClipFetchDir);
+    RdpClipRemoveTree(FClipFetchDir);
     FClipFetchDir := '';
   end;
   if AWhy <> '' then
@@ -2132,6 +2110,7 @@ begin
   end;
 end;
 
+{$IFDEF WINDOWS}
 procedure TRdpTransport.AnnounceLocalFiles(const APaths: TStringArray);
 var
   i: Integer;
@@ -2147,6 +2126,13 @@ begin
     FClipLock.Release;
   end;
 end;
+{$ELSE}
+procedure TRdpTransport.AnnounceLocalFiles(const APaths: TStringArray);
+begin
+  // Rien: hors Windows le pont de fichiers n'existe pas (pas de CF_HDROP
+  // local) et la capacite n'est pas negociee -- voir ClipMonitorReady.
+end;
+{$ENDIF}
 
 procedure TRdpTransport.Fail(const AMessage: string);
 begin

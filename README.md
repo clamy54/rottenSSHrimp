@@ -88,9 +88,11 @@ you to the other, from the tab you are looking at only, and what a server put
 there is never forwarded to another server. On Windows, an RDP session also
 carries **files**: copy in the remote Explorer and paste locally, or the
 other way around. Remote files are fetched when you copy, into a temporary
-folder that lives as long as the tab, up to 256 MB per copy; every path the
-server announces is validated component by component before it touches the
-disk, and links are never followed in either direction. In SSH terminals the
+folder that only your account can read and that lives as long as the tab, up
+to 256 MB per copy; every path the server announces is validated component by
+component before it touches the disk, folders are walked by handle with the
+identity of each step verified, and links or junctions are never followed in
+either direction -- not even ones planted mid-transfer. In SSH terminals the
 middle mouse button pastes, on every platform.
 
 **Jump hosts.** Any SSH host in the tree can serve as a bastion for any other
