@@ -109,6 +109,10 @@ type
     FMiddle: TPanel;
     FQueueView: TTransferQueueView;
     FNotices: TLabel;
+    // Part du volet local dans la largeur utile: 50 % a l'ouverture, puis la
+    // proportion que l'utilisateur a choisie en deplacant le separateur --
+    // c'est elle que chaque redimensionnement de la fenetre preserve.
+    FSplitRatio: Double;
 
     // Chemins AFFICHES, ceux dont les noms sont a l'ecran: ils ne changent qu'a
     // l'arrivee d'un listing reussi.
@@ -141,6 +145,8 @@ type
     FRemoteSavedTop: Integer;
 
     procedure BuildUi;
+    procedure MiddleResize(Sender: TObject);
+    procedure SplitMoved(Sender: TObject);
     procedure HookTransport;
     procedure DropTransport;
     procedure UpdateCaption;
@@ -233,6 +239,9 @@ uses
 const
   NAV_HISTORY_MAX = 64;
   REFRESH_DEBOUNCE_MS = 120;
+  // En dessous, un volet de fichiers n'affiche plus rien d'utilisable, meme
+  // avec les colonnes qui s'effacent; c'est aussi la borne du separateur.
+  PANE_MIN_W = 220;
   // Delai laisse au transport pour retirer ses temporaires: un aller-retour
   // SFTP, pas de quoi figer une fermeture.
   PARTIAL_CLEANUP_GRACE_MS = 5000;
@@ -527,20 +536,26 @@ begin
   FHeaderInfo.Layout := tlCenter;
   FHeaderInfo.BorderSpacing.Left := 8;
 
+  // Top explicite avant alBottom: a Top egal, la LCL range les alBottom dans
+  // l'ordre INVERSE de leur creation -- le separateur filait sous le journal,
+  // tout en bas, sans plus rien a redimensionner: il ne bougeait plus.
   FNotices := TLabel.Create(Self);
   FNotices.Parent := Self;
+  FNotices.Top := 3000;
   FNotices.Align := alBottom;
   FNotices.BorderSpacing.Around := 4;
   FNotices.Caption := '';
 
   FQueueView := TTransferQueueView.CreateView(Self, FQueue);
   FQueueView.Parent := Self;
+  FQueueView.Top := 2000;
   FQueueView.Align := alBottom;
   FQueueView.Height := 160;
   FQueueView.OnCommand := @QueueCommand;
 
   FQueueSplit := TThemedSplitter.Create(Self);
   FQueueSplit.Parent := Self;
+  FQueueSplit.Top := 1000;
   FQueueSplit.Align := alBottom;
   FQueueSplit.MinSize := 60;
 
@@ -554,7 +569,7 @@ begin
   FLocalPanel := TFilePanel.CreateSide(Self, fpsLocal);
   FLocalPanel.Parent := FMiddle;
   FLocalPanel.Align := alLeft;
-  FLocalPanel.Width := 480;
+  FLocalPanel.Width := 480;   // provisoire: MiddleResize posera le 50/50 reel
   FLocalPanel.OnAction := @LocalAction;
   FLocalPanel.OnNavigate := @LocalNavigate;
   FLocalPanel.OnDrop := @PanelDrop;
@@ -566,7 +581,10 @@ begin
   // Left explicite: a egalite, la LCL range les alLeft dans l'ordre inverse de
   // leur creation, et le separateur se collait au bord gauche.
   FSplit.Left := FLocalPanel.Left + FLocalPanel.Width;
-  FSplit.MinSize := 220;
+  FSplit.MinSize := PANE_MIN_W;
+  FSplit.OnMoved := @SplitMoved;
+  FSplitRatio := 0.5;
+  FMiddle.OnResize := @MiddleResize;
 
   FRemotePanel := TFilePanel.CreateSide(Self, fpsRemote);
   FRemotePanel.Parent := FMiddle;
@@ -582,6 +600,39 @@ begin
   FRefreshTimer.OnTimer := @RefreshTick;
 
   RefreshTheme;
+end;
+
+// La largeur utile se partage selon FSplitRatio: 50/50 a l'ouverture, puis la
+// proportion choisie au separateur. Chaque volet garde PANE_MIN_W tant que la
+// place existe; en dessous, moitie-moitie du peu qu'il reste -- les colonnes
+// des volets s'effacent deja d'elles-memes.
+procedure TScpTab.MiddleResize(Sender: TObject);
+var
+  avail, w: Integer;
+begin
+  if (FLocalPanel = nil) or (FSplit = nil) then Exit;
+  avail := FMiddle.ClientWidth - FSplit.Width;
+  if avail <= 0 then Exit;
+  w := Round(FSplitRatio * avail);
+  if avail >= 2 * PANE_MIN_W then
+  begin
+    if w < PANE_MIN_W then w := PANE_MIN_W;
+    if w > avail - PANE_MIN_W then w := avail - PANE_MIN_W;
+  end
+  else
+    w := avail div 2;
+  FLocalPanel.Width := w;
+end;
+
+// Le geste de l'utilisateur fait LOI: c'est sa proportion que les
+// redimensionnements suivants preservent, pas un retour au 50/50.
+procedure TScpTab.SplitMoved(Sender: TObject);
+var
+  avail: Integer;
+begin
+  avail := FMiddle.ClientWidth - FSplit.Width;
+  if avail > 0 then
+    FSplitRatio := FLocalPanel.Width / avail;
 end;
 
 procedure TScpTab.RefreshTheme;
