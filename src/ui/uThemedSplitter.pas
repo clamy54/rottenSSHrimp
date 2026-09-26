@@ -56,6 +56,11 @@ constructor TThemedSplitter.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
   Beveled := False;
+  // PIEGE AutoSnap (vrai par defaut): sous MinSize, la LCL ne bloque pas le
+  // geste, elle REPLIE le volet redimensionne a 1 px -- il semble disparu.
+  // Et seulement de ce cote-la: l'autre volet est protege par le calcul du
+  // maximum. Sans AutoSnap, le glissement s'arrete a MinSize, des deux cotes.
+  AutoSnap := False;
   Width := SPLITTER_THICKNESS;
   Height := SPLITTER_THICKNESS;
 end;
