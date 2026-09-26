@@ -54,8 +54,9 @@ const
   // rdp_gateway, container, pod. v3: jump_inherit et folder_jump. Les
   // fichiers v1 et v2 se relisent tels quels; la version monte parce qu'un
   // import v2 qui ignorerait jump_inherit rendrait l'hote DIRECT, ce qui
-  // n'est pas la meme chose que ce qui a ete exporte.
-  JSON_FORMAT_VERSION = 3;
+  // n'est pas la meme chose que ce qui a ete exporte. v4: local_forwards
+  // (tunnels -L); un import v3 les perdrait sans le dire.
+  JSON_FORMAT_VERSION = 4;
 
 function NewImportReport: TImportReport;
 begin
@@ -112,14 +113,38 @@ procedure AddConnectionLinks(AModel: TRshModel; ANode: TRshNode;
   AObj: TJSONObject; ARoot: Boolean);
 var
   o: TJSONObject;
+  arr: TJSONArray;
   jump: string;
   gw: TRshRdpGateway;
   cc: TContainerConfig;
   pc: TPodConfig;
+  fwd: TRshLocalForwards;
+  i: Integer;
 begin
   case ANode.Protocol of
     rpSsh, rpRdp, rpVnc:
       begin
+        if ANode.Protocol = rpSsh then
+        begin
+          fwd := AModel.LoadLocalForwards(ANode.Uuid);
+          if Length(fwd) > 0 then
+          begin
+            arr := TJSONArray.Create;
+            for i := 0 to High(fwd) do
+            begin
+              o := TJSONObject.Create;
+              o.Add('local_port', fwd[i].LocalPort);
+              o.Add('host', fwd[i].DestHost);
+              o.Add('port', fwd[i].DestPort);
+              if not fwd[i].Enabled then
+                o.Add('enabled', False);
+              if fwd[i].Note <> '' then
+                o.Add('note', fwd[i].Note);
+              arr.Add(o);
+            end;
+            AObj.Add('local_forwards', arr);
+          end;
+        end;
         jump := AModel.GetJumpVia(ANode.Uuid);
         if jump <> '' then
           AObj.Add('jump_via', jump)
@@ -400,6 +425,88 @@ begin
     AReport, unused, AInheritCredential);
 end;
 
+// « hote:port », « [v6]:port » ou la forme « hote/port » d'OpenSSH.
+function SplitHostPort(const S: string; out AHost: string;
+  out APort: Integer): Boolean;
+var
+  p: Integer;
+  portStr: string;
+begin
+  Result := False;
+  AHost := '';
+  APort := 0;
+  if (S <> '') and (S[1] = '[') then
+  begin
+    p := Pos(']', S);
+    if (p = 0) or (Copy(S, p + 1, 1) <> ':') then Exit;
+    AHost := Copy(S, 2, p - 2);
+    portStr := Copy(S, p + 2, MaxInt);
+  end
+  else
+  begin
+    p := LastDelimiter(':/', S);
+    if p = 0 then
+    begin
+      // port seul, sans adresse d'ecoute
+      AHost := '';
+      portStr := S;
+    end
+    else
+    begin
+      AHost := Copy(S, 1, p - 1);
+      portStr := Copy(S, p + 1, MaxInt);
+    end;
+  end;
+  Result := TryStrToInt(portStr, APort);
+end;
+
+// LocalForward [adresse:]port hote:port. Un socket Unix n'a pas d'equivalent
+// ici: ecarte, avec le motif.
+function ParseLocalForward(const AValue: string; out AFwd: TRshLocalForward;
+  out AWhy: string): Boolean;
+var
+  sp: Integer;
+  listen, dest, bindAddr: string;
+begin
+  Result := False;
+  AWhy := '';
+  AFwd := Default(TRshLocalForward);
+  sp := Pos(' ', AValue);
+  if sp = 0 then
+  begin
+    AWhy := 'no destination';
+    Exit;
+  end;
+  listen := Trim(Copy(AValue, 1, sp - 1));
+  dest := Trim(Copy(AValue, sp + 1, MaxInt));
+  if (Pos('/', listen) > 0) and (Pos(':', listen) = 0) and
+     (not TryStrToInt(listen, sp)) then
+  begin
+    AWhy := 'Unix sockets are not supported';
+    Exit;
+  end;
+  if (not SplitHostPort(listen, bindAddr, AFwd.LocalPort)) or
+     (not SplitHostPort(dest, AFwd.DestHost, AFwd.DestPort)) or
+     (AFwd.DestHost = '') then
+  begin
+    AWhy := 'unreadable';
+    Exit;
+  end;
+  if AFwd.LocalPort < FORWARD_LOCAL_PORT_MIN then
+  begin
+    AWhy := Format('local port %d needs administrator rights (use %d or above)',
+      [AFwd.LocalPort, FORWARD_LOCAL_PORT_MIN]);
+    Exit;
+  end;
+  AFwd.Enabled := True;
+  // l'ecoute se fait toujours sur la boucle locale: une adresse reseau
+  // exposerait le tunnel au voisinage, on ne la reprend pas
+  if (bindAddr <> '') and (bindAddr <> 'localhost') and
+     (bindAddr <> '127.0.0.1') and (bindAddr <> '::1') then
+    AWhy := Format('listens on this computer only, not on %s', [bindAddr]);
+  Result := True;
+end;
+
 function ImportOpenSshConfig(AModel: TRshModel; const AParentUuid: string;
   const AText: string): TImportReport;
 var
@@ -407,19 +514,30 @@ var
   lines: TStringList;
   i, sp, port, entries: Integer;
   ok: Boolean;
-  line, key, value, curHost, curHostName: string;
+  line, key, value, curHost, curHostName, why: string;
+  curFwd: TRshLocalForwards;
+  fwd: TRshLocalForward;
 
   procedure FlushHost;
   var
-    host: string;
+    host, newUuid: string;
   begin
     if curHost = '' then Exit;
     // Sans HostName explicite, OpenSSH utilise le nom de l'entree.
     host := curHostName;
     if host = '' then host := curHost;
-    TryCreateConnection(AModel, AParentUuid, curHost, rpSsh, host, port, rep);
+    if TryCreateConnection(AModel, AParentUuid, curHost, rpSsh, host, port,
+         rep, newUuid) and (Length(curFwd) > 0) then
+    try
+      AModel.SetLocalForwards(newUuid, curFwd);
+    except
+      on E: EModelError do
+        rep.Messages.Add(Format('"%s": tunnels not imported: %s',
+          [curHost, E.Message]));
+    end;
     curHost := '';
     curHostName := '';
+    curFwd := nil;
     port := 22;
   end;
 
@@ -428,6 +546,7 @@ begin
   port := 22;
   curHost := '';
   curHostName := '';
+  curFwd := nil;
   entries := 0;
   ok := False;
 
@@ -465,6 +584,7 @@ begin
             rep.Messages.Add(Format('pattern "%s" ignored', [value]));
             curHost := '';
             curHostName := '';
+            curFwd := nil;
             port := 22;
             Continue;
           end;
@@ -479,6 +599,29 @@ begin
         begin
           port := StrToIntDef(value, 22);
           if (port < 1) or (port > 65535) then port := 22;
+        end
+        else if (key = 'localforward') and (curHost <> '') then
+        begin
+          // espaces multiples entre les deux moities: un seul suffit au decoupage
+          while Pos('  ', value) > 0 do
+            value := StringReplace(value, '  ', ' ', [rfReplaceAll]);
+          if ParseLocalForward(value, fwd, why) then
+          begin
+            if Length(curFwd) >= MAX_LOCAL_FORWARDS then
+              rep.Messages.Add(Format('"%s": LocalForward %s skipped: at most ' +
+                '%d tunnels per host', [curHost, value, MAX_LOCAL_FORWARDS]))
+            else
+            begin
+              SetLength(curFwd, Length(curFwd) + 1);
+              curFwd[High(curFwd)] := fwd;
+              if why <> '' then
+                rep.Messages.Add(Format('"%s": LocalForward %s: %s',
+                  [curHost, value, why]));
+            end;
+          end
+          else
+            rep.Messages.Add(Format('"%s": LocalForward %s skipped: %s',
+              [curHost, value, why]));
         end;
       end;
       FlushHost;
@@ -583,6 +726,57 @@ begin
   end;
 end;
 
+// Tunnels d'un export v4. Une entree mal formee est ecartee avec un mot, les
+// autres passent: un fichier edite a la main ne doit pas tout faire tomber.
+// Le modele revalide l'ensemble (ports, doublons, destination).
+procedure ImportLocalForwards(AModel: TRshModel; const AUuid, AName: string;
+  AArr: TJSONArray; var AReport: TImportReport);
+var
+  list: TRshLocalForwards;
+  one: TRshLocalForward;
+  o: TJSONObject;
+  i, n: Integer;
+begin
+  list := nil;
+  n := 0;
+  for i := 0 to AArr.Count - 1 do
+  begin
+    if AArr.Items[i].JSONType <> jtObject then Continue;
+    if n >= MAX_LOCAL_FORWARDS then
+    begin
+      AReport.Messages.Add(Format('"%s": only the first %d tunnels imported',
+        [AName, MAX_LOCAL_FORWARDS]));
+      Break;
+    end;
+    o := TJSONObject(AArr.Items[i]);
+    try
+      one.LocalPort := o.Get('local_port', 0);
+      one.DestHost := o.Get('host', '');
+      one.DestPort := o.Get('port', 0);
+      one.Enabled := o.Get('enabled', True);
+      one.Note := o.Get('note', '');
+    except
+      on E: Exception do
+      begin
+        AReport.Messages.Add(Format('"%s": a malformed tunnel was skipped',
+          [AName]));
+        Continue;
+      end;
+    end;
+    SetLength(list, n + 1);
+    list[n] := one;
+    Inc(n);
+  end;
+  if n = 0 then Exit;
+  try
+    AModel.SetLocalForwards(AUuid, list);
+  except
+    on E: EModelError do
+      AReport.Messages.Add(Format('"%s": tunnels not imported: %s',
+        [AName, E.Message]));
+  end;
+end;
+
 // Le reste de la connexion, une fois creee: delai, passerelle RDP, bastion
 // (differe: sa cible n'existe peut-etre pas encore).
 procedure ApplyConnectionExtras(AModel: TRshModel; ACtx: TImportCtx;
@@ -614,6 +808,9 @@ begin
           [AName, E.Message]));
     end;
   end;
+  if ANode.Find('local_forwards', jtArray) <> nil then
+    ImportLocalForwards(AModel, AUuid, AName, ANode.Arrays['local_forwards'],
+      AReport);
   jump := ANode.Get('jump_via', '');
   if (jump <> '') or ANode.Get('jump_inherit', False) then
   begin

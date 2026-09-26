@@ -11,7 +11,7 @@ uses
   Classes, SysUtils, Controls, ComCtrls, Forms, Dialogs, Graphics,
   uTermControl, uSshTransport, uSshKnownHosts, uSessionState,
   uSessionManager, uRshDocument, uSessionTabBase, uSshTunnel, uSshTunnelConnect,
-  uTreeScrollBar, uTheme, uSecureBytes;
+  uTreeScrollBar, uTheme, uSecureBytes, uSshForward, uNoticeBanner;
 
 type
   TSshSessionTab = class;
@@ -56,8 +56,16 @@ type
     FExitMsgs: array of string;
     // Avis « touchez votre cle », pose et retire par le thread de session.
     FSkNotice: TObject;
+    // Tunnels: bandeau des echecs, et ports effectivement tenus par CET
+    // onglet (pour dire qui occupe un port quand un autre onglet echoue).
+    FBanner: TNoticeBanner;
+    FListenPorts: array of Integer;
 
     procedure TermSend(const AData: RawByteString);
+    procedure ForwardReport(const AReport: TSshForwardReport);
+    procedure ForwardProblem(const ASpec: TSshForwardSpec;
+      const AMessage: string);
+    function HoldsPort(APort: Integer): Boolean;
     procedure TermGridResize(ACols, ARows: Integer);
     procedure SkNotice(AActive: Boolean; const AText: string);
     procedure SkPin(const APrompt: string; out APin: TSecureBytes;
@@ -111,6 +119,20 @@ implementation
 uses
   uHostKeyDialog, uFidoPrompt;
 
+var
+  // Onglets SSH vivants, thread UI seulement: sert a nommer l'onglet qui
+  // tient deja un port local quand un autre echoue a l'ecouter.
+  GSshTabs: TList = nil;
+
+const
+  BANNER_TITLE = 'Some SSH tunnels are not working. The session itself is open.';
+
+function FwdLabel(const ASpec: TSshForwardSpec): string;
+begin
+  Result := Format('localhost:%d → %s:%d',
+    [ASpec.LocalPort, ASpec.DestHost, ASpec.DestPort]);
+end;
+
 constructor TSshSessionHandle.Create(ATab: TSshSessionTab);
 begin
   inherited Create;
@@ -145,6 +167,11 @@ begin
   FManager := AManager;
   FKnownHosts := TSshKnownHosts.Create(ADoc);
 
+  // Bandeau des tunnels en tete, cache tant qu'il n'a rien a dire.
+  FBanner := TNoticeBanner.Create(Self);
+  FBanner.Parent := Self;
+  FBanner.Align := alTop;
+
   // Barre AVANT le terminal: alRight reserve le strip, alClient prend le reste.
   FScroll := TTreeScrollBar.Create(Self);
   FScroll.Parent := Self;
@@ -175,9 +202,14 @@ begin
   FTransport.OnHostKeySave := @HostKeySave;
   FTransport.OnSkNotice := @SkNotice;
   FTransport.OnSkPin := @SkPin;
+  FTransport.OnForwardReport := @ForwardReport;
+  FTransport.OnForwardProblem := @ForwardProblem;
 
   FHandle := TSshSessionHandle.Create(Self);
   FManager.RegisterSession(FHandle);
+  if GSshTabs = nil then
+    GSshTabs := TList.Create;
+  GSshTabs.Add(Self);
 
   UpdateCaption;
 end;
@@ -187,6 +219,8 @@ var
   cb: TNotifyEvent;
 begin
   FClosing := True;
+  if GSshTabs <> nil then
+    GSshTabs.Remove(Self);
   if (FManager <> nil) and (FHandle <> nil) then
     FManager.UnregisterSession(FHandle);
   if FTransport <> nil then
@@ -320,6 +354,74 @@ begin
   ACancelled := not AskFidoPin(APrompt, APin);
 end;
 
+function TSshSessionTab.HoldsPort(APort: Integer): Boolean;
+var
+  i: Integer;
+begin
+  Result := False;
+  for i := 0 to High(FListenPorts) do
+    if FListenPorts[i] = APort then
+      Exit(True);
+end;
+
+// UN message pour tous les tunnels qui n'ont pas pu ecouter, et pas un par
+// tunnel. Un port pris par un autre onglet de l'appli est nomme: c'est le cas
+// le plus courant (deux terminaux sur le meme hote).
+procedure TSshSessionTab.ForwardReport(const AReport: TSshForwardReport);
+var
+  i, j, ok: Integer;
+  why, holder: string;
+  other: TSshSessionTab;
+begin
+  if FClosing then Exit;
+  ok := 0;
+  FListenPorts := nil;
+  for i := 0 to High(AReport) do
+    if AReport[i].Fail = sffNone then
+    begin
+      Inc(ok);
+      SetLength(FListenPorts, Length(FListenPorts) + 1);
+      FListenPorts[High(FListenPorts)] := AReport[i].Spec.LocalPort;
+    end;
+  for i := 0 to High(AReport) do
+  begin
+    if AReport[i].Fail = sffNone then Continue;
+    why := ForwardFailText(AReport[i]);
+    if AReport[i].Fail = sffInUse then
+    begin
+      holder := '';
+      for j := 0 to GSshTabs.Count - 1 do
+      begin
+        other := TSshSessionTab(GSshTabs[j]);
+        if (other <> Self) and other.HoldsPort(AReport[i].Spec.LocalPort) then
+        begin
+          holder := other.FDisplayName;
+          Break;
+        end;
+      end;
+      if holder <> '' then
+        why := Format('local port already used by the session "%s"',
+          [holder]);
+    end;
+    FBanner.AddLine(BANNER_TITLE, Format('%s — not set up: %s',
+      [FwdLabel(AReport[i].Spec), why]));
+  end;
+  if (ok > 0) and Assigned(FOnNotice) then
+    if ok = 1 then
+      FOnNotice(Format('%s: 1 tunnel listening on this computer.',
+        [FDisplayName]))
+    else
+      FOnNotice(Format('%s: %d tunnels listening on this computer.',
+        [FDisplayName, ok]));
+end;
+
+procedure TSshSessionTab.ForwardProblem(const ASpec: TSshForwardSpec;
+  const AMessage: string);
+begin
+  if FClosing then Exit;
+  FBanner.AddLine(BANNER_TITLE, Format('%s — %s', [FwdLabel(ASpec), AMessage]));
+end;
+
 procedure TSshSessionTab.TransportData(const AData: RawByteString);
 var
   s: RawByteString;
@@ -360,6 +462,8 @@ var
   i: Integer;
 begin
   FState := FTransport.State;
+  // la session est finie, ses ecoutes aussi: le port redevient libre
+  FListenPorts := nil;
   UpdateCaption;
   if FErrorMsg = '' then
     for i := 0 to High(FExitCodes) do
@@ -512,5 +616,8 @@ begin
   FKnownHosts.Remember(AInfo.Host, AInfo.Port, AInfo.KeyType,
     AInfo.Fingerprint, AInfo.Blob);
 end;
+
+finalization
+  FreeAndNil(GSshTabs);
 
 end.

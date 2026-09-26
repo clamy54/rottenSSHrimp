@@ -4,6 +4,9 @@ unit uNodeDialogs;
 
 // Dialogues de proprietes des noeuds, construits par code. En « Inherit from
 // parent folder », le dialogue AFFICHE ce que l'heritage resoudrait.
+// Aux couleurs du theme, controles peints compris (uThemedControls): les
+// natifs ne se recolorent pas. Un hote SSH a deux onglets, General et
+// Tunnels: la fenetre occupait deja presque tout un ecran de portable.
 
 interface
 
@@ -23,9 +26,9 @@ function ShowGroupProperties(AModel: TRshModel; const AUuid: string): Boolean;
 implementation
 
 uses
-  Classes, SysUtils, Forms, Controls, StdCtrls, Buttons, Dialogs,
+  Classes, SysUtils, Forms, Controls, StdCtrls, ExtCtrls, Dialogs, LCLType,
   IntfGraphics, fpImage, uRshValidation, uTheme, uVersion, uSecureBytes,
-  uSecretClipGuard;
+  uSecretClipGuard, uThemedControls, uForwardList;
 
 const
   DLG_W = 520;
@@ -46,14 +49,14 @@ const
 type
   TFolderCredSection = record
     Proto: TRshProtocol;
-    Combo: TComboBox;
+    Combo: TThemedCombo;
     Tags: array of string;
     // entree existante du Credential Manager, en plus des secrets saisis ici
-    MgrCombo: TComboBox;
+    MgrCombo: TThemedCombo;
     MgrUuids: TStringList;
     UserLbl, DomainLbl, PassLbl, KeyLbl, PhraseLbl: TLabel;
     UserEdit, DomainEdit, PassEdit, KeyEdit, PhraseEdit: TEdit;
-    KeyBrowse: TButton;
+    KeyBrowse: TThemedButton;
     CurCred: string;
     HasStoredPassword: Boolean;
     HasStoredKey: Boolean;
@@ -66,11 +69,11 @@ type
     FPortEdit: TEdit;
     FTimeoutEdit: TEdit;
     FDescEdit: TMemo;
-    FCredCombo: TComboBox;
+    FCredCombo: TThemedCombo;
     FCredUuids: TStringList;
-    FManagedCombo: TComboBox;
+    FManagedCombo: TThemedCombo;
     FManagedUuids: TStringList;
-    FJumpCombo: TComboBox;
+    FJumpCombo: TThemedCombo;
     FJumpUuids: TStringList;
     FUserLbl, FDomainLbl, FPassLbl, FKeyLbl, FPhraseLbl: TLabel;
     FUserEdit, FDomainEdit, FPassEdit, FKeyEdit, FPhraseEdit: TEdit;
@@ -79,19 +82,58 @@ type
     FSections: array of TFolderCredSection;
     FGwHostLbl, FGwPortLbl: TLabel;
     FGwHostEdit, FGwPortEdit: TEdit;
-    FVncActualSizeChk: TCheckBox;
-    FJumpOfferChk: TCheckBox;
-    FKeyBrowse: TButton;
-    FPassEye: TSpeedButton;
+    FVncActualSizeChk: TThemedCheck;
+    FJumpOfferChk: TThemedCheck;
+    FKeyBrowse: TThemedButton;
+    FPassEye: TThemedButton;
     FPassRevealed: Boolean;
     FHintLbl: TLabel;
     FProto: TRshProtocol;
     FHasStoredPassword: Boolean;
     FHasStoredKey: Boolean;
     FY: Integer;
+
+    // Pages: une seule sans onglets (dossiers, RDP, VNC), deux pour SSH.
+    // FPage est la page EN CONSTRUCTION, ou AddRow/AddEdit posent leurs
+    // controles; FPageY garde le bas de chacune.
+    FPages: array of TPanel;
+    FPageY: array of Integer;
+    FCurPage: Integer;
+    FPage: TWinControl;
+    FPagesTop: Integer;
+    FTabs: TThemedTabs;
+    FOkBtn, FCancelBtn: TThemedButton;
+
+    // Onglet Tunnels (hote SSH seulement)
+    FFwdModel: TRshModel;
+    FFwdConn: string;
+    FFwdPageIdx: Integer;
+    FFwdList: TForwardListView;
+    FFwdLocal, FFwdHost, FFwdPort, FFwdNote: TEdit;
+    FFwdAdd, FFwdUpdate, FFwdRemove: TThemedButton;
+    FFwdMsg: TLabel;
+
     function AddRow(const ACaption: string): TLabel;
     function AddEdit(const ACaption, AValue: string): TEdit;
     procedure AddButtons(const AOkCaption: string);
+    function NewPage: TPanel;
+    procedure EnableTabs(const ACaptions: array of string);
+    procedure UsePage(AIndex: Integer);
+    procedure ShowPage(AIndex: Integer);
+    procedure TabsChanged(Sender: TObject);
+    procedure BuildTunnelsPage(AModel: TRshModel; const AConnUuid: string);
+    procedure FwdSay(const AText: string; AColor: TColor);
+    function FwdReadFields(out AItem: TRshLocalForward;
+      out AErr: string): Boolean;
+    function FwdPortTaken(APort, AExcept: Integer): Boolean;
+    procedure FwdRefreshClashes;
+    procedure FwdSelect(Sender: TObject);
+    procedure FwdToggle(Sender: TObject);
+    procedure FwdAddClick(Sender: TObject);
+    procedure FwdUpdateClick(Sender: TObject);
+    procedure FwdRemoveClick(Sender: TObject);
+    function FwdPending: Boolean;
+    function FwdOwnsFocus: Boolean;
     procedure CredComboChanged(Sender: TObject);
     procedure BrowseKeyClick(Sender: TObject);
     procedure PassEyeClick(Sender: TObject);
@@ -103,6 +145,11 @@ type
     procedure FolderBrowseClick(Sender: TObject);
     procedure UpdateFolderSections;
     function SectionTag(const ASec: TFolderCredSection): string;
+  protected
+    // Entree/Echap: les boutons peints ne sont pas des TButton, la LCL ne
+    // leur route pas Default/Cancel.
+    procedure KeyDown(var Key: Word; Shift: TShiftState); override;
+    procedure KeyPress(var Key: Char); override;
   public
     constructor CreateShell(AOwner: TComponent; const ATitle: string);
     destructor Destroy; override;
@@ -164,10 +211,131 @@ begin
   BorderStyle := bsDialog;
   Position := poScreenCenter;
   Width := DLG_W;
-  FY := MARGIN;
+  KeyPreview := True;
   FCredUuids := TStringList.Create;
   FManagedUuids := TStringList.Create;
   FJumpUuids := TStringList.Create;
+  FFwdPageIdx := -1;
+  FPagesTop := 0;
+  FCurPage := 0;
+  NewPage;
+  FPage := FPages[0];
+  FY := MARGIN;
+end;
+
+function TNodeDialog.NewPage: TPanel;
+var
+  n: Integer;
+begin
+  Result := TPanel.Create(Self);
+  Result.Parent := Self;
+  Result.BevelOuter := bvNone;
+  Result.SetBounds(0, FPagesTop, DLG_W, 10);
+  n := Length(FPages);
+  SetLength(FPages, n + 1);
+  SetLength(FPageY, n + 1);
+  FPages[n] := Result;
+  FPageY[n] := MARGIN;
+  if n > 0 then
+    Result.Visible := False;
+end;
+
+// Pose la barre d'onglets au-dessus de la page General deja commencee, et
+// cree les pages suivantes. A appeler AVANT de construire celles-ci.
+procedure TNodeDialog.EnableTabs(const ACaptions: array of string);
+var
+  i: Integer;
+begin
+  FTabs := TThemedTabs.Create(Self);
+  FTabs.Parent := Self;
+  FTabs.SetBounds(MARGIN, 10, DLG_W - 2 * MARGIN, 32);
+  for i := 0 to High(ACaptions) do
+    FTabs.Tabs.Add(ACaptions[i]);
+  FTabs.OnChange := @TabsChanged;
+  FPagesTop := 10 + 32 + 2;
+  FPages[0].Top := FPagesTop;
+  for i := 1 to High(ACaptions) do
+    NewPage;
+end;
+
+procedure TNodeDialog.UsePage(AIndex: Integer);
+begin
+  FPageY[FCurPage] := FY;
+  FCurPage := AIndex;
+  FPage := FPages[AIndex];
+  FY := FPageY[AIndex];
+end;
+
+procedure TNodeDialog.ShowPage(AIndex: Integer);
+var
+  i: Integer;
+begin
+  for i := 0 to High(FPages) do
+    FPages[i].Visible := i = AIndex;
+  if (FTabs <> nil) and (FTabs.TabIndex <> AIndex) then
+    FTabs.TabIndex := AIndex;
+end;
+
+procedure TNodeDialog.TabsChanged(Sender: TObject);
+begin
+  ShowPage(FTabs.TabIndex);
+end;
+
+function TNodeDialog.FwdOwnsFocus: Boolean;
+begin
+  Result := (FFwdPageIdx >= 0) and (ActiveControl <> nil) and
+    ((ActiveControl = FFwdLocal) or (ActiveControl = FFwdHost) or
+     (ActiveControl = FFwdPort) or (ActiveControl = FFwdNote));
+end;
+
+procedure TNodeDialog.KeyDown(var Key: Word; Shift: TShiftState);
+begin
+  if (Key = VK_ESCAPE) and (Shift = []) then
+  begin
+    Key := 0;
+    ModalResult := mrCancel;
+    Exit;
+  end;
+  // Ctrl+Tab passe d'un onglet a l'autre, comme partout ailleurs
+  if (Key = VK_TAB) and (ssCtrl in Shift) and (FTabs <> nil) then
+  begin
+    if ssShift in Shift then
+      ShowPage((FTabs.TabIndex + FTabs.Tabs.Count - 1) mod FTabs.Tabs.Count)
+    else
+      ShowPage((FTabs.TabIndex + 1) mod FTabs.Tabs.Count);
+    Key := 0;
+    Exit;
+  end;
+  if (Key = VK_RETURN) and (Shift = []) and
+     not (ActiveControl is TCustomMemo) and
+     not (ActiveControl is TThemedButton) then
+  begin
+    Key := 0;
+    // Entree dans la saisie d'un tunnel: l'ajouter (ou le mettre a jour),
+    // pas enregistrer toute la fenetre avec un tunnel oublie en chemin.
+    if FwdOwnsFocus then
+    begin
+      if FFwdList.Selected >= 0 then
+        FwdUpdateClick(nil)
+      else
+        FwdAddClick(nil);
+    end
+    else if FOkBtn <> nil then
+      FOkBtn.Click;
+    Exit;
+  end;
+  inherited KeyDown(Key, Shift);
+end;
+
+// Le #13 d'une touche Entree deja traitee fait biper le champ sous Windows.
+procedure TNodeDialog.KeyPress(var Key: Char);
+begin
+  if (Key = #13) and not (ActiveControl is TCustomMemo) then
+  begin
+    Key := #0;
+    Exit;
+  end;
+  inherited KeyPress(Key);
 end;
 
 destructor TNodeDialog.Destroy;
@@ -205,7 +373,7 @@ end;
 function TNodeDialog.AddRow(const ACaption: string): TLabel;
 begin
   Result := TLabel.Create(Self);
-  Result.Parent := Self;
+  Result.Parent := FPage;
   Result.SetBounds(MARGIN, FY + 4, LBL_W, 18);
   Result.Caption := ACaption;
 end;
@@ -214,31 +382,41 @@ function TNodeDialog.AddEdit(const ACaption, AValue: string): TEdit;
 begin
   AddRow(ACaption);
   Result := TEdit.Create(Self);
-  Result.Parent := Self;
+  Result.Parent := FPage;
   Result.SetBounds(EDIT_X, FY, EDIT_W, 26);
   Result.Text := AValue;
   Inc(FY, 34);
 end;
 
+// Toutes les pages prennent la hauteur de la plus haute: changer d'onglet ne
+// fait pas sauter la fenetre ni ses boutons.
 procedure TNodeDialog.AddButtons(const AOkCaption: string);
 var
-  ok, cancel: TButton;
+  i, h, y: Integer;
 begin
-  Inc(FY, 6);
-  ok := TButton.Create(Self);
-  ok.Parent := Self;
-  ok.SetBounds(DLG_W - MARGIN - 110, FY, 110, 30);
-  ok.Caption := AOkCaption;
-  ok.ModalResult := mrOk;
-  ok.Default := True;
-  cancel := TButton.Create(Self);
-  cancel.Parent := Self;
-  cancel.SetBounds(DLG_W - MARGIN - 230, FY, 110, 30);
-  cancel.Caption := 'Cancel';
-  cancel.ModalResult := mrCancel;
-  cancel.Cancel := True;
-  Inc(FY, 30 + MARGIN);
-  ClientHeight := FY;
+  FPageY[FCurPage] := FY;
+  h := 0;
+  for i := 0 to High(FPageY) do
+    if FPageY[i] > h then
+      h := FPageY[i];
+  for i := 0 to High(FPages) do
+    FPages[i].Height := h;
+  y := FPagesTop + h + 6;
+  FOkBtn := TThemedButton.Create(Self);
+  FOkBtn.Parent := Self;
+  FOkBtn.SetBounds(DLG_W - MARGIN - 110, y, 110, 30);
+  FOkBtn.Caption := AOkCaption;
+  FOkBtn.ModalResult := mrOk;
+  FOkBtn.Default := True;
+  FCancelBtn := TThemedButton.Create(Self);
+  FCancelBtn.Parent := Self;
+  FCancelBtn.SetBounds(DLG_W - MARGIN - 230, y, 110, 30);
+  FCancelBtn.Caption := 'Cancel';
+  FCancelBtn.ModalResult := mrCancel;
+  ClientHeight := y + 30 + MARGIN;
+  ShowPage(0);
+  if FNameEdit <> nil then
+    ActiveControl := FNameEdit;
 end;
 
 function TNodeDialog.SelectedTag: string;
@@ -300,6 +478,9 @@ begin
       'The key is read now and stored encrypted in the document.'
   else
     FHintLbl.Caption := 'Shared credential from the Credential Manager.';
+  // les cadres des champs sont peints par la page: un champ qui reapparait
+  // n'invalide que lui-meme, pas le cadre autour
+  FPages[0].Invalidate;
 end;
 
 procedure TNodeDialog.CredComboChanged(Sender: TObject);
@@ -362,6 +543,7 @@ begin
       FSections[i].PhraseEdit.Visible := wantKey;
     end;
   end;
+  FPages[0].Invalidate;
 end;
 
 procedure TNodeDialog.FolderComboChanged(Sender: TObject);
@@ -433,8 +615,8 @@ begin
   sec.MgrUuids := TStringList.Create;
 
   AddRow(UpperCase(PROTOCOL_NAMES[AProto]) + ' credentials:');
-  sec.Combo := TComboBox.Create(Self);
-  sec.Combo.Parent := Self;
+  sec.Combo := TThemedCombo.Create(Self);
+  sec.Combo.Parent := FPage;
   sec.Combo.Style := csDropDownList;
   sec.Combo.SetBounds(EDIT_X, FY, EDIT_W, 26);
   sec.Combo.OnChange := @FolderComboChanged;
@@ -456,8 +638,8 @@ begin
   Inc(FY, 34);
 
   // meme ligne pour toutes les sections: visible seulement en mode gestionnaire
-  sec.MgrCombo := TComboBox.Create(Self);
-  sec.MgrCombo.Parent := Self;
+  sec.MgrCombo := TThemedCombo.Create(Self);
+  sec.MgrCombo.Parent := FPage;
   sec.MgrCombo.Style := csDropDownList;
   sec.MgrCombo.SetBounds(EDIT_X, FY, EDIT_W, 26);
   sec.MgrCombo.Visible := False;
@@ -467,7 +649,7 @@ begin
   begin
     sec.UserLbl := AddRow('Username:');
     sec.UserEdit := TEdit.Create(Self);
-    sec.UserEdit.Parent := Self;
+    sec.UserEdit.Parent := FPage;
     sec.UserEdit.SetBounds(EDIT_X, FY, EDIT_W, 26);
     Inc(FY, 34);
   end;
@@ -475,30 +657,30 @@ begin
   begin
     sec.DomainLbl := AddRow('Domain:');
     sec.DomainEdit := TEdit.Create(Self);
-    sec.DomainEdit.Parent := Self;
+    sec.DomainEdit.Parent := FPage;
     sec.DomainEdit.SetBounds(EDIT_X, FY, EDIT_W, 26);
     Inc(FY, 34);
   end;
   sec.PassLbl := AddRow('Password:');
   sec.PassEdit := TEdit.Create(Self);
-  sec.PassEdit.Parent := Self;
+  sec.PassEdit.Parent := FPage;
   sec.PassEdit.SetBounds(EDIT_X, FY, EDIT_W, 26);
   sec.PassEdit.PasswordChar := '*';
   if AProto = rpSsh then
   begin
     sec.KeyLbl := AddRow('Private key:');
     sec.KeyEdit := TEdit.Create(Self);
-    sec.KeyEdit.Parent := Self;
+    sec.KeyEdit.Parent := FPage;
     sec.KeyEdit.SetBounds(EDIT_X, FY, EDIT_W - 92, 26);
-    sec.KeyBrowse := TButton.Create(Self);
-    sec.KeyBrowse.Parent := Self;
+    sec.KeyBrowse := TThemedButton.Create(Self);
+    sec.KeyBrowse.Parent := FPage;
     sec.KeyBrowse.SetBounds(EDIT_X + EDIT_W - 86, FY, 86, 26);
     sec.KeyBrowse.Caption := 'Browse…';
     sec.KeyBrowse.OnClick := @FolderBrowseClick;
     Inc(FY, 34);
     sec.PhraseLbl := AddRow('Passphrase:');
     sec.PhraseEdit := TEdit.Create(Self);
-    sec.PhraseEdit.Parent := Self;
+    sec.PhraseEdit.Parent := FPage;
     sec.PhraseEdit.SetBounds(EDIT_X, FY, EDIT_W, 26);
     sec.PhraseEdit.PasswordChar := '*';
     Inc(FY, 34);
@@ -516,7 +698,7 @@ begin
   if FPassEdit.PasswordChar = #0 then
   begin
     FPassEdit.PasswordChar := '*';
-    MakeEyeGlyph(FPassEye.Glyph, False);
+    FPassEye.Glyph := tbgEye;
     if FPassRevealed then
     begin
       FPassRevealed := False;
@@ -526,7 +708,7 @@ begin
   else
   begin
     FPassEdit.PasswordChar := #0;
-    MakeEyeGlyph(FPassEye.Glyph, True);
+    FPassEye.Glyph := tbgEyeCrossed;
     // en clair, Cocoa redonne un champ copiable: on gele l'annonce presse-papiers
     if not FPassRevealed then
     begin
@@ -858,6 +1040,335 @@ begin
   end;
 end;
 
+{ Onglet Tunnels }
+
+// La page Tunnels prend la hauteur de la page General (deja construite): la
+// liste s'etire dans ce qui reste, la saisie reste en bas.
+procedure TNodeDialog.BuildTunnelsPage(AModel: TRshModel;
+  const AConnUuid: string);
+const
+  FIXED_H = 236;
+var
+  w, x, listH, target: Integer;
+  lbl: TLabel;
+
+  function MkLbl(const ACaption: string; AX, AY, AW: Integer): TLabel;
+  begin
+    Result := TLabel.Create(Self);
+    Result.Parent := FPage;
+    Result.AutoSize := False;
+    Result.SetBounds(AX, AY, AW, 18);
+    Result.Caption := ACaption;
+  end;
+
+  function Field(AX, AY, AW: Integer): TEdit;
+  begin
+    Result := TEdit.Create(Self);
+    Result.Parent := FPage;
+    Result.SetBounds(AX, AY, AW, 26);
+  end;
+
+  function Btn(const ACaption: string; AX, AY: Integer;
+    AClick: TNotifyEvent): TThemedButton;
+  begin
+    Result := TThemedButton.Create(Self);
+    Result.Parent := FPage;
+    Result.SetBounds(AX, AY, 100, 28);
+    Result.Caption := ACaption;
+    Result.OnClick := AClick;
+  end;
+
+begin
+  FFwdModel := AModel;
+  FFwdConn := AConnUuid;
+  target := FY;   // bas de la page General
+  FFwdPageIdx := 1;
+  UsePage(FFwdPageIdx);
+  w := DLG_W - 2 * MARGIN;
+
+  lbl := MkLbl('Tunnels open with the SSH terminal of this host and close ' +
+    'with it. They listen on this computer only (localhost) and leave from ' +
+    'the SSH server towards the destination.', MARGIN, FY, w);
+  lbl.WordWrap := True;
+  lbl.Height := 36;
+  lbl.Tag := THEME_TAG_SECONDARY;
+  Inc(FY, 44);
+
+  if not AModel.ForwardsAvailable then
+  begin
+    lbl := MkLbl('Unavailable: this document is open read-only in an older ' +
+      'format, which cannot store tunnels.', MARGIN, FY, w);
+    lbl.WordWrap := True;
+    lbl.Height := 36;
+    lbl.Tag := THEME_TAG_WARN;
+    Inc(FY, 44);
+    FFwdPageIdx := -1;
+    UsePage(0);
+    Exit;
+  end;
+
+  listH := target - FIXED_H;
+  if listH < 170 then
+    listH := 170;
+  FFwdList := TForwardListView.Create(Self);
+  FFwdList.Parent := FPage;
+  FFwdList.SetBounds(MARGIN, FY, w, listH);
+  FFwdList.OnSelect := @FwdSelect;
+  FFwdList.OnToggle := @FwdToggle;
+  FFwdList.OnDeleteKey := @FwdRemoveClick;
+  Inc(FY, listH + 10);
+
+  // port local  →  destination  :  port
+  MkLbl('Local port', MARGIN, FY, 90).Tag := THEME_TAG_SECONDARY;
+  MkLbl('Destination host', MARGIN + 104, FY, 200).Tag := THEME_TAG_SECONDARY;
+  MkLbl('Port', MARGIN + w - 70, FY, 70).Tag := THEME_TAG_SECONDARY;
+  Inc(FY, 20);
+  FFwdLocal := Field(MARGIN, FY, 80);
+  FFwdLocal.TextHint := 'e.g. 10636';
+  MkLbl('→', MARGIN + 84, FY + 4, 18);
+  x := MARGIN + 104;
+  FFwdHost := Field(x, FY, w - 104 - 88);
+  FFwdHost.TextHint := 'as seen from the SSH server';
+  MkLbl(':', MARGIN + w - 82, FY + 4, 10);
+  FFwdPort := Field(MARGIN + w - 70, FY, 70);
+  Inc(FY, 34);
+  MkLbl('Note', MARGIN, FY + 4, 90).Tag := THEME_TAG_SECONDARY;
+  FFwdNote := Field(MARGIN + 104, FY, w - 104);
+  FFwdNote.MaxLength := FORWARD_NOTE_MAX;
+  FFwdNote.TextHint := 'optional';
+  Inc(FY, 36);
+
+  FFwdAdd := Btn('Add', MARGIN, FY, @FwdAddClick);
+  FFwdUpdate := Btn('Update', MARGIN + 108, FY, @FwdUpdateClick);
+  FFwdRemove := Btn('Remove', MARGIN + 216, FY, @FwdRemoveClick);
+  Inc(FY, 36);
+
+  FFwdMsg := MkLbl('', MARGIN, FY, w);
+  FFwdMsg.WordWrap := True;
+  FFwdMsg.Height := 36;
+  Inc(FY, 40);
+
+  FFwdList.SetItems(AModel.LoadLocalForwards(AConnUuid));
+  FwdRefreshClashes;
+  FwdSelect(nil);
+  UsePage(0);
+end;
+
+// Couleur posee APRES ThemeControls: le message change en cours de route.
+procedure TNodeDialog.FwdSay(const AText: string; AColor: TColor);
+begin
+  if FFwdMsg = nil then Exit;
+  FFwdMsg.Font.Color := AColor;
+  FFwdMsg.Caption := AText;
+end;
+
+function TNodeDialog.FwdReadFields(out AItem: TRshLocalForward;
+  out AErr: string): Boolean;
+var
+  host: string;
+  i: Integer;
+begin
+  Result := False;
+  AItem := Default(TRshLocalForward);
+  AErr := '';
+  if (not TryStrToInt(Trim(FFwdLocal.Text), AItem.LocalPort)) or
+     (AItem.LocalPort < FORWARD_LOCAL_PORT_MIN) or
+     (AItem.LocalPort > 65535) then
+  begin
+    AErr := Format('Local port: a number from %d to 65535 (lower ports ' +
+      'need administrator rights).', [FORWARD_LOCAL_PORT_MIN]);
+    Exit;
+  end;
+  host := FFwdHost.Text;
+  if not ValidateHostname(host, AErr) then
+  begin
+    AErr := 'Destination: ' + AErr;
+    Exit;
+  end;
+  AItem.DestHost := host;
+  if (not TryStrToInt(Trim(FFwdPort.Text), AItem.DestPort)) or
+     (AItem.DestPort < 1) or (AItem.DestPort > 65535) then
+  begin
+    AErr := 'Destination port: a number from 1 to 65535.';
+    Exit;
+  end;
+  AItem.Note := Trim(FFwdNote.Text);
+  for i := 1 to Length(AItem.Note) do
+    if AItem.Note[i] < #32 then
+    begin
+      AErr := 'The note contains control characters.';
+      Exit;
+    end;
+  AItem.Enabled := True;
+  Result := True;
+end;
+
+function TNodeDialog.FwdPortTaken(APort, AExcept: Integer): Boolean;
+var
+  i: Integer;
+begin
+  Result := False;
+  for i := 0 to FFwdList.Count - 1 do
+    if (i <> AExcept) and (FFwdList.Item(i).LocalPort = APort) then
+      Exit(True);
+end;
+
+// Marque les tunnels dont le port est deja pris par un AUTRE hote du
+// document: les deux sessions ouvertes en meme temps, l'une echouerait.
+procedure TNodeDialog.FwdRefreshClashes;
+var
+  i: Integer;
+  it: TRshLocalForward;
+begin
+  for i := 0 to FFwdList.Count - 1 do
+  begin
+    it := FFwdList.Item(i);
+    FFwdList.SetClash(i, it.Enabled and
+      (Length(FFwdModel.LocalPortUsers(it.LocalPort, FFwdConn)) > 0));
+  end;
+end;
+
+procedure TNodeDialog.FwdSelect(Sender: TObject);
+var
+  sel: Integer;
+  it: TRshLocalForward;
+  users: TStringArray;
+  who: string;
+  i: Integer;
+begin
+  sel := FFwdList.Selected;
+  FFwdUpdate.Enabled := sel >= 0;
+  FFwdRemove.Enabled := sel >= 0;
+  FFwdAdd.Enabled := FFwdList.Count < MAX_LOCAL_FORWARDS;
+  if sel < 0 then
+  begin
+    if FFwdList.Count >= MAX_LOCAL_FORWARDS then
+      FwdSay(Format('At most %d tunnels per host.', [MAX_LOCAL_FORWARDS]),
+        clTextSecondary)
+    else
+      FwdSay('', clTextSecondary);
+    Exit;
+  end;
+  it := FFwdList.Item(sel);
+  FFwdLocal.Text := IntToStr(it.LocalPort);
+  FFwdHost.Text := it.DestHost;
+  FFwdPort.Text := IntToStr(it.DestPort);
+  FFwdNote.Text := it.Note;
+  users := FFwdModel.LocalPortUsers(it.LocalPort, FFwdConn);
+  if Length(users) > 0 then
+  begin
+    who := '';
+    for i := 0 to High(users) do
+    begin
+      if i > 0 then who := who + ', ';
+      who := who + '"' + users[i] + '"';
+    end;
+    FwdSay(Format('Local port %d is also used by %s: those sessions and ' +
+      'this one cannot all be connected at the same time.',
+      [it.LocalPort, who]), clScpWarn);
+  end
+  else
+    FwdSay('', clTextSecondary);
+end;
+
+procedure TNodeDialog.FwdToggle(Sender: TObject);
+begin
+  FwdRefreshClashes;
+end;
+
+procedure TNodeDialog.FwdAddClick(Sender: TObject);
+var
+  it: TRshLocalForward;
+  err: string;
+begin
+  if FFwdList.Count >= MAX_LOCAL_FORWARDS then
+  begin
+    FwdSay(Format('At most %d tunnels per host.', [MAX_LOCAL_FORWARDS]),
+      clScpErr);
+    Exit;
+  end;
+  if not FwdReadFields(it, err) then
+  begin
+    FwdSay(err, clScpErr);
+    Exit;
+  end;
+  if FwdPortTaken(it.LocalPort, -1) then
+  begin
+    FwdSay(Format('Local port %d is already used by another tunnel of this ' +
+      'host. Select that tunnel to change it, or pick another port.',
+      [it.LocalPort]), clScpErr);
+    Exit;
+  end;
+  FFwdList.Append(it);
+  FwdRefreshClashes;
+  FwdSelect(nil);
+end;
+
+procedure TNodeDialog.FwdUpdateClick(Sender: TObject);
+var
+  it: TRshLocalForward;
+  err: string;
+  sel: Integer;
+begin
+  sel := FFwdList.Selected;
+  if sel < 0 then Exit;
+  if not FwdReadFields(it, err) then
+  begin
+    FwdSay(err, clScpErr);
+    Exit;
+  end;
+  if FwdPortTaken(it.LocalPort, sel) then
+  begin
+    FwdSay(Format('Local port %d is already used by another tunnel of this ' +
+      'host.', [it.LocalPort]), clScpErr);
+    Exit;
+  end;
+  // la case « actif » se regle dans la liste: la mise a jour ne la touche pas
+  it.Enabled := FFwdList.Item(sel).Enabled;
+  FFwdList.Replace(sel, it);
+  FwdRefreshClashes;
+  FwdSelect(nil);
+end;
+
+procedure TNodeDialog.FwdRemoveClick(Sender: TObject);
+begin
+  if FFwdList.Selected < 0 then Exit;
+  FFwdList.Remove(FFwdList.Selected);
+  if FFwdList.Selected < 0 then
+  begin
+    FFwdLocal.Text := '';
+    FFwdHost.Text := '';
+    FFwdPort.Text := '';
+    FFwdNote.Text := '';
+  end;
+  FwdRefreshClashes;
+end;
+
+// Une saisie restee dans les champs sans Add ni Update: l'enregistrer sans
+// elle perdrait le tunnel qu'on croit avoir declare.
+function TNodeDialog.FwdPending: Boolean;
+var
+  it, cur: TRshLocalForward;
+  err: string;
+  i: Integer;
+begin
+  Result := False;
+  if FFwdList = nil then Exit;
+  if (Trim(FFwdLocal.Text) = '') and (Trim(FFwdHost.Text) = '') and
+     (Trim(FFwdPort.Text) = '') and (Trim(FFwdNote.Text) = '') then
+    Exit;
+  if not FwdReadFields(it, err) then
+    Exit(True);
+  for i := 0 to FFwdList.Count - 1 do
+  begin
+    cur := FFwdList.Item(i);
+    if (cur.LocalPort = it.LocalPort) and (cur.DestHost = it.DestHost) and
+       (cur.DestPort = it.DestPort) and (cur.Note = it.Note) then
+      Exit(False);
+  end;
+  Result := True;
+end;
+
 function BuildConnectionDialog(AModel: TRshModel; const ATitle: string;
   const AName, AHost: string; APort, ATimeout: Integer;
   const ACredUuid, ADesc: string; AProto: TRshProtocol;
@@ -895,14 +1406,18 @@ begin
     Result.FInheritHint := Format('No parent folder provides %s' +
       ' credentials: you will be asked at connect.',
       [UpperCase(PROTOCOL_NAMES[AProto])]);
+  // SSH: General + Tunnels. La barre d'onglets passe au-dessus de la page
+  // General, les autres protocoles gardent une page unique.
+  if AProto = rpSsh then
+    Result.EnableTabs(['General', 'Tunnels']);
   Result.FNameEdit := Result.AddEdit('Name:', AName);
   Result.FHostEdit := Result.AddEdit('Hostname:', AHost);
   Result.FPortEdit := Result.AddEdit('Port:', IntToStr(APort));
   Result.FTimeoutEdit := Result.AddEdit('Timeout (s):', IntToStr(ATimeout));
 
   Result.AddRow('Connect via:');
-  Result.FJumpCombo := TComboBox.Create(Result);
-  Result.FJumpCombo.Parent := Result;
+  Result.FJumpCombo := TThemedCombo.Create(Result);
+  Result.FJumpCombo.Parent := Result.FPage;
   Result.FJumpCombo.SetBounds(EDIT_X, Result.FY, EDIT_W, 26);
   Inc(Result.FY, 34);
   // pas d'heritage a la racine: aucun dossier au-dessus pour porter un bastion
@@ -911,8 +1426,8 @@ begin
 
   if AProto = rpSsh then
   begin
-    Result.FJumpOfferChk := TCheckBox.Create(Result);
-    Result.FJumpOfferChk.Parent := Result;
+    Result.FJumpOfferChk := TThemedCheck.Create(Result);
+    Result.FJumpOfferChk.Parent := Result.FPage;
     Result.FJumpOfferChk.Caption := 'Offer this host as a jump host';
     Result.FJumpOfferChk.SetBounds(EDIT_X, Result.FY, EDIT_W, 22);
     Result.FJumpOfferChk.Checked := (AConnUuid <> '')
@@ -927,48 +1442,51 @@ begin
   end;
 
   Result.AddRow('Authentication:');
-  Result.FCredCombo := TComboBox.Create(Result);
-  Result.FCredCombo.Parent := Result;
+  Result.FCredCombo := TThemedCombo.Create(Result);
+  Result.FCredCombo.Parent := Result.FPage;
   Result.FCredCombo.SetBounds(EDIT_X, Result.FY, EDIT_W, 26);
   Result.FCredCombo.OnChange := @Result.CredComboChanged;
   Inc(Result.FY, 34);
 
-  Result.FManagedCombo := TComboBox.Create(Result);
-  Result.FManagedCombo.Parent := Result;
+  Result.FManagedCombo := TThemedCombo.Create(Result);
+  Result.FManagedCombo.Parent := Result.FPage;
   Result.FManagedCombo.SetBounds(EDIT_X, Result.FY, EDIT_W, 26);
   Result.FManagedCombo.Style := csDropDownList;
   Result.FManagedCombo.Visible := False;
 
   Result.FUserLbl := Result.AddRow('Username:');
   Result.FUserEdit := TEdit.Create(Result);
-  Result.FUserEdit.Parent := Result;
+  Result.FUserEdit.Parent := Result.FPage;
   Result.FUserEdit.SetBounds(EDIT_X, Result.FY, EDIT_W, 26);
   Inc(Result.FY, 34);
 
+  // Domaine: RDP seulement. Ailleurs la ligne reste creee (UpdateAuthRows
+  // la cache) mais ne prend plus de place: 34 px vides de moins.
   Result.FDomainLbl := Result.AddRow('Domain:');
   Result.FDomainEdit := TEdit.Create(Result);
-  Result.FDomainEdit.Parent := Result;
+  Result.FDomainEdit.Parent := Result.FPage;
   Result.FDomainEdit.SetBounds(EDIT_X, Result.FY, EDIT_W, 26);
-  Inc(Result.FY, 34);
+  if AProto = rpRdp then
+    Inc(Result.FY, 34);
 
   Result.FPassLbl := Result.AddRow('Password:');
   Result.FPassEdit := TEdit.Create(Result);
-  Result.FPassEdit.Parent := Result;
+  Result.FPassEdit.Parent := Result.FPage;
   Result.FPassEdit.SetBounds(EDIT_X, Result.FY, EDIT_W - 32, 26);
   Result.FPassEdit.PasswordChar := '*';
-  Result.FPassEye := TSpeedButton.Create(Result);
-  Result.FPassEye.Parent := Result;
+  Result.FPassEye := TThemedButton.Create(Result);
+  Result.FPassEye.Parent := Result.FPage;
   Result.FPassEye.SetBounds(EDIT_X + EDIT_W - 26, Result.FY, 26, 26);
-  Result.FPassEye.Flat := True;
+  Result.FPassEye.Glyph := tbgEye;
+  Result.FPassEye.TabStop := False;
   Result.FPassEye.OnClick := @Result.PassEyeClick;
-  MakeEyeGlyph(Result.FPassEye.Glyph, False);
 
   Result.FKeyLbl := Result.AddRow('Private key:');
   Result.FKeyEdit := TEdit.Create(Result);
-  Result.FKeyEdit.Parent := Result;
+  Result.FKeyEdit.Parent := Result.FPage;
   Result.FKeyEdit.SetBounds(EDIT_X, Result.FY, EDIT_W - 92, 26);
-  Result.FKeyBrowse := TButton.Create(Result);
-  Result.FKeyBrowse.Parent := Result;
+  Result.FKeyBrowse := TThemedButton.Create(Result);
+  Result.FKeyBrowse.Parent := Result.FPage;
   Result.FKeyBrowse.SetBounds(EDIT_X + EDIT_W - 86, Result.FY, 86, 26);
   Result.FKeyBrowse.Caption := 'Browse…';
   Result.FKeyBrowse.OnClick := @Result.BrowseKeyClick;
@@ -976,18 +1494,18 @@ begin
 
   Result.FPhraseLbl := Result.AddRow('Passphrase:');
   Result.FPhraseEdit := TEdit.Create(Result);
-  Result.FPhraseEdit.Parent := Result;
+  Result.FPhraseEdit.Parent := Result.FPage;
   Result.FPhraseEdit.SetBounds(EDIT_X, Result.FY, EDIT_W, 26);
   Result.FPhraseEdit.PasswordChar := '*';
   Inc(Result.FY, 32);
 
   Result.FHintLbl := TLabel.Create(Result);
-  Result.FHintLbl.Parent := Result;
+  Result.FHintLbl.Parent := Result.FPage;
   // AutoSize avant WordWrap: sinon le TLabel s'etire et sort du dialogue
   Result.FHintLbl.AutoSize := False;
   Result.FHintLbl.WordWrap := True;
   Result.FHintLbl.SetBounds(EDIT_X, Result.FY, EDIT_W, 32);
-  Result.FHintLbl.Font.Color := clGrayText;
+  Result.FHintLbl.Tag := THEME_TAG_SECONDARY;
   Inc(Result.FY, 38);
 
   FillCredCombo(Result, AModel, ACredUuid, AProto, AInherit,
@@ -998,7 +1516,7 @@ begin
   begin
     Result.FGwHostLbl := Result.AddRow('RD Gateway:');
     Result.FGwHostEdit := TEdit.Create(Result);
-    Result.FGwHostEdit.Parent := Result;
+    Result.FGwHostEdit.Parent := Result.FPage;
     Result.FGwHostEdit.SetBounds(EDIT_X, Result.FY, EDIT_W, 26);
     Result.FGwHostEdit.Text := AGwHost;
     Result.FGwHostEdit.TextHint := 'gateway.example.com (empty = none)';
@@ -1006,7 +1524,7 @@ begin
 
     Result.FGwPortLbl := Result.AddRow('Gateway port:');
     Result.FGwPortEdit := TEdit.Create(Result);
-    Result.FGwPortEdit.Parent := Result;
+    Result.FGwPortEdit.Parent := Result.FPage;
     Result.FGwPortEdit.SetBounds(EDIT_X, Result.FY, EDIT_W, 26);
     if AGwPort > 0 then
       Result.FGwPortEdit.Text := IntToStr(AGwPort)
@@ -1019,19 +1537,20 @@ begin
   begin
     with TLabel.Create(Result) do
     begin
-      Parent := Result;
+      Parent := Result.FPage;
       AutoSize := False;
       WordWrap := True;
       SetBounds(EDIT_X, Result.FY, EDIT_W, 44);
       Font.Style := [fsBold];
+      Tag := THEME_TAG_WARN;
       Caption := 'Warning: VNC is not encrypted. Keystrokes, screen and ' +
         'clipboard travel in cleartext; RFB truncates the password to ' +
         '8 characters.';
     end;
     Inc(Result.FY, 50);
 
-    Result.FVncActualSizeChk := TCheckBox.Create(Result);
-    Result.FVncActualSizeChk.Parent := Result;
+    Result.FVncActualSizeChk := TThemedCheck.Create(Result);
+    Result.FVncActualSizeChk.Parent := Result.FPage;
     Result.FVncActualSizeChk.Caption :=
       'Show at actual size (1:1, with scrollbars)';
     Result.FVncActualSizeChk.SetBounds(EDIT_X, Result.FY, EDIT_W, 22);
@@ -1041,10 +1560,13 @@ begin
 
   Result.AddRow('Description:');
   Result.FDescEdit := TMemo.Create(Result);
-  Result.FDescEdit.Parent := Result;
+  Result.FDescEdit.Parent := Result.FPage;
   Result.FDescEdit.SetBounds(EDIT_X, Result.FY, EDIT_W, 60);
   Result.FDescEdit.Text := ADesc;
   Inc(Result.FY, 68);
+
+  if AProto = rpSsh then
+    Result.BuildTunnelsPage(AModel, AConnUuid);
 end;
 
 function ApplyCredential(AModel: TRshModel; ADlg: TNodeDialog;
@@ -1136,6 +1658,17 @@ begin
   end;
 end;
 
+// Avant tout batch (modal). Rend False si l'utilisateur doit y revenir: on
+// l'amene sur l'onglet Tunnels, la ou se trouve la saisie en suspens.
+function ConfirmNoPendingTunnel(ADlg: TNodeDialog): Boolean;
+begin
+  Result := not ADlg.FwdPending;
+  if Result then Exit;
+  ADlg.ShowPage(ADlg.FFwdPageIdx);
+  ShowError('A tunnel is typed in the Tunnels tab but was not added.' +
+    LineEnding + 'Click Add (or Update), or clear the fields, then save again.');
+end;
+
 function ShowNewConnectionDialog(AModel: TRshModel;
   const AParentUuid: string; AProtocol: TRshProtocol): string;
 var
@@ -1162,6 +1695,7 @@ begin
     end;
     dlg.AddButtons('Create');
     ApplyUiFont(dlg);
+    ThemeControls(dlg);
     while dlg.ShowModal = mrOk do
     begin
       if not ReadInt(dlg.FPortEdit.Text, port) then
@@ -1174,6 +1708,8 @@ begin
         ShowError('The timeout must be an integer.');
         Continue;
       end;
+      if not ConfirmNoPendingTunnel(dlg) then
+        Continue;
       AModel.BeginBatch;   // une seule transaction: le rollback purge le credential
       try
         if not ApplyCredential(AModel, dlg, Trim(dlg.FNameEdit.Text), '',
@@ -1200,6 +1736,8 @@ begin
         if (AProtocol = rpVnc) and (dlg.FVncActualSizeChk <> nil) and
            dlg.FVncActualSizeChk.Checked then
           AModel.SetVncActualSize(Result, True);
+        if (dlg.FFwdList <> nil) and (dlg.FFwdList.Count > 0) then
+          AModel.SetLocalForwards(Result, dlg.FFwdList.Items);
         AModel.CommitBatch;
         Exit;
       except
@@ -1250,6 +1788,7 @@ begin
   try
     dlg.AddButtons('Save');
     ApplyUiFont(dlg);
+    ThemeControls(dlg);
     while dlg.ShowModal = mrOk do
     begin
       if not ReadInt(dlg.FPortEdit.Text, port) then
@@ -1262,6 +1801,8 @@ begin
         ShowError('The timeout must be an integer.');
         Continue;
       end;
+      if not ConfirmNoPendingTunnel(dlg) then
+        Continue;
       // AVANT le batch: un modal tiendrait le verrou d'ecriture SQLite
       if (dlg.FJumpOfferChk <> nil) and (not dlg.FJumpOfferChk.Checked)
          and AModel.IsJumpHostOffered(AUuid) then
@@ -1297,6 +1838,8 @@ begin
             GwPortOf(dlg));
         if dlg.FVncActualSizeChk <> nil then
           AModel.SetVncActualSize(AUuid, dlg.FVncActualSizeChk.Checked);
+        if dlg.FFwdList <> nil then
+          AModel.SetLocalForwards(AUuid, dlg.FFwdList.Items);
         if (oldCred <> '') and (oldCred <> credUuid) then
           AModel.PurgeOrphanCredentials;
         AModel.CommitBatch;
@@ -1447,7 +1990,7 @@ begin
     dlg.FNameEdit := dlg.AddEdit('Name:', n.DisplayName);
     dlg.AddRow('Description:');
     dlg.FDescEdit := TMemo.Create(dlg);
-    dlg.FDescEdit.Parent := dlg;
+    dlg.FDescEdit.Parent := dlg.FPage;
     dlg.FDescEdit.SetBounds(EDIT_X, dlg.FY, EDIT_W, 72);
     dlg.FDescEdit.Text := n.Description;
     Inc(dlg.FY, 80);
@@ -1462,15 +2005,18 @@ begin
     if AModel.JumpInheritAvailable then
     begin
       dlg.AddRow('Connect via:');
-      dlg.FJumpCombo := TComboBox.Create(dlg);
-      dlg.FJumpCombo.Parent := dlg;
+      dlg.FJumpCombo := TThemedCombo.Create(dlg);
+      dlg.FJumpCombo.Parent := dlg.FPage;
       dlg.FJumpCombo.SetBounds(EDIT_X, dlg.FY, EDIT_W, 26);
       Inc(dlg.FY, 34);
       folderJump := AModel.ResolveFolderJump(AUuid);
       FillJumpCombo(dlg, AModel, '', folderJump);
       lbl := dlg.AddRow('');
+      // AutoSize avant WordWrap: sinon le TLabel s'etire et sort du dialogue
+      lbl.AutoSize := False;
       lbl.SetBounds(EDIT_X, dlg.FY, EDIT_W, 32);
       lbl.WordWrap := True;
+      lbl.Tag := THEME_TAG_SECONDARY;
       lbl.Caption := 'Applies to hosts in this folder whose Connect via is ' +
         'set to inherit. Others keep their own setting.';
       Inc(dlg.FY, 36);
@@ -1521,6 +2067,7 @@ begin
 
     dlg.AddButtons('Save');
     ApplyUiFont(dlg);
+    ThemeControls(dlg);
     while dlg.ShowModal = mrOk do
     begin
       AModel.BeginBatch;

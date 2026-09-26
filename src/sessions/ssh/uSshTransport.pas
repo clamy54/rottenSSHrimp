@@ -8,7 +8,8 @@ unit uSshTransport;
 interface
 
 uses
-  Classes, SysUtils, SyncObjs, ctypes, uSecureBytes, uSessionState;
+  Classes, SysUtils, SyncObjs, ctypes, uSecureBytes, uSessionState,
+  uSshForward;
 
 type
   ESshTransportError = class(Exception);
@@ -57,6 +58,9 @@ type
     ExecCommand: string;
     RequestPty: Boolean;
     KnownKeyTypes: array of string;
+    // Tunnels locaux (-L) a ouvrir une fois le shell en place. Vide pour
+    // tout ce qui n'est pas le terminal d'un hote SSH.
+    Forwards: TSshForwardSpecs;
     constructor Create;
     destructor Destroy; override;
     procedure WipeSecrets;
@@ -66,6 +70,12 @@ type
   TSshStateEvent = procedure(AState: TRemoteSessionState) of object;
   TSshErrorEvent = procedure(const AMessage: string) of object;
   TSshFinishedEvent = procedure(AExitCode: Integer) of object;
+  // Etat de CHAQUE tunnel apres la mise en place, livre une fois.
+  TSshForwardReportEvent = procedure(
+    const AReport: TSshForwardReport) of object;
+  // Tunnel en place qui echoue a l'usage: au plus une fois par tunnel.
+  TSshForwardProblemEvent = procedure(const ASpec: TSshForwardSpec;
+    const AMessage: string) of object;
   TSshHostKeyEvent = procedure(const AInfo: TSshHostKeyInfo;
     var ADecision: TSshHostKeyDecision) of object;
   TSshHostKeyLookup = procedure(const AHost: string; APort: Integer;
@@ -183,10 +193,22 @@ type
     FOnError: TSshErrorEvent;
     FOnFinished: TSshFinishedEvent;
 
+    // Tunnels: vivent dans CE thread, comme la session qui les porte.
+    FForwarder: TSshLocalForwarder;
+    // Rapports vers l'UI, sous FErrLock: poses ici, lus par Queue.
+    FFwdReport: TSshForwardReport;
+    FFwdProblems: array of TSshForwardStatus;
+    FOnForwardReport: TSshForwardReportEvent;
+    FOnForwardProblem: TSshForwardProblemEvent;
+
     procedure PublishData;
     procedure PublishState;
     procedure PublishError;
     procedure PublishFinished;
+    procedure PublishForwardReport;
+    procedure PublishForwardProblems;
+    procedure ForwardProblem(AIndex: Integer; const AMessage: string);
+    procedure StartForwards;
 
     procedure SetState(ANext: TRemoteSessionState);
     procedure Fail(const AMessage: string);
@@ -223,12 +245,17 @@ type
       read FOnHostKeyLookup write FOnHostKeyLookup;
     property OnHostKeySave: TSshHostKeySave
       read FOnHostKeySave write FOnHostKeySave;
+    property OnForwardReport: TSshForwardReportEvent
+      read FOnForwardReport write FOnForwardReport;
+    property OnForwardProblem: TSshForwardProblemEvent
+      read FOnForwardProblem write FOnForwardProblem;
   end;
 
 implementation
 
 uses
-  Sockets, uSockCompat, uLibssh2Api, uSshKnownHosts, uNetResolve, uSshFido, uSshSkKeyGen;
+  Sockets, uSockCompat, uLibssh2Api, uSshKnownHosts, uNetResolve, uSshFido, uSshSkKeyGen,
+  uLog;
 
 // Terminate n'interrompt ni un handshake bloque en lecture ni une auth en cours:
 // couper la socket est le seul levier.
@@ -563,6 +590,87 @@ begin
     FOnFinished(FExitCode);
 end;
 
+procedure TSshTransport.PublishForwardReport;
+var
+  rep: TSshForwardReport;
+begin
+  FErrLock.Acquire;
+  try
+    rep := Copy(FFwdReport);
+  finally
+    FErrLock.Release;
+  end;
+  if Assigned(FOnForwardReport) then
+    FOnForwardReport(rep);
+end;
+
+// Vide TOUTE la file: plusieurs Queue peuvent se suivre, le premier livre
+// tout et les suivants trouvent la file vide.
+procedure TSshTransport.PublishForwardProblems;
+var
+  items: array of TSshForwardStatus;
+  i: Integer;
+begin
+  FErrLock.Acquire;
+  try
+    items := FFwdProblems;
+    FFwdProblems := nil;
+  finally
+    FErrLock.Release;
+  end;
+  if Assigned(FOnForwardProblem) then
+    for i := 0 to High(items) do
+      FOnForwardProblem(items[i].Spec, items[i].Detail);
+end;
+
+// Thread de session: appelee par le forwarder, au plus une fois par tunnel.
+procedure TSshTransport.ForwardProblem(AIndex: Integer;
+  const AMessage: string);
+var
+  n: Integer;
+begin
+  if (AIndex < 0) or (AIndex > High(FParams.Forwards)) then Exit;
+  // hotes et ports: en confidentiel, on ne trace que le fait
+  if LogIsConfidential then
+    LogWarning('tunnel: problem (details hidden in confidential mode)')
+  else
+    LogWarning(Format('tunnel %d: %s', [FParams.Forwards[AIndex].LocalPort,
+      AMessage]));
+  FErrLock.Acquire;
+  try
+    n := Length(FFwdProblems);
+    SetLength(FFwdProblems, n + 1);
+    FFwdProblems[n].Spec := FParams.Forwards[AIndex];
+    FFwdProblems[n].Fail := sffOther;
+    FFwdProblems[n].Detail := AMessage;
+  finally
+    FErrLock.Release;
+  end;
+  if Assigned(FOnForwardProblem) then
+    Queue(@PublishForwardProblems);
+end;
+
+// Apres l'ouverture du shell: un tunnel n'a de sens que dans une session
+// etablie, et un hote qui refuse le shell ne doit pas garder de port ouvert.
+procedure TSshTransport.StartForwards;
+var
+  rep: TSshForwardReport;
+begin
+  if Length(FParams.Forwards) = 0 then Exit;
+  FForwarder := TSshLocalForwarder.Create(FSession, FParams.Forwards,
+    FParams.ConnectTimeoutS);
+  FForwarder.OnProblem := @ForwardProblem;
+  rep := FForwarder.Listen;
+  FErrLock.Acquire;
+  try
+    FFwdReport := rep;
+  finally
+    FErrLock.Release;
+  end;
+  if Assigned(FOnForwardReport) then
+    Queue(@PublishForwardReport);
+end;
+
 procedure TSshTransport.Fail(const AMessage: string);
 begin
   FErrLock.Acquire;
@@ -658,7 +766,7 @@ function TSshTransport.WaitSocketEx(AMs: Integer;
   out AReadable: Boolean): Boolean;
 var
   rfds, wfds: TSockSet;
-  dir, rc: cint;
+  dir, rc, maxFd: cint;
   wantRead: Boolean;
 begin
   SockSetZero(rfds);
@@ -669,7 +777,12 @@ begin
     SockSetAdd(FSock, rfds);
   if (dir and LIBSSH2_SESSION_BLOCK_OUTBOUND) <> 0 then
     SockSetAdd(FSock, wfds);
-  rc := SockSelect(FSock + 1, @rfds, @wfds, nil, AMs);
+  // les clients des tunnels reveillent la boucle aussi: sans eux, une frappe
+  // dans un client tunnele attendrait la fin de la tranche
+  maxFd := FSock;
+  if FForwarder <> nil then
+    FForwarder.AddWaitFds(rfds, wfds, maxFd);
+  rc := SockSelect(maxFd + 1, @rfds, @wfds, nil, AMs);
   Result := rc > 0;
   AReadable := (rc > 0) and wantRead and SockSetHas(FSock, rfds);
 end;
@@ -1370,7 +1483,7 @@ var
   secondsToNext: cint;
   rc: cint;
   lastRxMs, deadMs: QWord;
-  readable: Boolean;
+  readable, fwdRx: Boolean;
 begin
   libssh2_session_set_blocking(FSession, 0);
   lastRxMs := GetTickCount64;
@@ -1382,6 +1495,8 @@ begin
     // want_reply=1: le serveur DOIT repondre, et la sonde est indiscernable du
     // trafic SSH -- aucun pare-feu ne la filtre.
     libssh2_keepalive_config(FSession, 1, FParams.KeepaliveS);
+
+  StartForwards;
 
   pending := '';
   resizeInFlight := False;
@@ -1484,6 +1599,16 @@ begin
     if libssh2_channel_eof(FChannel) <> 0 then
       Break;
 
+    // Apres le shell: un envoi du terminal reste prioritaire, et un envoi de
+    // tunnel en suspens est rejoue ici a chaque tour (contrat libssh2).
+    if FForwarder <> nil then
+    begin
+      if FForwarder.Pump(fwdRx) then
+        idle := False;
+      if fwdRx then
+        lastRxMs := GetTickCount64;
+    end;
+
     if FParams.KeepaliveS > 0 then
     begin
       secondsToNext := 0;
@@ -1513,6 +1638,11 @@ procedure TSshTransport.Cleanup;
 var
   sockToClose: cint;
 begin
+  // Ecoutes fermees AVANT l'adieu SSH: un client qui arrive maintenant
+  // tomberait sur une session qui s'en va. Les canaux, eux, partent avec la
+  // session (session_free): on ne les touche plus.
+  if FForwarder <> nil then
+    FForwarder.CloseAll;
   if FChannel <> nil then
   begin
     libssh2_session_set_blocking(FSession, 1);
@@ -1532,6 +1662,7 @@ begin
     libssh2_session_free(FSession);
     FSession := nil;
   end;
+  FreeAndNil(FForwarder);
   // Depublier AVANT de fermer: Shutdown ne doit pas viser un descripteur mourant.
   sockToClose := TakeSock;
   if sockToClose >= 0 then

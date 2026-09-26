@@ -12,7 +12,7 @@ interface
 
 uses
   Classes, SysUtils, Types, Controls, StdCtrls, Graphics, LCLType
-  {$IFDEF LCLGtk2}, gtk2, gdk2, glib2{$ENDIF};
+  {$IFDEF LCLGtk2}, uThemedControls{$ENDIF};
 
 type
   TRottenSearchBox = class(TCustomControl)
@@ -98,46 +98,6 @@ begin
   bl := (((ca shr 16) and $FF) * P + ((cb shr 16) and $FF) * (100 - P)) div 100;
   Result := TColor(r or (g shl 8) or (bl shl 16));
 end;
-
-{$IFDEF LCLGtk2}
-// Les themes GTK2 a moteur (Yaru) ignorent modify_base: d'ou un GtkStyle neuf.
-procedure ForceGtk2EntryColors(AEdit: TWinControl; ABase, AText: TColor);
-  function GC(c: TColor): TGdkColor;
-  var r: LongInt;
-  begin
-    r := ColorToRGB(c);
-    Result.pixel := 0;
-    Result.red   := (r and $FF) * 257;         // 0..255 -> 0..65535
-    Result.green := ((r shr 8) and $FF) * 257;
-    Result.blue  := ((r shr 16) and $FF) * 257;
-  end;
-var
-  w: PGtkWidget;
-  cb, ct: TGdkColor;
-  st: TGtkStateType;
-  style: PGtkStyle;
-begin
-  AEdit.HandleNeeded;
-  if not AEdit.HandleAllocated then Exit;
-  w := PGtkWidget(AEdit.Handle);
-  cb := GC(ABase);
-  ct := GC(AText);
-  style := gtk_style_new;
-  for st := GTK_STATE_NORMAL to GTK_STATE_INSENSITIVE do
-  begin
-    style^.base[st] := cb;
-    style^.bg[st]   := cb;
-    style^.text[st] := ct;
-    style^.fg[st]   := ct;
-  end;
-  // padding a zero: sinon l'entry depasse le pill et recouvre sa bordure
-  style^.xthickness := 0;
-  style^.ythickness := 0;
-  gtk_widget_set_style(w, style);
-  g_object_unref(style);   // le widget en detient desormais une reference
-  gtk_widget_queue_resize(w);
-end;
-{$ENDIF}
 
 
 constructor TRottenSearchBox.Create(AOwner: TComponent);
@@ -320,7 +280,8 @@ begin
   // au premier Paint l'entry est realise: moment sur pour reposer son fond
   if (not FGtkColorDone) and FEdit.HandleAllocated then
   begin
-    ForceGtk2EntryColors(FEdit, FColField, FColText);
+    // padding a zero: sinon l'entry depasse le pill et recouvre sa bordure
+    ForceGtk2EntryColors(FEdit, FColField, FColText, True);
     FEdit.AdjustSize;
     LayoutEdit;
     FGtkColorDone := True;
@@ -411,7 +372,7 @@ begin
   FGtkColorDone := False;
   if FEdit.HandleAllocated then
   begin
-    ForceGtk2EntryColors(FEdit, AField, AText);
+    ForceGtk2EntryColors(FEdit, AField, AText, True);
     FGtkColorDone := True;
   end;
   {$ENDIF}

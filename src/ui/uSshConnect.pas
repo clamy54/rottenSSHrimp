@@ -34,7 +34,7 @@ implementation
 
 uses
   uSecureBytes, uRshValidation, uSshKnownHosts, uTheme, uAuthPrompt,
-  uSshTunnel, uSshTunnelConnect, uLibssh2Api, uSshFido;
+  uSshTunnel, uSshTunnelConnect, uLibssh2Api, uSshFido, uSshForward;
 
 // Identifiant RESOLU d'une connexion (heritage compris), nil si aucun ou si
 // quelque chose cloche -- les deux appelants traitent nil comme « dans le
@@ -335,6 +335,35 @@ begin
   end;
 end;
 
+// Le document est une entree non fiable: chaque destination est revalidee
+// avant de partir vers le serveur, comme l'hote de la session.
+function EnabledForwards(AModel: TRshModel;
+  const AConnUuid: string): TSshForwardSpecs;
+var
+  all: TRshLocalForwards;
+  i, n: Integer;
+  host, err: string;
+begin
+  Result := nil;
+  all := AModel.LoadLocalForwards(AConnUuid);
+  n := 0;
+  for i := 0 to High(all) do
+  begin
+    if not all[i].Enabled then Continue;
+    host := all[i].DestHost;
+    if (not ValidateHostname(host, err)) or
+       (not ValidatePort(all[i].DestPort, err)) or
+       (all[i].LocalPort < FORWARD_LOCAL_PORT_MIN) or
+       (all[i].LocalPort > 65535) then
+      Continue;
+    SetLength(Result, n + 1);
+    Result[n].LocalPort := all[i].LocalPort;
+    Result[n].DestHost := host;
+    Result[n].DestPort := all[i].DestPort;
+    Inc(n);
+  end;
+end;
+
 function StartSshSession(APages: TPageControl; ADoc: TRshDocument;
   AModel: TRshModel; AManager: TSessionManager; const AConnUuid: string;
   ANotice: TSessionNoticeEvent; out AErr: string): TSshSessionTab;
@@ -359,6 +388,10 @@ begin
     displayName, AErr) then
     Exit;
   try
+    // Tunnels: le TERMINAL seulement. BuildSshConnectParams sert aussi au
+    // SFTP, aux conteneurs et aux rebonds; y mettre les tunnels ferait se
+    // disputer les memes ports par plusieurs onglets du meme hote.
+    params.Forwards := EnabledForwards(AModel, AConnUuid);
     // seule la SOCKET bouge, la cle d'hote reste celle de la cible
     jumpUuid := AModel.ResolveJumpVia(AConnUuid);
     if jumpUuid <> '' then

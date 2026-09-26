@@ -106,6 +106,30 @@ Or the firewall whose new rule you tested thoroughly, from the wrong side. Or
 the one remaining machine in that subnet still answering, which you are now
 going to use as a raft.
 
+**SSH tunnels.** The *Tunnels* tab of an SSH host's properties holds its local
+forwards, `ssh -L` style: a port on this computer, a destination as seen from
+the server. They open with the host's SSH terminal, over that same connection
+-- no second login -- and close with it; a File Transfer tab to the same host
+leaves them alone, so the two never fight over a port. Each one can be switched
+off without being deleted, and a port another host already claims is flagged
+while you type, because the two sessions cannot both have it at the same time.
+
+They listen on the loopback only, `127.0.0.1` and `::1`: a tunnel on a network
+interface would let any machine that can reach yours walk into the server's
+network through it. Local ports start at 1025, since nothing here runs as
+administrator or root. When some tunnels cannot be set up, a single banner
+across the top of the terminal lists which ones and why -- port already taken
+(by which of your sessions, when it is one of them), refused by the server,
+destination unreachable -- instead of one dialog per tunnel, and the session
+carries on. One limit worth knowing, and it comes from libssh2: a session opens
+one tunnel connection at a time, so a destination that silently drops packets
+holds up new connections through the other tunnels until the attempt gives up,
+up to a minute. The terminal itself is not affected.
+
+Documents gain a table for this; an existing document is upgraded the first
+time it is opened for writing, and from then on older versions of the
+application will decline to open it rather than lose the tunnels.
+
 **File transfer.** Right-click an SSH host, *File Transfer*, and get a
 two-panel file manager in a tab: local on the left, remote on the right, a
 splitter between them, and multi-select with Ctrl and Shift. Send a selection
@@ -235,8 +259,8 @@ is broken. There will not be a convenient moment later.
 as terminal tabs like anything else. Because eventually the incident is inside
 the cluster, and `kubectl exec` from memory at 2 a.m. has never once gone well.
 
-**Imports.** Your `~/.ssh/config`, a CSV of hostnames, or a JSON export from
-another instance. Export a subtree to hand a colleague exactly the six machines
+**Imports.** Your `~/.ssh/config` (`LocalForward` lines included), a CSV of
+hostnames, or a JSON export from another instance, tunnels and all. Export a subtree to hand a colleague exactly the six machines
 they need, which is six more than most people are comfortable giving and about
 forty fewer than the last person handed over by pasting the whole file into a
 chat window.

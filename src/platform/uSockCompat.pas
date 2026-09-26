@@ -33,6 +33,15 @@ function SockLastError: cint;
 function SockErrIsInProgress(ACode: cint): Boolean;
 function SockErrIsWouldBlock(ACode: cint): Boolean;
 function SockErrIsIntr(ACode: cint): Boolean;
+// Echecs de bind a distinguer pour l'utilisateur: port deja pris, ou refuse
+// (sous Windows, les plages reservees par Hyper-V/WSL repondent ACCES).
+function SockErrIsAddrInUse(ACode: cint): Boolean;
+function SockErrIsAccess(ACode: cint): Boolean;
+
+// select() ne sait pas surveiller n'importe quel descripteur: sous Unix, un
+// numero >= FD_SETSIZE deborderait le fd_set. Sous Windows c'est le NOMBRE
+// qui est borne (64), a l'appelant de compter.
+function SockFitsInSet(AFd: cint): Boolean;
 
 function SockGetPendingError(AFd: cint): cint;
 
@@ -123,6 +132,21 @@ end;
 function SockErrIsIntr(ACode: cint): Boolean;
 begin
   Result := ACode = WSAEINTR;
+end;
+
+function SockErrIsAddrInUse(ACode: cint): Boolean;
+begin
+  Result := ACode = WSAEADDRINUSE;
+end;
+
+function SockErrIsAccess(ACode: cint): Boolean;
+begin
+  Result := ACode = WSAEACCES;
+end;
+
+function SockFitsInSet(AFd: cint): Boolean;
+begin
+  Result := AFd >= 0;
 end;
 
 procedure SockShutdownBoth(AFd: cint);
@@ -251,6 +275,21 @@ end;
 function SockErrIsIntr(ACode: cint): Boolean;
 begin
   Result := ACode = ESysEINTR;
+end;
+
+function SockErrIsAddrInUse(ACode: cint): Boolean;
+begin
+  Result := ACode = ESysEADDRINUSE;
+end;
+
+function SockErrIsAccess(ACode: cint): Boolean;
+begin
+  Result := (ACode = ESysEACCES) or (ACode = ESysEPERM);
+end;
+
+function SockFitsInSet(AFd: cint): Boolean;
+begin
+  Result := (AFd >= 0) and (AFd < FD_MAXFDSET);
 end;
 
 procedure SockShutdownBoth(AFd: cint);

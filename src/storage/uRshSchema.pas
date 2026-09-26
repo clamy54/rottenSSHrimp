@@ -222,6 +222,24 @@ const
     ' connection_uuid TEXT PRIMARY KEY' +
     ' REFERENCES connections(node_uuid) ON DELETE CASCADE )';
 
+  // v13: tunnels locaux (ssh -L) d'une connexion SSH. Le port local est la
+  // cle: deux tunnels d'un meme hote ne peuvent pas ecouter au meme endroit.
+  // Plancher 1025: l'appli ne tourne pas en administrateur, un port reserve
+  // echouerait a chaque connexion. `kind` prevoit le SOCKS dynamique (-D),
+  // qui n'a pas de destination: l'ajouter plus tard ne reconstruira rien.
+  DDL_SSH_FORWARDS =
+    'CREATE TABLE ssh_forwards (' +
+    ' connection_uuid TEXT NOT NULL REFERENCES connections(node_uuid) ON DELETE CASCADE,' +
+    ' local_port INTEGER NOT NULL CHECK (local_port BETWEEN 1025 AND 65535),' +
+    ' kind TEXT NOT NULL DEFAULT ''local'' CHECK (kind IN (''local'', ''dynamic'')),' +
+    ' dest_host TEXT NOT NULL DEFAULT '''',' +
+    ' dest_port INTEGER NOT NULL DEFAULT 0 CHECK (dest_port BETWEEN 0 AND 65535),' +
+    ' enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),' +
+    ' note TEXT NOT NULL DEFAULT '''',' +
+    ' sort_order INTEGER NOT NULL DEFAULT 0,' +
+    ' PRIMARY KEY (connection_uuid, local_port),' +
+    ' CHECK (kind <> ''local'' OR (dest_host <> '''' AND dest_port >= 1)) )';
+
   // v6: presence = "proposer dans Connect via". PIEGE: connections(node_uuid)
   // porte 9 FK entrantes; une reconstruction recopie TOUT, node_uuid preserve.
   DDL_JUMP_HOST_OFFERS =
@@ -570,6 +588,32 @@ begin
   end;
 end;
 
+function SchemaObjectsV12: specialize TArray<TSchemaObj>;
+var
+  base: specialize TArray<TSchemaObj>;
+  i: Integer;
+begin
+  base := SchemaObjectsV11;
+  SetLength(Result, Length(base) + 2);
+  for i := 0 to High(base) do
+    Result[i] := base[i];
+  Result[High(Result) - 1] := Obj(soTable, 'folder_jump', DDL_FOLDER_JUMP);
+  Result[High(Result)] :=
+    Obj(soTable, 'connection_jump_inherit', DDL_CONNECTION_JUMP_INHERIT);
+end;
+
+function ExpectedSchema: specialize TArray<TSchemaObj>;
+var
+  base: specialize TArray<TSchemaObj>;
+  i: Integer;
+begin
+  base := SchemaObjectsV12;
+  SetLength(Result, Length(base) + 1);
+  for i := 0 to High(base) do
+    Result[i] := base[i];
+  Result[High(Result)] := Obj(soTable, 'ssh_forwards', DDL_SSH_FORWARDS);
+end;
+
 function ExpectedSchemaFor(AVersion: Integer): specialize TArray<TSchemaObj>;
 begin
   case AVersion of
@@ -584,24 +628,11 @@ begin
     9: Result := SchemaObjectsV9;
     10: Result := SchemaObjectsV10;
     11: Result := SchemaObjectsV11;
-    12: Result := ExpectedSchema;
+    12: Result := SchemaObjectsV12;
+    13: Result := ExpectedSchema;
   else
     raise Exception.CreateFmt('unknown schema version: %d', [AVersion]);
   end;
-end;
-
-function ExpectedSchema: specialize TArray<TSchemaObj>;
-var
-  base: specialize TArray<TSchemaObj>;
-  i: Integer;
-begin
-  base := SchemaObjectsV11;
-  SetLength(Result, Length(base) + 2);
-  for i := 0 to High(base) do
-    Result[i] := base[i];
-  Result[High(Result) - 1] := Obj(soTable, 'folder_jump', DDL_FOLDER_JUMP);
-  Result[High(Result)] :=
-    Obj(soTable, 'connection_jump_inherit', DDL_CONNECTION_JUMP_INHERIT);
 end;
 
 // Listes FIGEES (entrent dans le texte des migrations, couvert par checksum).
@@ -829,6 +860,13 @@ begin
   Result := DDL_FOLDER_JUMP + ';' + DDL_CONNECTION_JUMP_INHERIT + ';';
 end;
 
+// Table neuve et vide: un document existant garde ses sessions telles quelles,
+// aucun tunnel ne s'ouvre tant qu'on n'en a pas declare.
+function MigrationDdl13: string;
+begin
+  Result := DDL_SSH_FORWARDS + ';';
+end;
+
 function MigrationDdl(AVersion: Integer): string;
 var
   o: TSchemaObj;
@@ -851,6 +889,7 @@ begin
     10: Result := MigrationDdl10;
     11: Result := MigrationDdl11;
     12: Result := MigrationDdl12;
+    13: Result := MigrationDdl13;
   else
     raise Exception.CreateFmt('unknown migration: %d', [AVersion]);
   end;

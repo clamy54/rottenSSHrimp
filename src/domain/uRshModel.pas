@@ -83,6 +83,30 @@ type
     Port: Integer;
   end;
 
+  // v13: tunnel local (ssh -L). Ecoute sur la boucle locale de CE poste et
+  // ressort cote serveur SSH vers DestHost:DestPort. Enabled=False garde le
+  // tunnel dans le document sans l'ouvrir.
+  TRshLocalForward = record
+    LocalPort: Integer;
+    DestHost: string;
+    DestPort: Integer;
+    Enabled: Boolean;
+    Note: string;
+  end;
+
+  TRshLocalForwards = array of TRshLocalForward;
+
+const
+  // Au-dela, la boucle de session surveillerait trop de sockets pour un seul
+  // select (64 sous Windows, ecoutes et connexions comprises).
+  MAX_LOCAL_FORWARDS = 16;
+  // Sous 1024 il faut etre administrateur (root sous Unix): l'ouverture
+  // echouerait a chaque connexion.
+  FORWARD_LOCAL_PORT_MIN = 1025;
+  FORWARD_NOTE_MAX = 200;
+
+type
+
   // Stocke en texte: un ajout dans l'enum ne relit pas l'existant
   TSessionResult = (srOk, srFailed, srCancelled);
 
@@ -188,6 +212,19 @@ type
     function IsJumpHostOffered(const AConnUuid: string): Boolean;
     procedure SetJumpHostOffered(const AConnUuid: string; AOffered: Boolean);
     procedure LoadJumpHostOffers(AList: TStrings);
+    // v13. False sur un document plus ancien ouvert en lecture seule: la
+    // table n'existe pas, les tunnels ne s'affichent ni ne s'enregistrent.
+    function ForwardsAvailable: Boolean;
+    // Dans l'ordre de saisie. Actifs ET inactifs: c'est au connect de trier.
+    function LoadLocalForwards(const AConnUuid: string): TRshLocalForwards;
+    // Remplace TOUTE la liste de l'hote. Valide avant d'ecrire: port local
+    // 1025..65535 et unique, destination valide, SSH seulement.
+    procedure SetLocalForwards(const AConnUuid: string;
+      const AForwards: TRshLocalForwards);
+    // Noms des AUTRES connexions qui ont un tunnel actif sur ce port local:
+    // ouvertes en meme temps, l'une des deux ne pourrait pas ecouter.
+    function LocalPortUsers(ALocalPort: Integer;
+      const AExceptConn: string): TStringArray;
     function CountJumpDependents(const AConnUuid: string): Integer;
     // Connexions HORS du sous-arbre d'ANodeUuid qui dependent d'un noeud
     // DEDANS: bastion, hote de conteneur, hote de pod. Supprimer le sous-arbre
@@ -1513,6 +1550,180 @@ begin
   end;
 end;
 
+function TRshModel.ForwardsAvailable: Boolean;
+var
+  st: TSqliteStmt;
+begin
+  st := Db.Prepare('SELECT 1 FROM sqlite_master WHERE type=''table''' +
+    ' AND name=''ssh_forwards'' LIMIT 1;');
+  try
+    Result := st.Step;
+  finally
+    st.Free;
+  end;
+end;
+
+function TRshModel.LoadLocalForwards(
+  const AConnUuid: string): TRshLocalForwards;
+var
+  st: TSqliteStmt;
+  n: Integer;
+begin
+  Result := nil;
+  if (AConnUuid = '') or (not ForwardsAvailable) then Exit;
+  // `kind` filtre: une ligne 'dynamic' n'a pas de destination, et ce code ne
+  // sait pas l'ouvrir. La lire comme un tunnel local viserait « :0 ».
+  st := Db.Prepare('SELECT local_port, dest_host, dest_port, enabled, note' +
+    ' FROM ssh_forwards WHERE connection_uuid=? AND kind=''local''' +
+    ' ORDER BY sort_order, local_port;');
+  try
+    st.BindText(1, AConnUuid);
+    n := 0;
+    while st.Step do
+    begin
+      // plafond cote lecture aussi: un fichier forge ne doit pas faire ouvrir
+      // cent ecoutes au connect
+      if n >= MAX_LOCAL_FORWARDS then Break;
+      SetLength(Result, n + 1);
+      Result[n].LocalPort := st.ColInt64(0);
+      Result[n].DestHost := st.ColText(1);
+      Result[n].DestPort := st.ColInt64(2);
+      Result[n].Enabled := st.ColInt64(3) <> 0;
+      Result[n].Note := st.ColText(4);
+      Inc(n);
+    end;
+  finally
+    st.Free;
+  end;
+end;
+
+procedure TRshModel.SetLocalForwards(const AConnUuid: string;
+  const AForwards: TRshLocalForwards);
+var
+  clean: TRshLocalForwards;
+  n: TRshNode;
+  st: TSqliteStmt;
+  i, j: Integer;
+  err: string;
+begin
+  if AConnUuid = '' then Exit;
+  if not ForwardsAvailable then
+  begin
+    if Length(AForwards) = 0 then Exit;
+    raise EModelError.Create('This document uses an older format and cannot ' +
+      'store SSH tunnels.');
+  end;
+  n := GetNode(AConnUuid);
+  try
+    if (n.Kind <> nkConnection) or (n.Protocol <> rpSsh) then
+    begin
+      if Length(AForwards) = 0 then Exit;
+      raise EModelError.Create('Only an SSH connection can carry tunnels.');
+    end;
+  finally
+    n.Free;
+  end;
+  if Length(AForwards) > MAX_LOCAL_FORWARDS then
+    raise EModelError.CreateFmt('At most %d tunnels per host.',
+      [MAX_LOCAL_FORWARDS]);
+
+  // Copie normalisee: ValidateHostname rogne par var, et l'appelant garde sa
+  // liste telle qu'il l'a saisie.
+  clean := Copy(AForwards);
+  for i := 0 to High(clean) do
+  begin
+    if (clean[i].LocalPort < FORWARD_LOCAL_PORT_MIN) or
+       (clean[i].LocalPort > 65535) then
+      raise EModelError.CreateFmt('Tunnel %d: the local port must be between ' +
+        '%d and 65535.', [i + 1, FORWARD_LOCAL_PORT_MIN]);
+    if not ValidateHostname(clean[i].DestHost, err) then
+      raise EModelError.CreateFmt('Tunnel %d (local port %d): %s',
+        [i + 1, clean[i].LocalPort, err]);
+    if not ValidatePort(clean[i].DestPort, err) then
+      raise EModelError.CreateFmt('Tunnel %d (local port %d): %s',
+        [i + 1, clean[i].LocalPort, err]);
+    clean[i].Note := Trim(clean[i].Note);
+    for j := 1 to Length(clean[i].Note) do
+      if clean[i].Note[j] < #32 then
+        raise EModelError.CreateFmt('Tunnel %d: the note contains control ' +
+          'characters.', [i + 1]);
+    if Length(clean[i].Note) > FORWARD_NOTE_MAX then
+      raise EModelError.CreateFmt('Tunnel %d: the note exceeds %d characters.',
+        [i + 1, FORWARD_NOTE_MAX]);
+    for j := 0 to i - 1 do
+      if clean[j].LocalPort = clean[i].LocalPort then
+        raise EModelError.CreateFmt('Two tunnels listen on local port %d.',
+          [clean[i].LocalPort]);
+  end;
+
+  Db.BeginImmediate;
+  try
+    st := Db.Prepare('DELETE FROM ssh_forwards WHERE connection_uuid=?' +
+      ' AND kind=''local'';');
+    try
+      st.BindText(1, AConnUuid);
+      st.Step;
+    finally
+      st.Free;
+    end;
+    for i := 0 to High(clean) do
+    begin
+      st := Db.Prepare('INSERT INTO ssh_forwards(connection_uuid, local_port,' +
+        ' kind, dest_host, dest_port, enabled, note, sort_order)' +
+        ' VALUES(?,?,''local'',?,?,?,?,?);');
+      try
+        st.BindText(1, AConnUuid);
+        st.BindInt64(2, clean[i].LocalPort);
+        st.BindText(3, clean[i].DestHost);
+        st.BindInt64(4, clean[i].DestPort);
+        st.BindInt64(5, Ord(clean[i].Enabled));
+        st.BindText(6, clean[i].Note);
+        st.BindInt64(7, i);
+        st.Step;
+      finally
+        st.Free;
+      end;
+    end;
+    st := Db.Prepare('UPDATE nodes SET updated_at_ms=? WHERE uuid=?;');
+    try
+      st.BindInt64(1, NowUtcMs);
+      st.BindText(2, AConnUuid);
+      st.Step;
+    finally
+      st.Free;
+    end;
+    Db.Commit;
+  except
+    Db.Rollback;
+    raise;
+  end;
+  FDoc.MarkDirty;
+end;
+
+function TRshModel.LocalPortUsers(ALocalPort: Integer;
+  const AExceptConn: string): TStringArray;
+var
+  st: TSqliteStmt;
+begin
+  Result := nil;
+  if not ForwardsAvailable then Exit;
+  st := Db.Prepare('SELECT n.display_name FROM ssh_forwards f' +
+    ' JOIN nodes n ON n.uuid = f.connection_uuid' +
+    ' WHERE f.local_port=? AND f.enabled=1 AND f.connection_uuid<>?' +
+    ' ORDER BY n.display_name;');
+  try
+    st.BindInt64(1, ALocalPort);
+    st.BindText(2, AExceptConn);
+    while st.Step do
+    begin
+      SetLength(Result, Length(Result) + 1);
+      Result[High(Result)] := st.ColText(0);
+    end;
+  finally
+    st.Free;
+  end;
+end;
+
 function TRshModel.CountJumpDependents(const AConnUuid: string): Integer;
 var
   st: TSqliteStmt;
@@ -2340,6 +2551,13 @@ begin
     ' view_actual_size FROM vnc_connection_settings WHERE connection_uuid=?;');
   CopyVerbatim('INSERT INTO jump_host_offers(connection_uuid)' +
     ' SELECT ? FROM jump_host_offers WHERE connection_uuid=?;');
+  // v13: la copie garde ses tunnels, memes ports compris. Ouverts en meme
+  // temps, l'original et la copie se disputeront ces ports: le connect le dira.
+  if ForwardsAvailable then
+    CopyVerbatim('INSERT INTO ssh_forwards(connection_uuid, local_port, kind,' +
+      ' dest_host, dest_port, enabled, note, sort_order) SELECT ?, local_port,' +
+      ' kind, dest_host, dest_port, enabled, note, sort_order FROM ssh_forwards' +
+      ' WHERE connection_uuid=?;');
 
   // ssh_connection_settings: jump_connection_uuid a remapper, NULLs preserves
   st := Db.Prepare('SELECT profile_uuid, jump_connection_uuid, startup_command' +
