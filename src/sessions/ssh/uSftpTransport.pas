@@ -42,8 +42,6 @@ type
     // Muet lui aussi, le type reste inconnu et le moteur refusera l'entree.
     function RefineUnknownType(const ADir: string; var AEntry: TScpEntry;
       out AErr: TScpError): Boolean;
-    function DescribeLink(const ADir: string; var AEntry: TScpEntry;
-      out AErr: TScpError): Boolean;
     function SameFileAsPath(AHandle: TScpFileHandle; const AOp, AWhat: string;
       AContext: TScpAccessContext; out AErr: TScpError): Boolean;
     function SetTimesByHandle(AHandle: TScpFileHandle; AMTimeUtc: Int64;
@@ -556,6 +554,24 @@ begin
   if n >= 4 then AEntry.Group := DisplaySafeName(parts[3]);
 end;
 
+// La cible d'un lien telle que le longentry la montre (format « ls -l »:
+// ... nom -> cible). ZERO aller-retour: interroger le serveur lien par lien
+// (readlink puis stat) coutait trois echanges PAR entree, et un /usr/lib en
+// compte des centaines -- le listing prenait des minutes. Chaine vide si le
+// serveur n'envoie pas ce format: l'affichage de la cible est cosmetique,
+// il ne vaut pas de rendre chaque listing proportionnel a la latence.
+function LinkTargetFromLongEntry(const ALong, AName: string): string;
+var
+  i: Integer;
+begin
+  Result := '';
+  // Le nom suivi de la fleche: un « root » proprietaire est suivi du groupe,
+  // pas d'une fleche, donc la premiere occurrence est bien le nom du lien.
+  i := Pos(AName + ' -> ', ALong);
+  if i = 0 then Exit;
+  Result := DisplaySafeName(Copy(ALong, i + Length(AName) + 4, MaxInt));
+end;
+
 function TSftpFileSystem.List(const APath: string;
   out AEntries: TScpEntryArray; out AErr: TScpError): Boolean;
 var
@@ -566,10 +582,11 @@ var
   rc: cint;
   deadline: QWord;
   n: Integer;
-  name: string;
+  name, long: string;
   p: AnsiString;
   closeRc: cint;
-  listErr, closeErr: TScpError;
+  listErr, closeErr, statErr: TScpError;
+  statEntry: TScpEntry;
 begin
   SetLength(AEntries, 0);
   AErr := NoScpError;
@@ -590,6 +607,15 @@ begin
   begin
     AErr := LastError('Listing', APath,
       libssh2_session_last_errno(FOwner.FSession), acDir);
+    // Le listing n'etablit plus la cible des liens: entrer dans un lien vers
+    // un fichier echoue ICI. Or ENOTDIR n'a pas de code en SFTP v3 -- OpenSSH
+    // repond « no such file ». Un stat du chemin remet le vrai motif; il ne
+    // coute qu'un echange, et seulement sur ce chemin d'echec.
+    if AErr.Kind in [sekNotFound, sekOther] then
+      if Stat(APath, True, statEntry, statErr) and
+         (not statEntry.IsDir) then
+        AErr := MakeScpError(sekNotADirectory, 'Listing',
+          DisplaySafeName(APath), 'the path leads to a file, not a folder');
     Exit(False);
   end;
   // Aucune sortie avant la fermeture: une coupure qu'elle revele doit pouvoir
@@ -638,10 +664,13 @@ begin
       AttrsToEntry(attrs, AEntries[n]);
       if AEntries[n].TypeUnknown then
         if not RefineUnknownType(APath, AEntries[n], listErr) then Break;
-      ParseLongEntryOwner(string(AnsiString(PAnsiChar(@longBuf[0]))),
-        AEntries[n]);
-      if AEntries[n].IsLink then
-        if not DescribeLink(APath, AEntries[n], listErr) then Break;
+      long := string(AnsiString(PAnsiChar(@longBuf[0])));
+      ParseLongEntryOwner(long, AEntries[n]);
+      // La cible vient du longentry deja recu, jamais d'un readlink: voir
+      // LinkTargetFromLongEntry. TargetKnown reste faux -- le double-clic
+      // tentera l'entree et le serveur tranchera.
+      if AEntries[n].IsLink and (AEntries[n].LinkTarget = '') then
+        AEntries[n].LinkTarget := LinkTargetFromLongEntry(long, name);
       Inc(n);
     end;
   finally
@@ -693,36 +722,6 @@ begin
   AEntry.ReadOnly := e.ReadOnly;
   AEntry.LinkTarget := e.LinkTarget;
   if AEntry.IsDir then AEntry.Size := -1;
-end;
-
-// La cible s'affiche et dit si le lien mene a un dossier, ce qui permet d'y
-// entrer a la main; elle n'est JAMAIS suivie pendant une recursion. False
-// seulement sur une coupure de session: un lien illisible est un lien casse.
-function TSftpFileSystem.DescribeLink(const ADir: string;
-  var AEntry: TScpEntry; out AErr: TScpError): Boolean;
-var
-  full: string;
-  e: TScpEntry;
-begin
-  Result := True;
-  AErr := NoScpError;
-  full := RemoteJoin(ADir, AEntry.Name);
-  if not Stat(full, False, e, AErr) then
-  begin
-    if IsFatalToSession(AErr.Kind) then Exit(False);
-    AErr := NoScpError;
-    AEntry.BrokenLink := True;
-    Exit;
-  end;
-  AEntry.LinkTarget := e.LinkTarget;
-  if not Stat(full, True, e, AErr) then
-  begin
-    if IsFatalToSession(AErr.Kind) then Exit(False);
-    AErr := NoScpError;
-    AEntry.BrokenLink := True;
-    Exit;
-  end;
-  AEntry.TargetIsDir := e.IsDir;
 end;
 
 function TSftpFileSystem.Stat(const APath: string; AFollowLink: Boolean;

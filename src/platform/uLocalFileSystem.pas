@@ -493,6 +493,13 @@ procedure FillEntryFromAttrs(var AEntry: TScpEntry; AAttrs: LongWord;
 begin
   AEntry.IsDir := (AAttrs and FILE_ATTRIBUTE_DIRECTORY) <> 0;
   AEntry.IsLink := (AAttrs and FILE_ATTRIBUTE_REPARSE_POINT) <> 0;
+  // Win32 porte la nature de la cible sur le point de reanalyse LUI-MEME
+  // (une jonction vers un dossier EST un dossier): etabli sans second appel.
+  if AEntry.IsLink then
+  begin
+    AEntry.TargetIsDir := AEntry.IsDir;
+    AEntry.TargetKnown := True;
+  end;
   AEntry.Hidden := (AAttrs and FILE_ATTRIBUTE_HIDDEN) <> 0;
   AEntry.ReadOnly := (AAttrs and FILE_ATTRIBUTE_READONLY) <> 0;
   AEntry.IsSpecial := False;
@@ -713,6 +720,8 @@ begin
       if AEntries[n].IsLink then
       begin
         AEntries[n].LinkTarget := fpReadLink(full);
+        // Etabli dans les deux issues: casse est une reponse, pas une absence.
+        AEntries[n].TargetKnown := True;
         if fpStat(PChar(full), st) = 0 then
           AEntries[n].TargetIsDir := ModeIsDir(st.st_mode)
         else

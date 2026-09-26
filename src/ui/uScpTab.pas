@@ -908,8 +908,11 @@ begin
           Exit;
         end;
         if not panel.List.FocusedEntry(entry) then Exit;
-        // Un lien n'est jamais SUIVI en recursion; y entrer a la main est un choix.
-        if not (entry.IsDir or (entry.IsLink and entry.TargetIsDir)) then
+        // Un lien n'est jamais SUIVI en recursion; y entrer a la main est un
+        // choix. Cible non etablie (listing distant): on tente, le serveur
+        // tranche -- un refus laisse le panneau en place avec le motif.
+        if not (entry.IsDir or (entry.IsLink and
+           (entry.TargetIsDir or not entry.TargetKnown))) then
         begin
           // Aucune ouverture ni execution automatique d'un fichier distant.
           Note('Double-click opens folders only; files are never opened ' +

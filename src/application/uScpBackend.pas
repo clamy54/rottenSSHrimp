@@ -36,6 +36,11 @@ type
     // « lien vers un dossier » sans le suivre en recursion.
     TargetIsDir: Boolean;
     BrokenLink: Boolean;
+    // TargetIsDir et BrokenLink ont-ils ete ETABLIS? Le listing SFTP ne suit
+    // plus chaque lien: trois allers-retours PAR lien rendaient un /usr/lib
+    // interminable. Faux = cible inconnue; on tente l'entree, le serveur
+    // tranche. Le disque local, lui, repond sans latence et etablit toujours.
+    TargetKnown: Boolean;
     Size: Int64;           // -1 si inconnue
     Mode: LongWord;        // 0 si le serveur ne l'a pas envoye
     // Mode reellement connu? Sans ce drapeau, 0 voudrait dire « inconnu » ET
