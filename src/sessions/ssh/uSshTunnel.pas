@@ -2,10 +2,8 @@ unit uSshTunnel;
 
 {$mode objfpc}{$H+}
 
-// Tunnel SSH par direct-tcpip: jump hosts, VNC/RDP/SSH-over-SSH.
-// Session vers la passerelle (memes etapes et meme TOFU que le transport shell),
-// puis ecoute sur 127.0.0.1:<port ephemere>, une connexion locale a la fois.
-// Mise en place bloquante, pompe non bloquante: un cote lent gelerait l'autre.
+// direct-tcpip via un bastion, ecoute sur 127.0.0.1:<ephemere>, un client a la fois.
+// Pompe non bloquante: un cote lent gelerait l'autre.
 
 interface
 
@@ -37,8 +35,7 @@ type
     function OpenLocalListener: Boolean;
     function WaitTwo(AFd1, AFd2: libssh2_socket_t; AMs: Integer): Boolean;
     function WaitWritable(AFd: libssh2_socket_t; AMs: Integer): Boolean;
-    // la DIRECTION que libssh2 reclame: un blocage en ecriture n'attend pas la
-    // lecture
+    // la DIRECTION que libssh2 reclame: bloque en ecriture, il n'attend pas de lire
     function WaitSession(AMs: Integer): Boolean;
     procedure ForwardOne(ALocalSock: libssh2_socket_t);
     procedure ForwardLoop;
@@ -64,11 +61,11 @@ type
 
     procedure Shutdown;
 
-    // Pas de WaitReady bloquant: la mise en place passe par Synchronize, qui
-    // exige un thread UI vivant -- l'attendre depuis l'UI serait un interblocage.
+    // Pas de WaitReady: la mise en place fait des Synchronize, l'UI qui attend
+    // s'interbloque.
     property LocalPort: Integer read FLocalPort;
     property LastError: string read GetLastError;
-    // echec livre UNE fois sur le thread UI; le destinataire relit LastError
+    // UNE fois, sur le thread UI; le detail est dans LastError
     property OnAsyncError: TThreadMethod read FOnAsyncError write FOnAsyncError;
     property OnHostKey: TSshHostKeyEvent read FOnHostKey write FOnHostKey;
     property OnSkNotice: TSshSkNoticeEvent read FOnSkNotice write FOnSkNotice;
@@ -126,7 +123,7 @@ begin
     FErrLock.Release;
   end;
   if not isFirst then Exit;
-  // le message porte hotes et ports: en confidentiel, on ne trace que le fait
+  // hotes et ports dans le message: le mode confidentiel n'en veut pas
   if LogIsConfidential then
     LogWarning('tunnel: error (details hidden in confidential mode)')
   else
@@ -247,7 +244,7 @@ begin
     ai := res;
     while (ai <> nil) and (not Terminated) do
     begin
-      // candidat LOCAL: publie a l'essai, il exposerait un fd mort au thread UI
+      // fd LOCAL: publie a l'essai, l'UI pourrait viser un fd mort
       fd := fpSocket(ai^.ai_family, ai^.ai_socktype, ai^.ai_protocol);
       if fd < 0 then
       begin
@@ -261,7 +258,7 @@ begin
         connected := True
       else if SockErrIsInProgress(SockLastError) then
       begin
-        // select DECOUPE: la fermeture ne doit pas rester coincee tout le timeout
+        // tranches de 200 ms: fermer ne doit pas attendre tout le timeout
         waited := 0;
         while (waited < FParams.ConnectTimeoutS * 1000) and (not Terminated) do
         begin
@@ -278,7 +275,7 @@ begin
       if connected then
       begin
         SockSetNonBlocking(fd, False);
-        SockSetNoDelay(fd);   // interactif: pas de Nagle sur la socket SSH
+        SockSetNoDelay(fd);
         PublishSock(fd);
         Exit(True);
       end;
@@ -308,8 +305,7 @@ begin
   end;
   yes := 1;
   {$IFDEF WINDOWS}
-  // Sous Windows, SO_REUSEADDR laisserait un AUTRE processus se lier au meme
-  // port et detourner les connexions -- semantique inverse d'Unix.
+  // SO_REUSEADDR Windows: un AUTRE processus peut voler le port. Rien a voir avec Unix.
   fpSetSockOpt(FListenSock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, @yes, SizeOf(yes));
   {$ELSE}
   fpSetSockOpt(FListenSock, SOL_SOCKET, SO_REUSEADDR, @yes, SizeOf(yes));
@@ -317,7 +313,7 @@ begin
   FillChar(addr, SizeOf(addr), 0);
   addr.sin_family := AF_INET;
   addr.sin_port := 0;
-  addr.sin_addr.s_addr := htonl($7F000001); // 127.0.0.1 UNIQUEMENT, jamais expose
+  addr.sin_addr.s_addr := htonl($7F000001); // 127.0.0.1 UNIQUEMENT
   if fpBind(FListenSock, @addr, SizeOf(addr)) <> 0 then
   begin
     SetError('Cannot open the local listener (bind)');
@@ -387,17 +383,15 @@ var
   tries: cint;
   openStart: QWord;
 begin
-  // Ouverture BORNEE: un bastion qui ne joint pas la cible ne refuse pas le
-  // canal, il rend EAGAIN jusqu'au timeout TCP de SON noyau (~2 min) -- onglet
-  // noir et muet. Au-dela du budget, on ferme en disant pourquoi.
+  // BORNE: un bastion qui ne joint pas la cible rend EAGAIN jusqu'au timeout
+  // TCP de SON noyau (~2 min). Onglet noir et muet, sinon.
   channel := nil;
   openStart := GetTickCount64;
   repeat
     channel := libssh2_channel_direct_tcpip_ex(FSession,
       PAnsiChar(AnsiString(FTargetHost)), FTargetPort,
       PAnsiChar('127.0.0.1'), FLocalPort);
-    // seule EAGAIN merite d'attendre; toute autre erreur est definitive et
-    // reboucler dessus brulait un coeur sans jamais la remonter
+    // seule EAGAIN merite d'attendre; le reste est definitif
     if (channel = nil) and
        (libssh2_session_last_errno(FSession) <> LIBSSH2_ERROR_EAGAIN) then
       Break;
@@ -431,8 +425,7 @@ begin
   end;
 
   SockSetNonBlocking(ALocalSock, True);
-  // Cote boucle locale aussi: le client RDP/VNC lit de petits PDU, et Nagle
-  // plus l'acquittement differe de Windows les retenaient jusqu'a 200 ms.
+  // Nagle + ACK differe Windows: 200 ms par petit PDU RDP/VNC.
   SockSetNoDelay(ALocalSock);
   try
     while not Terminated do
@@ -480,7 +473,7 @@ begin
             begin
               if (w < 0) and SockErrIsWouldBlock(SockLastError) then
               begin
-                // sortir AVANT de dormir: un pair local muet bloquait le join
+                // AVANT de dormir: un pair local muet bloquerait le join
                 if Terminated then Exit;
                 WaitWritable(ALocalSock, 200);
                 Continue;
@@ -541,7 +534,7 @@ var
 begin
   if FSession <> nil then
   begin
-    // l'adieu SSH est une courtoisie: sur un pair mort il attendrait des minutes
+    // l'adieu est une politesse: un pair mort la ferait durer des minutes
     libssh2_session_set_timeout(FSession, 3000);
     libssh2_session_set_blocking(FSession, 1);
     libssh2_session_disconnect_ex(FSession, SSH_DISCONNECT_BY_APPLICATION,
@@ -564,12 +557,10 @@ procedure TSshTunnel.Execute;
 begin
   try
     try
-      // premier utilisateur de libssh2 si VNC/RDP sans session shell: sinon
-      // Handshake appelle des pointeurs nuls
+      // VNC/RDP sans shell: personne d'autre n'aura charge libssh2
       Libssh2EnsureLoaded;
       if not ResolveAndConnect then Exit;
-      // PAS de keepalive TCP sur la socket du bastion: un pare-feu strict jette
-      // ses sondes et tuait le relais en ~15 s (voir uSshTransport.Execute).
+      // PAS de keepalive TCP: un pare-feu strict jette les sondes, relais mort en ~15 s.
       if Terminated then Exit;
       if not Handshake then Exit;
       if not VerifyHostKey then Exit;
@@ -586,7 +577,7 @@ begin
       end;
     end;
   finally
-    FReadyEvent.SetEvent;   // toujours: sinon l'appelant attend pour toujours
+    FReadyEvent.SetEvent;   // toujours, sinon l'appelant attend pour toujours
     Cleanup;
   end;
 end;

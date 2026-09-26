@@ -2,9 +2,8 @@ unit uThemeLoad;
 
 {$mode objfpc}{$H+}
 
-// Themes integres + JSON externes de <app-data>/themes. Appliquer un theme =
-// repartir des defauts compiles puis ecrire les cles fournies. Le parse va
-// dans un tampon local avant commit: un JSON pourri ne casse rien.
+// JSON externes parses dans un tampon local avant commit: un fichier pourri
+// ne casse rien.
 
 interface
 
@@ -214,9 +213,8 @@ begin
       finally
         sl.Free;
       end;
-      // Profondeur bornee AVANT GetJSON: un theme trop imbrique faisait
-      // tomber le parseur (violation d'acces, hors de portee du try) et,
-      // charge avant la fenetre principale, bloquait chaque demarrage.
+      // AVANT GetJSON: trop imbrique, le parseur meurt en AV hors du try, et
+      // l'appli avec, a chaque demarrage.
       if JsonNestingTooDeep(raw) then Continue;
       data := nil;
       try

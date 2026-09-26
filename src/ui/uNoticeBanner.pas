@@ -1,8 +1,6 @@
-{ Bandeau d'avis en tete d'un onglet: un titre, des lignes, une croix pour le
-  fermer. NON modal par principe: une boite de dialogue ouverte depuis un
-  evenement du reseau gele le thread de session sur son Synchronize suivant,
-  et au bout de quelques minutes le keepalive declare morte une session bien
-  vivante. Le bandeau, lui, attend qu'on le lise sans rien bloquer.
+{ NON modal: une boite ouverte depuis un evenement reseau gele le thread de
+  session sur son prochain Synchronize, et le keepalive enterre une session
+  bien vivante.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -37,8 +35,7 @@ type
   public
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
-    // Montre le bandeau s'il etait cache. Une ligne deja presente n'est pas
-    // repetee: le meme echec signale deux fois reste une seule ligne.
+    // dedoublonne: le meme echec signale deux fois reste une ligne
     procedure AddLine(const ATitle, ALine: string);
     procedure Dismiss;
   end;
@@ -68,8 +65,7 @@ begin
   inherited Destroy;
 end;
 
-// Mesure hors ecran: appelee avant que le controle ait un handle, son propre
-// canevas n'aurait pas encore de quoi mesurer.
+// UiTextHeight: appele avant le handle, notre canevas ne mesure rien encore
 function TNoticeBanner.LineHeight: Integer;
 begin
   Result := UiTextHeight('Ag') + 3;
@@ -85,8 +81,6 @@ begin
     Result := 80;
 end;
 
-// Coupe aux espaces pour tenir dans la largeur: un message de tunnel porte
-// un hote et une raison, il depasse souvent une ligne d'onglet etroit.
 function TNoticeBanner.Wrap(const S: string): TStringArray;
 var
   words: TStringArray;
@@ -159,8 +153,7 @@ begin
     ClientWidth - 4, PAD_Y - 2 + CLOSE_W - 6);
 end;
 
-// La largeur change le nombre de lignes, donc la hauteur. Relayout ne
-// retouche Height que si elle differe: pas de boucle de redimensionnement.
+// Relayout ne touche Height que si elle change: pas de boucle de Resize.
 procedure TNoticeBanner.Resize;
 begin
   inherited Resize;
@@ -179,7 +172,7 @@ begin
   Canvas.FillRect(r);
   Canvas.Brush.Color := clScpWarn;
   Canvas.FillRect(Rect(0, 0, STRIPE_W, r.Bottom));
-  // filet bas: separe du terminal quand les deux fonds se ressemblent
+  // filet bas: au cas ou les deux fonds se ressemblent
   Canvas.Brush.Color := BlendColor(clScpWarn, clAppBg, 40);
   Canvas.FillRect(Rect(0, r.Bottom - 1, r.Right, r.Bottom));
 

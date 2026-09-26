@@ -1,22 +1,7 @@
-{ Icones de l'onglet Scp, de deux origines: des PNG embarques
-  (XFER_<ID>_<TAILLE>), produits par scripts/gen-icons.lpr, et quelques traces
-  a la main pour ce dont aucune source n'existe.
-
-  Les PNG sont des MASQUES, et l'encre est posee ici parce que sa couleur
-  PORTE un sens: un lien s'affiche a la couleur d'accent, un fichier special en
-  avertissement, une ligne selectionnee a la couleur du texte de selection. Une
-  paire figee ondark/onlight aurait efface ces distinctions. Le fond suit la
-  meme logique: la composition se fait en logiciel, sur la couleur que
-  l'appelant vient de peindre, ce qui evite de dependre du sens que chaque
-  widgetset donne a l'alpha d'un bitmap.
-
-  Douze tailles sont fournies, et non trois: le rectangle demande suit la
-  hauteur de ligne, donc la police, et ne tombe pas sur une echelle ronde. Le
-  dessin prend la plus grande taille qui TIENT et la centre, sans jamais
-  etirer.
-
-  Geometrie de style Tabler pour les traces: grille de 24, trait de 2,
-  extremites carrees, coins arrondis de 2.
+{ PNG embarques = MASQUES: l'encre porte un sens (lien, special, selection).
+  Composition logicielle sur le fond reel; l'alpha des bitmaps, chaque
+  widgetset l'interprete a sa facon.
+  Traces a la main: grille Tabler de 24, trait de 2.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -63,12 +48,8 @@ type
     siSortAsc,
     siSortDesc);
 
-// Dessine AIcon centree dans ARect, a l'encre AColor, sur le fond ABg.
-//
-// ABg doit etre la couleur que l'appelant vient de peindre SOUS ce rectangle:
-// les icones embarquees y sont composees, et un fond faux se voit comme un
-// lisere autour du trait. Les icones tracees l'ignorent; leur trait s'epaissit
-// avec la taille et reste ENTIER, un trait fractionnaire etant flou.
+// ABg = ce que l'appelant vient de peindre SOUS ARect: un fond faux se voit
+// en lisere autour du trait.
 procedure DrawScpIcon(ACanvas: TCanvas; const ARect: TRect;
   AIcon: TScpIcon; AColor, ABg: TColor);
 
@@ -93,9 +74,9 @@ end;
 type
   TIconPen = record
     Canvas: TCanvas;
-    OX, OY: Double;    // origine
+    OX, OY: Double;
     S: Double;         // echelle
-    W: Integer;        // epaisseur du trait, en pixels entiers
+    W: Integer;        // trait, pixels entiers
   end;
 
 function MapX(const A: TIconPen; AX: Double): Integer; inline;
@@ -207,7 +188,7 @@ begin
       begin
         Poly(A, [P(10, 14), P(7, 17), P(5, 15), P(9, 11)], False);
         Poly(A, [P(15, 9), P(17, 7), P(19, 9), P(15, 13)], False);
-        // L'interruption au milieu EST le message: le lien ne mene nulle part.
+        // Le trou au milieu EST le message.
         Line(A, 10, 13, 11.5, 11.5);
         Line(A, 13.5, 11.5, 15, 10);
       end;
@@ -285,8 +266,7 @@ begin
       end;
     siUpload:
       begin
-        // Fleche vers la DROITE contre une butee: le distant est a droite, et la
-        // butee la distingue de la fleche de navigation, dans la meme barre.
+        // Butee: sinon identique a la fleche de navigation de la meme barre.
         Line(A, 20, 5, 20, 19);
         Line(A, 3, 12, 12, 12);
         FillPoly(A, [P(17, 12), P(11, 7), P(11, 17)]);
@@ -368,11 +348,9 @@ begin
   end;
 end;
 
-// --- Jeu embarque -----------------------------------------------------
-
 type
   TIconCacheItem = class
-    Bmp: TBitmap;      // nil = ressource absente, constatee une seule fois
+    Bmp: TBitmap;      // nil = ressource absente, constate une fois
     destructor Destroy; override;
   end;
 
@@ -385,7 +363,7 @@ begin
   inherited Destroy;
 end;
 
-// L'identifiant de la source pour cette icone, '' si elle est tracee.
+// '' = icone tracee
 function XferIdFor(AIcon: TScpIcon): string;
 begin
   case AIcon of
@@ -410,17 +388,14 @@ begin
     siWarning:    Result := 'alert-circle';
     siPause:      Result := 'player-pause';
     siPlay:       Result := 'player-play';
-    // Croix de l'ANNULATION. L'echec garde sa croix CERCLEE: les deux etats se
-    // suivent dans la meme colonne, et deux croix nues ne differeraient que par
-    // la couleur.
+    // L'echec garde sa croix CERCLEE: meme colonne, pas seulement la couleur.
     siCancel:     Result := 'x';
   else
     Result := '';
   end;
 end;
 
-// La plus grande taille FOURNIE qui tient dans ABox, 0 si aucune: la plus
-// proche ferait deborder l'icone sur le texte.
+// La plus grande qui TIENT, pas la plus proche: elle deborderait sur le texte.
 function PickXferSize(ABox: Integer): Integer;
 var
   i: Integer;
@@ -437,8 +412,7 @@ begin
     QWord(ABg) * (65535 - ACoverage)) div 65535);
 end;
 
-// Compose le masque sur ABg a l'encre AInk. nil = ressource absente, et
-// l'appelant retombe sur le trace.
+// nil = ressource absente, l'appelant retombe sur le trace.
 function BuildXferIcon(const AId: string; ASize: Integer;
   AInk, ABg: TColor): TBitmap;
 var
@@ -471,8 +445,7 @@ begin
       for y := 0 to img.Height - 1 do
         for x := 0 to img.Width - 1 do
         begin
-          // L'alpha de la source EST la couverture du trait, et la seule chose qu'on
-          // lui prend: sa couleur blanche ne fait que la porter.
+          // Seul l'alpha compte: le blanc de la source ne fait que le porter.
           cov := img.Colors[x, y].Alpha;
           c.Red := MixChannel(ink.Red, bg.Red, cov);
           c.Green := MixChannel(ink.Green, bg.Green, cov);
@@ -513,8 +486,7 @@ begin
   idx := GCache.IndexOf(key);
   if idx >= 0 then
     Exit(TIconCacheItem(GCache.Objects[idx]).Bmp);
-  // Un changement de theme laisse les entrees de l'ancien: peu nombreuses,
-  // mais elles s'accumulent sur une longue session.
+  // Chaque changement de theme laisse ses entrees orphelines.
   if GCache.Count > 512 then
     GCache.Clear;
   item := TIconCacheItem.Create;
@@ -554,7 +526,7 @@ begin
         Exit;
       end;
     end;
-    // Ressource absente ou rectangle trop petit: le trace vaut mieux qu'un trou.
+    // le trace vaut mieux qu'un trou
   end;
 
   oldPenColor := ACanvas.Pen.Color;
@@ -567,7 +539,7 @@ begin
     pen.S := side / 24;
     pen.OX := ARect.Left + ((ARect.Right - ARect.Left) - side) / 2;
     pen.OY := ARect.Top + ((ARect.Bottom - ARect.Top) - side) / 2;
-    // Epaisseur ENTIERE: sinon le trait change d'une icone a l'autre.
+    // ENTIERE: un trait fractionnaire est flou.
     pen.W := Round(side / 16);
     if pen.W < 1 then pen.W := 1;
     if pen.W > 3 then pen.W := 3;

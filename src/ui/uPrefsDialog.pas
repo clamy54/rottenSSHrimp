@@ -2,13 +2,11 @@ unit uPrefsDialog;
 
 {$mode objfpc}{$H+}
 
-// Police des sessions terminal. On ne propose que les polices embarquees
-// (Monaspace, JetBrains Mono Nerd Font), jamais les polices systeme: meme
-// rendu partout.
+// Polices embarquees seulement, jamais celles du systeme: meme rendu partout.
 
 interface
 
-// True = valide, preferences deja enregistrees ET appliquees au theme
+// True: deja enregistre ET applique au theme
 function ShowTerminalFontDialog: Boolean;
 
 implementation
@@ -21,7 +19,7 @@ type
   TFontPrefsForm = class(TForm)
   private
     FFamily: TComboBox;
-    FKeys: TStringList;   // cle par ligne du combo; l'affichage est le nom complet
+    FKeys: TStringList;   // cle par ligne du combo
     FSize: TComboBox;
     FPreview: TLabel;
     procedure ChoiceChanged(Sender: TObject);
@@ -94,7 +92,7 @@ begin
     for i := 0 to MonaspaceFamilyCount - 1 do
     begin
       key := MonaspaceFamilyKey(i);
-      // seulement les familles reellement chargees: proposer le reste ment
+      // proposer une famille non chargee, c'est mentir
       if ResolveMonaspace(key) = '' then
         Continue;
       f.FKeys.Add(key);
@@ -151,7 +149,7 @@ begin
 
     f.ClientHeight := 220;
     ApplyUiFont(f);
-    // ApplyUiFont vient d'ecraser la police de l'apercu: la reposer
+    // ApplyUiFont ecrase la police de l'apercu
     f.UpdatePreview;
 
     if f.ShowModal <> mrOK then

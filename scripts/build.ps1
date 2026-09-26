@@ -1,6 +1,4 @@
-# Build portable (Windows). Localise lazbuild tout seul, chemin .lpi relatif,
-# tue l'exe avant de recompiler.
-# Usage: powershell -File scripts\build.ps1 [-Release]
+# Build Windows. Usage: powershell -File scripts\build.ps1 [-Release]
 param([switch]$Release)
 
 $ErrorActionPreference = 'Stop'
@@ -27,8 +25,7 @@ if ($Release) { $buildArgs += '--build-mode=Release' }
 $buildArgs += $lpi
 
 Write-Host "lazbuild: $lazbuild"
-# lazbuild resout les chemins de ressources du .lpi par rapport au cwd,
-# pas au .lpi : on se place dans app\ pour la duree du build.
+# lazbuild resout les ressources depuis le cwd, PAS depuis le .lpi
 Push-Location (Join-Path $root 'app')
 try {
   & $lazbuild @buildArgs

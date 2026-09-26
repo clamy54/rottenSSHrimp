@@ -1,15 +1,8 @@
 #!/usr/bin/env bash
 #
-# Confronte les offsets en dur de bindings/libvnc/uLibVncApi.pas a ceux que le
-# compilateur calcule contre les en-tetes de NOTRE construction de
-# libvncclient. Contrairement a FreeRDP, la bibliotheque ne vient pas de la
-# distribution: c'est nous qui la batissons, donc un ecart ici n'est jamais une
-# fatalite, c'est un bogue de recette -- et il coute cher. Le controle de
-# CheckStructLayout se contente de refuser la bibliotheque au chargement: VNC
-# disparait purement et simplement du produit, avec un message que seul un
-# lancement en terminal montre. C'est arrive: la table Linux avait ete generee
-# sur une machine sans en-tetes JPEG, la CI en avait une avec, et le .deb
-# publie ouvrait zero session VNC.
+# Offsets en dur de uLibVncApi.pas contre les en-tetes de NOTRE libvncclient.
+# On la batit nous-memes: un ecart est un bogue de recette, et au chargement
+# VNC disparait en silence. Deja vu: un .deb publie a zero session VNC.
 #
 # Usage: scripts/check-vnc-offsets.sh   (0 = concordance, 1 = ecarts detailles)
 set -uo pipefail
@@ -19,9 +12,8 @@ pas="${root}/bindings/libvnc/uLibVncApi.pas"
 src="${root}/scripts/gen-vnc-offsets.c"
 vdir="${root}/third_party/libvnc"
 
-# Quelle branche de la table? Le fichier declare TROIS jeux, dans cet ordre:
-# {$IFDEF WINDOWS} (1), {$IFDEF DARWIN} (2), {$ELSE} = Linux (3). La sonde est
-# native: elle ne peut valider que la branche de la machine qui l'execute.
+# TROIS jeux dans l'ordre: WINDOWS (1), DARWIN (2), ELSE = Linux (3). Sonde
+# native: seule la branche de la machine courante se verifie.
 os="$(uname -s)"
 arch="$(uname -m)"
 case "$os" in
@@ -36,9 +28,8 @@ case "$os" in
     ;;
 esac
 
-# En-tetes: ceux de la construction epinglee, jamais ceux du systeme. Sans eux
-# la comparaison n'a aucun sens -- c'est precisement le piege qu'on ferme.
-# Meme empreinte que make-app.sh / build-deb.sh: patch modifie => reconstruction.
+# En-tetes de la construction epinglee, JAMAIS ceux du systeme. Meme empreinte
+# que make-app.sh / build-deb.sh: patch modifie => reconstruction.
 want_stamp="$(cat "$vdir/SHA256SUMS" "$root/scripts/build-libvnc.sh" \
   "$vdir"/patches/*.patch 2>/dev/null | \
   { command -v sha256sum >/dev/null 2>&1 && sha256sum || shasum -a 256; } \
@@ -60,23 +51,19 @@ if ! $cc -w "$src" -I"$vdir/out/include" -o "$tmp/gen" 2>"$tmp/cc.log"; then
 fi
 
 "$tmp/gen" > "$tmp/raw.txt" || exit 1
-# La ligne « // config: ... » n'est pas une constante mais elle vaut d'etre lue
-# quand ca casse: on la garde a l'ecran.
+# « // config: ... » gardee pour l'affichage: c'est elle qu'on lit quand ca casse
 cfg="$(sed -n 's|^ *// config: *||p' "$tmp/raw.txt")"
 sed -n 's/^[[:space:]]*\([A-Z][A-Z0-9_]*\)[[:space:]]*=[[:space:]]*\([0-9][0-9]*\);.*/\1=\2/p' \
   "$tmp/raw.txt" | sort > "$tmp/actual.txt"
 
-# Constantes Pascal: « NOM = VALEUR; » du bloc const, lignes commentees exclues.
-# sed portable (BRE, sans \+): mawk/busybox des conteneurs ignorent le match()
-# a trois arguments de GNU awk. L'ORDRE du fichier est conserve, c'est lui qui
-# distingue les trois branches.
+# sed BRE sans \+: mawk/busybox ignorent le match() a trois arguments de gawk.
+# L'ORDRE du fichier est conserve: c'est lui qui distingue les branches.
 grep -v '^[[:space:]]*//' "$pas" \
   | sed -n 's/^[[:space:]]*\([A-Z][A-Z0-9_]*\)[[:space:]]*=[[:space:]]*\([0-9][0-9]*\)[[:space:]]*;.*/\1=\2/p' \
   > "$tmp/declared.txt"
 
 pick_declared() {
-  # $1 = nom. Trois declarations => celle de la branche verifiee; une seule
-  # (rfbPixelFormat, AppData: aucune n'est conditionnelle) => elle-meme.
+  # $1 = nom. Trois declarations: celle de la branche; une seule: elle-meme.
   local n
   n="$(grep -c "^$1=" "$tmp/declared.txt")"
   if [ "$n" = "1" ]; then

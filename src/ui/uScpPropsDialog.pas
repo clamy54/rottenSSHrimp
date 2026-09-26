@@ -1,14 +1,7 @@
-{ Fenetre « Properties » de l'onglet Scp: ce que le serveur dit d'une entree
-  distante, et les droits d'acces qu'on peut lui poser.
-
-  Elle travaille sur la SELECTION, pas sur un fichier: une case dont les
-  fichiers selectionnes ne sont pas d'accord reste indeterminee, sort du
-  masque rendu, et chacun garde alors le bit qu'il avait. C'est la seule facon
-  de corriger une permission sur un lot mal assorti sans aligner tout le reste
-  au passage.
-
-  Proprietaire et groupe sont MONTRES, pas modifiables: SFTP v3 les pose par
-  numero, et les noms rendus par le serveur ne se retraduisent pas d'ici.
+{ Travaille sur la SELECTION: une case en desaccord reste indeterminee, hors
+  masque, et chacun garde son bit.
+  Proprietaire et groupe en lecture seule: SFTP v3 les pose par numero, et
+  les noms du serveur ne se retraduisent pas d'ici.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -25,14 +18,13 @@ uses
 type
   TScpPropsResult = record
     Apply: Boolean;
-    Bits: LongWord;       // valeur des bits decides
-    Mask: LongWord;       // bits decides; hors de la, le mode ne bouge pas
+    Bits: LongWord;
+    Mask: LongWord;       // hors masque, le mode ne bouge pas
     Recursive: Boolean;
     DirX: Boolean;
   end;
 
-// ALocation: le dossier qui contient AEntries, pour l'afficher. Fermer sans
-// choisir rend Apply a False: ne rien decider ne change aucun droit.
+// Fermer sans choisir: Apply = False.
 function ShowScpProperties(const ALocation: string;
   const AEntries: TScpEntryArray): TScpPropsResult;
 
@@ -42,9 +34,8 @@ uses
   DateUtils, Dialogs;
 
 type
-  // Les douze cases, dans l'ordre des bits du mode: 0..8 = rwx des trois
-  // classes, du moins au plus significatif; 9 = sticky, 10 = setgid,
-  // 11 = setuid.
+  // Ordre des bits du mode: 0..8 = rwx (others d'abord), 9 sticky,
+  // 10 setgid, 11 setuid.
   TPermBoxes = array[0..11] of TCheckBox;
 
   TPropsForm = class
@@ -55,8 +46,7 @@ type
     FOctal: TEdit;
     FRecursive: TCheckBox;
     FDirX: TCheckBox;
-    // Les cases ecrivent l'octal et l'octal ecrit les cases: sans ce drapeau
-    // chaque frappe repartirait en boucle.
+    // cases <-> octal: sans lui, boucle infinie
     FSyncing: Boolean;
     procedure BoxChanged(Sender: TObject);
     procedure OctalChanged(Sender: TObject);
@@ -217,8 +207,7 @@ begin
   if Length(AEntries) = 1 then
   begin
     AddRow('Type:', KindText(AEntries[0]));
-    // La taille d'un dossier n'est pas comptee: il faudrait le parcourir, et
-    // ouvrir une fenetre ne doit pas lancer un parcours du serveur.
+    // Ouvrir une fenetre ne lance pas un du -s sur le serveur.
     if AEntries[0].IsDir or (AEntries[0].Size < 0) then
       AddRow('Size:', 'unknown')
     else
@@ -243,8 +232,7 @@ begin
     AddLabel(CLASS_NAMES[i], 16, 100, False, clAppFg);
     for c := 0 to 2 do
     begin
-      // Le proprietaire occupe les bits hauts, « others » les bas: la grille
-      // se lit donc a l'envers de l'ordre des bits.
+      // proprietaire = bits hauts: la grille se lit a l'envers des bits
       b := (2 - i) * 3 + (2 - c);
       FBoxes[b] := AddBox(COL_X[c], 24, '');
     end;
@@ -252,10 +240,8 @@ begin
     Inc(y, 22);
   end;
 
-  // Etat de depart: cochee si TOUTES les entrees ont le bit, vide si aucune,
-  // indeterminee sinon. Les liens ne comptent pas, ils ne seront pas touches.
-  // Un seul mode inconnu laisse la case indeterminee: la decider d'apres les
-  // autres ecrirait sur lui des bits que personne n'a choisis.
+  // Liens exclus. Un seul mode inconnu => indeterminee: sinon on lui ecrit
+  // des bits que personne n'a choisis.
   editable := Length(AEntries) - links;
   for i := 0 to 11 do
   begin
@@ -303,8 +289,6 @@ begin
   FRecursive.Enabled := dirs > 0;
   Inc(y, 26);
 
-  // Ce que la fenetre ne fera PAS, ecrit avant le clic plutot qu'en note
-  // apres coup.
   if links > 0 then
   begin
     warn := AddLabel('Symbolic links keep their own permissions: setting ' +
@@ -323,7 +307,6 @@ begin
   end;
 
   FForm.ClientHeight := y + 48;
-  // Rien que des liens: il n'y a rien a qui poser ces droits.
   AddBtn('Apply', 16, 100, @ApplyClick).Enabled := editable > 0;
   AddBtn('Cancel', 122, 100, @CancelClick);
 
@@ -336,8 +319,7 @@ begin
   inherited Destroy;
 end;
 
-// Vide des qu'une case est indeterminee: y afficher un nombre ferait croire a
-// un mode unique que personne n'a demande.
+// Vide si une case est indeterminee: un nombre mentirait.
 procedure TPropsForm.RefreshOctal;
 var
   i: Integer;
@@ -367,9 +349,7 @@ begin
   end;
 end;
 
-// Une saisie valide TRANCHE: les douze cases deviennent decidees, y compris
-// celles que la selection laissait indeterminees. Une saisie qui n'est pas un
-// octal ne touche a rien: elle est en cours de frappe.
+// Saisie valide: les douze cases TRANCHEES. Invalide: frappe en cours, on attend.
 procedure TPropsForm.OctalChanged(Sender: TObject);
 var
   m: LongWord;
@@ -394,8 +374,7 @@ var
   i: Integer;
   m: LongWord;
 begin
-  // Le champ est RELU: une saisie invalide laisse les cases a la derniere
-  // valeur valide, qui n'est pas celle qu'on lit a l'ecran.
+  // RELU: apres une saisie invalide, les cases ne sont pas ce qu'on voit.
   if Trim(FOctal.Text) <> '' then
   begin
     if not ScpOctalToMode(FOctal.Text, m) then
@@ -418,8 +397,6 @@ begin
     end;
   FResult.Recursive := FRecursive.Checked and FRecursive.Enabled;
   FResult.DirX := FDirX.Checked and FDirX.Enabled;
-  // Aucune case decidee et pas de x a ajouter: rien a demander au serveur, et
-  // surtout rien a ecrire.
   FResult.Apply := (FResult.Mask <> 0) or FResult.DirX;
   FForm.ModalResult := mrOK;
 end;

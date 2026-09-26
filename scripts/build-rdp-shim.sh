@@ -1,17 +1,13 @@
 #!/usr/bin/env bash
 #
-# Construit rssh_rdp_shim, l'oracle de disposition memoire de FreeRDP 3. Compile
-# contre les EN-TETES de la machine: c'est tout l'interet, le compilateur resout
-# chaque champ pour la bibliotheque qui sera reellement chargee. Ne LIE PAS
-# FreeRDP, donc rien ne change au chargement durci du programme.
-#
-# FACULTATIF: sans en-tetes, on s'arrete proprement et l'application retombe sur
-# ses offsets en dur (proteges par des temoins). Paquets: freerdp3-dev +
+# Oracle de disposition FreeRDP 3, compile contre les EN-TETES de la machine.
+# Ne LIE PAS FreeRDP: le chargement durci reste intact.
+# Sans en-tetes: repli sur les offsets en dur. Paquets: freerdp3-dev +
 # libwinpr3-dev (Debian), freerdp-devel (Fedora), freerdp (Arch), freerdp3-devel
 # (openSUSE), brew install freerdp (macOS).
 #
-# Usage: scripts/build-rdp-shim.sh [--strict]   (--strict: absence d'en-tetes ou
-# warning du compilateur = echec, ce que la CI doit utiliser)
+# Usage: scripts/build-rdp-shim.sh [--strict]   (--strict, pour la CI: pas
+# d'en-tetes ou un warning = echec)
 set -uo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -40,10 +36,7 @@ esac
 cc="${CC:-cc}"
 command -v "$cc" >/dev/null 2>&1 || fail_or_skip "Compilateur C introuvable ($cc)."
 
-# En-tetes: pkg-config d'abord (portable entre distributions), puis les
-# emplacements usuels si le fichier .pc manque.
-# RSSH_FREERDP_CFLAGS force les chemins d'en-tetes: utile aux paquets qui
-# construisent hors racine, et a la CI.
+# RSSH_FREERDP_CFLAGS, puis pkg-config, puis chemins usuels.
 cflags="${RSSH_FREERDP_CFLAGS:-}"
 if [ -z "$cflags" ] && command -v pkg-config >/dev/null 2>&1; then
   cflags="$(pkg-config --cflags freerdp3 winpr3 2>/dev/null || true)"
@@ -57,8 +50,7 @@ if [ -z "$cflags" ]; then
 fi
 [ -n "$cflags" ] || fail_or_skip "En-tetes FreeRDP 3 introuvables."
 
-# -isystem plutot que -I pour les en-tetes tiers: leurs propres avertissements
-# ne doivent pas noyer les notres, que l'on veut a zero.
+# -isystem: les warnings des en-tetes tiers ne noient pas les notres (zero)
 cflags="$(printf '%s' "$cflags" | sed 's/-I/-isystem /g')"
 
 warn="-Wall -Wextra -Wconversion -Wcast-qual -Wshadow"
@@ -87,8 +79,7 @@ fi
 
 echo "OK -> ${outdir}/${libname}"
 
-# Controles de surete du binaire produit: le shim ne doit RIEN allouer (donc
-# rien a fuir) et ne doit dependre d'aucune bibliotheque FreeRDP.
+# Le shim n'alloue RIEN et ne depend d'aucune lib FreeRDP.
 if command -v nm >/dev/null 2>&1; then
   if nm -D --undefined-only "${outdir}/${libname}" 2>/dev/null \
        | grep -qiE ' (malloc|calloc|realloc|free|strcpy|strcat|sprintf)$'; then

@@ -1,17 +1,8 @@
-{ Onglet « Ping »: un TPinger sur l'hote d'une connexion, et ce qu'un admin
-  regarde pendant un reboot ou une liaison douteuse: etat courant et depuis
-  quand, compteurs, RTT min/moy/max/dernier/mdev, pertes consecutives et
-  courbe des dernieres sondes. Pas de journal: la courbe suffit, et la page
-  doit rester lisible d'un coup d'oeil.
+{ Onglet « Ping ». Dessine a la main: les listes natives restent blanches en
+  theme sombre.
 
-  Tableau et courbe sont dessines a la main: les listes natives restaient
-  blanches en plein theme sombre, avec la police systeme. Ici les couleurs
-  viennent du theme et la police est celle embarquee, identique sur les
-  trois OS.
-
-  Ce n'est PAS une session: TabConnUuid reste vide, l'hote n'apparait pas
-  « actif » dans l'arbre et une suppression n'est pas retenue par cet onglet.
-  PingConnUuid sert seulement a ne pas ouvrir deux onglets pour le meme hote.
+  PAS une session: TabConnUuid reste vide. PingConnUuid evite juste deux
+  onglets pour le meme hote.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -26,8 +17,7 @@ uses
   Graphics, uIcmpPing, uSessionState, uSessionTabBase;
 
 const
-  // Un thread et un echo toutes les deux secondes chacun: au-dela on ne
-  // surveille plus, on charge la machine.
+  // Un thread par onglet: au-dela de 10, on ne surveille plus, on charge.
   PING_MAX_TABS = 10;
   PING_INTERVAL_MS = 2000;
   PING_TIMEOUT_MS = 2000;
@@ -43,17 +33,15 @@ type
     FResolveErr: string;
     FPinger: TPinger;
     FClosing: Boolean;
-    // compteurs
     FSent, FRecv: Integer;
     FMin, FMax, FSum, FSumSq, FLast: Double;
     FStreakLoss, FWorstStreak: Integer;
     FHasSample, FReplying: Boolean;
     FStateSince: TDateTime;
     FStartedAt: TDateTime;
-    // courbe: derniers echantillons, -1 = perte
+    // -1 = perte
     FGraph: array of Double;
     FGraphCount: Integer;
-    // UI
     FRoot: TPanel;
     FTitle: TLabel;
     FStateLbl: TLabel;
@@ -121,8 +109,6 @@ begin
     Result := Format('%d h %d min', [secs div 3600, (secs mod 3600) div 60]);
 end;
 
-{ ============================== TPingTab ============================== }
-
 constructor TPingTab.CreateTab(APages: TPageControl; const AConnUuid,
   ADisplayName, AHost: string);
 var
@@ -162,10 +148,9 @@ begin
   SetLength(FGraph, GRAPH_POINTS);
   ResetCounters;
 
-  // fond uniforme du theme: la page elle-meme reste au widgetset
+  // la page elle-meme reste au widgetset: le fond du theme vient du panneau
   FRoot := AddPanel(Self, alClient, 0);
 
-  // De haut en bas: titre, etat, depuis quand, boutons, tableau, courbe.
   FTitle := TLabel.Create(Self);
   FTitle.Parent := FRoot;
   FTitle.Align := alTop;
@@ -228,7 +213,7 @@ begin
   FTick.OnTimer := @TickTimer;
   FTick.Enabled := True;
 
-  // police embarquee partout, puis les styles qu'ApplyUiFont a ecrases
+  // ApplyUiFont ecrase les styles: les reposer apres
   ApplyUiFont(Self);
   FStateLbl.Font.Size := 13;
   FStateLbl.Font.Style := [fsBold];
@@ -243,7 +228,7 @@ var
 begin
   FClosing := True;
   if FTick <> nil then FTick.Enabled := False;
-  FreeAndNil(FPinger);   // Stop: join du thread + purge de sa file Queue
+  FreeAndNil(FPinger);   // join du thread + purge de sa file Queue
   cb := FOnDestroyed;
   inherited Destroy;
   if Assigned(cb) then
@@ -316,7 +301,6 @@ begin
   if first or (wasReplying <> FReplying) then
     FStateSince := ASample.When;
 
-  // courbe
   if FGraphCount < GRAPH_POINTS then
     Inc(FGraphCount)
   else
@@ -333,8 +317,6 @@ begin
     UpdateCaption;
 end;
 
-// Deux lignes: intitules en gris, valeurs en clair. Colonnes a la largeur du
-// plus large des deux, la police est a chasse fixe.
 procedure TPingTab.StatsPaint(Sender: TObject);
 const
   N = 12;
@@ -456,7 +438,7 @@ end;
 procedure TPingTab.TickTimer(Sender: TObject);
 begin
   if FClosing then Exit;
-  // les « depuis » et « running for » vieillissent meme sans nouveau paquet
+  // « since » et « running for » vieillissent meme sans paquet
   UpdateState;
   FStatsBox.Invalidate;
 end;
@@ -487,7 +469,6 @@ begin
   maxv := 1;
   for i := 0 to n - 1 do
     if FGraph[i] > maxv then maxv := FGraph[i];
-  // la legende occupe une bande en haut; les barres commencent dessous
   barTop := cv.TextHeight('Ag') + 10;
   bw := Max(2, w div GRAPH_POINTS);
   cv.Brush.Style := bsSolid;
@@ -589,7 +570,6 @@ begin
     Result := rssFailed;
 end;
 
-// pastille rouge tant que l'hote ne repond pas
 function TPingTab.TabIsDeadLog: Boolean;
 begin
   Result := (FResolveErr <> '') or (FHasSample and (not FReplying));

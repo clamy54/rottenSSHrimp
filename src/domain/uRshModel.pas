@@ -2,9 +2,8 @@ unit uRshModel;
 
 {$mode objfpc}{$H+}
 
-// Modele du document: groupes, connexions, credentials. Chaque
-// mutation = une transaction + MarkDirty; les listes rendues sont a l'appelant.
-// Les secrets n'existent qu'en TSecureBytes, chiffres par champ (AAD canonique).
+// Mutation = transaction + MarkDirty; les listes rendues sont a l'appelant.
+// Secrets en TSecureBytes seulement, chiffres par champ (AAD canonique).
 
 interface
 
@@ -16,9 +15,8 @@ type
 
   TNodeKind = (nkGroup, nkConnection);
   TRshProtocol = (rpSsh, rpRdp, rpVnc, rpContainer, rpPod);
-  // atManagedKey: paire Ed25519 generee et scellee dans le document.
-  // atFidoKey: cle de securite FIDO2 -- le document ne garde qu'un key handle,
-  // le secret ne quitte jamais le token et chaque usage demande un geste.
+  // atManagedKey: Ed25519 scellee dans le document. atFidoKey: le document
+  // n'a qu'un key handle, le secret reste dans le token.
   TAuthType = (atPassword, atSshKey, atSshAgent, atPrompt, atManagedKey,
     atFidoKey);
   TCredDeleteStrategy = (dsFail, dsClearRefs, dsReplace);
@@ -54,7 +52,7 @@ type
     Hostname: string;
     Port: Integer;
     CredentialUuid: string;
-    // True: ignore CredentialUuid, resolution en remontant les dossiers (0013)
+    // True: CredentialUuid ignore, on remonte les dossiers
     InheritCredential: Boolean;
     ConnectTimeoutS: Integer;
   end;
@@ -83,9 +81,7 @@ type
     Port: Integer;
   end;
 
-  // v13: tunnel local (ssh -L). Ecoute sur la boucle locale de CE poste et
-  // ressort cote serveur SSH vers DestHost:DestPort. Enabled=False garde le
-  // tunnel dans le document sans l'ouvrir.
+  // ssh -L: ecoute sur la boucle locale de CE poste
   TRshLocalForward = record
     LocalPort: Integer;
     DestHost: string;
@@ -97,17 +93,15 @@ type
   TRshLocalForwards = array of TRshLocalForward;
 
 const
-  // Au-dela, la boucle de session surveillerait trop de sockets pour un seul
-  // select (64 sous Windows, ecoutes et connexions comprises).
+  // select() plafonne a 64 sockets sous Windows, ecoutes et connexions comprises
   MAX_LOCAL_FORWARDS = 16;
-  // Sous 1024 il faut etre administrateur (root sous Unix): l'ouverture
-  // echouerait a chaque connexion.
+  // sous 1024, il faudrait etre root
   FORWARD_LOCAL_PORT_MIN = 1025;
   FORWARD_NOTE_MAX = 200;
 
 type
 
-  // Stocke en texte: un ajout dans l'enum ne relit pas l'existant
+  // stocke en texte: un ajout a l'enum ne decale pas l'existant
   TSessionResult = (srOk, srFailed, srCancelled);
 
   TRshQuickEntry = class
@@ -180,59 +174,46 @@ type
       APort: Integer);
     function GetJumpVia(const AUuid: string): string;
     procedure SetJumpVia(const AUuid, AJumpUuid: string);
-    // v12. « Connect via » a trois etats: bastion explicite (connection_jump),
-    // herite du dossier parent (connection_jump_inherit), ou direct (ni l'un
-    // ni l'autre). Les deux tables sont exclusives, le modele s'en charge.
+    // « Connect via »: explicite (connection_jump), herite
+    // (connection_jump_inherit) ou direct (ni l'un ni l'autre). Exclusifs.
     function JumpInheritAvailable: Boolean;
     function GetJumpInherit(const AConnUuid: string): Boolean;
     procedure SetJumpInherit(const AConnUuid: string; AValue: Boolean);
-    // Dossier: pas de ligne = remonter au parent; ligne a jump_via_uuid vide =
-    // « direct » explicite, qui arrete la remontee.
+    // pas de ligne = on remonte; jump_via_uuid vide = « direct », on s'arrete
     function GetFolderJump(const AFolderUuid: string;
       out AJumpUuid: string): Boolean;
     procedure SetFolderJump(const AFolderUuid: string; AHasRow: Boolean;
       const AJumpUuid: string);
-    // Bastion EFFECTIF d'une connexion: l'explicite, sinon celui herite en
-    // remontant les dossiers. C'est ce que le connect doit appeler.
+    // Bastion EFFECTIF, heritage compris: c'est celui-la que le connect appelle.
     function ResolveJumpVia(const AConnUuid: string): string;
-    // Bastion effectif d'un DOSSIER: le sien, sinon celui du premier ancetre
-    // qui en porte un. '' = direct. Un dossier jamais regle laisse decider
-    // au-dessus; des qu'on ouvre ses proprietes, il repond pour lui-meme.
+    // '' = direct
     function ResolveFolderJump(const AStartFolderUuid: string): string;
-    // Meme remontee, mais distingue « un dossier a tranche » (True, AJump
-    // vide = direct explicite) de « personne n'a rien dit » (False).
+    // True: un dossier a tranche (AJump vide = direct). False: personne.
     function FindFolderJump(const AStartFolderUuid: string;
       out AJump: string): Boolean;
-    // Sert de bastion a une connexion OU a un dossier: un tel noeud ne peut
-    // pas heriter d'un bastion a son tour, un seul saut est supporte.
+    // bastion d'une connexion OU d'un dossier; un seul saut, il n'herite de rien
     function ServesAsJumpHost(const AConnUuid: string): Boolean;
-    // False aussi quand la table manque (v5 lecture seule, non migre): dans ce
-    // cas l'appelant ne filtre PAS, la liste serait vide.
+    // False si la table manque (v5 non migre): l'appelant ne filtre PAS alors
     function JumpHostOffersAvailable: Boolean;
     function IsJumpHostOffered(const AConnUuid: string): Boolean;
     procedure SetJumpHostOffered(const AConnUuid: string; AOffered: Boolean);
     procedure LoadJumpHostOffers(AList: TStrings);
-    // v13. False sur un document plus ancien ouvert en lecture seule: la
-    // table n'existe pas, les tunnels ne s'affichent ni ne s'enregistrent.
+    // False: document < v13 en lecture seule, pas de table
     function ForwardsAvailable: Boolean;
-    // Dans l'ordre de saisie. Actifs ET inactifs: c'est au connect de trier.
+    // actifs ET inactifs: au connect de trier
     function LoadLocalForwards(const AConnUuid: string): TRshLocalForwards;
-    // Remplace TOUTE la liste de l'hote. Valide avant d'ecrire: port local
-    // 1025..65535 et unique, destination valide, SSH seulement.
+    // Remplace TOUTE la liste de l'hote, tout valide avant d'ecrire.
     procedure SetLocalForwards(const AConnUuid: string;
       const AForwards: TRshLocalForwards);
-    // Noms des AUTRES connexions qui ont un tunnel actif sur ce port local:
-    // ouvertes en meme temps, l'une des deux ne pourrait pas ecouter.
+    // les AUTRES connexions qui ecoutent sur ce port: ensemble, l'une echoue
     function LocalPortUsers(ALocalPort: Integer;
       const AExceptConn: string): TStringArray;
     function CountJumpDependents(const AConnUuid: string): Integer;
-    // Connexions HORS du sous-arbre d'ANodeUuid qui dependent d'un noeud
-    // DEDANS: bastion, hote de conteneur, hote de pod. Supprimer le sous-arbre
-    // les laisserait sans tunnel (acces direct, en clair) ou sans hote.
+    // Dependants HORS du sous-arbre: le supprimer les laisserait sans hote, ou
+    // sans bastion, donc en direct sans que personne ne le remarque.
     procedure CountExternalDependents(const ANodeUuid: string;
       out AJumps, AContainers, APods: Integer);
-    // Meme compte pour un ENSEMBLE de noeuds (et leurs sous-arbres): un
-    // dependant qui fait lui-meme partie du lot ne compte pas.
+    // un dependant qui fait partie du lot ne compte pas
     procedure CountExternalDependentsOfSet(AUuids: TStrings;
       out AJumps, AContainers, APods: Integer);
     function CreateContainerConnection(const AParentGroupUuid: string;
@@ -257,8 +238,7 @@ type
 
     function GetConnectionCredential(const AConnUuid: string): string;
 
-    // Heritage par dossier (0013): l'emplacement de SON protocole, au porteur
-    // le plus proche. Nulle part ailleurs -- l'opacite avait tue 0007.
+    // l'emplacement de SON protocole, au porteur le plus proche; nulle part ailleurs
     function GetFolderCredential(const AFolderUuid: string;
       AProtocol: TRshProtocol): string;
     procedure SetFolderCredential(const AFolderUuid: string;
@@ -293,7 +273,7 @@ type
     function GetSecret(const ACredUuid, AFieldName: string;
       out ASecret: TSecureBytes): Boolean;
 
-    // Appelee sur les echecs aussi: on cherche souvent ce qu'on vient de rater
+    // echecs compris: on cherche souvent ce qu'on vient de rater
     procedure TouchRecent(const AConnUuid: string; AResult: TSessionResult);
     function ListRecent(AMax: Integer): TRshQuickList;
     procedure ClearRecent;
@@ -336,9 +316,7 @@ const
   ICON_POD = 'hexagons';
 
 function ProtocolFromName(const S: string): TRshProtocol;
-// Cles que l'application ENGENDRE et pousse elle-meme (Copy SSH ID, rotation),
-// par opposition a une cle fournie par l'utilisateur. Le porteur du secret
-// differe -- document ou token -- mais tout le reste se traite pareil.
+// Cles engendrees et poussees par l'appli, que le secret dorme dans le document ou le token.
 function IsManagedKeyType(A: TAuthType): Boolean;
 function AuthTypeFromName(const S: string): TAuthType;
 function SessionResultFromName(const S: string): TSessionResult;
@@ -348,9 +326,7 @@ function ContainerShellFromName(const S: string): TContainerShell;
 function MatchesSearch(const AFilter, AName, AHostname, AProtocol,
   ADescription, AParentName, ACredName: string): Boolean;
 
-// Un tunnel SEUL, memes regles que SetLocalForwards: l'import s'en sert pour
-// ecarter l'entree fautive au lieu de perdre toute la liste de l'hote.
-// Normalise en place (hote et note rognes).
+// Un tunnel SEUL: l'import ecarte l'entree fautive sans perdre toute la liste.
 function ValidateLocalForward(var AFwd: TRshLocalForward;
   out AWhy: string): Boolean;
 
@@ -460,8 +436,6 @@ begin
   Result := True;
 end;
 
-{ TRshModel }
-
 constructor TRshModel.Create(ADoc: TRshDocument);
 begin
   inherited Create;
@@ -549,8 +523,7 @@ var
   h: Integer;
   i: Integer;
 begin
-  // Borne AVANT de recurser: un cycle parent_uuid forge (A enfant de B, B
-  // enfant de A) deborderait la pile, le test d'en bas n'agissant qu'au retour.
+  // Borne AVANT de recurser: un cycle parent_uuid forge fait sauter la pile.
   if ADepth > MAX_TREE_DEPTH then
     Exit(1);
   children := nil;
@@ -831,8 +804,7 @@ var
 begin
   if not ValidateName(ANewName, err) then
     raise EModelError.Create(err);
-  // Transaction explicite meme pour une seule instruction: en autocommit le
-  // pre-commit ne rescelle pas le content_mac, et le journal reste non signe.
+  // Transaction meme pour une instruction: en autocommit, rien ne rescelle.
   Db.BeginImmediate;
   try
     st := Db.Prepare('UPDATE nodes SET display_name=?, updated_at_ms=?' +
@@ -918,7 +890,7 @@ begin
     raise EModelError.Create(err);
   if (ATimeoutS < 1) or (ATimeoutS > 300) then
     raise EModelError.Create('The timeout must be between 1 and 300 s.');
-  // Invariant: heriter ET porter un credential rendrait la resolution ambigue
+  // heriter ET porter un credential: resolution ambigue
   if AInheritCredential and (ACredentialUuid <> '') then
     raise EModelError.Create(
       'A connection that inherits cannot carry its own credential.');
@@ -1086,7 +1058,7 @@ var
   err, host: string;
   st: TSqliteStmt;
 begin
-  host := AHostname;   // ValidateHostname normalise par var, d'ou la copie
+  host := AHostname;   // ValidateHostname reecrit par var
   if host <> '' then
   begin
     if not ValidateHostname(host, err) then
@@ -1165,8 +1137,7 @@ var
   st: TSqliteStmt;
 begin
   Result := '';
-  // connection_jump date de v5; un document plus ancien ouvert en LECTURE SEULE
-  // n'est pas migre et l'interroger leverait « no such table ». Absente = direct.
+  // < v5 en lecture seule: pas de table, donc direct (et pas « no such table »)
   st := Db.Prepare('SELECT 1 FROM sqlite_master WHERE type=''table''' +
     ' AND name=''connection_jump'' LIMIT 1;');
   try
@@ -1210,7 +1181,6 @@ begin
     if GetJumpInherit(AJumpUuid) then
       raise EModelError.Create('Chained jump hosts are not supported: the ' +
         'jump node inherits a jump host from its folder.');
-    // sert de bastion a une connexion OU a un dossier
     if ServesAsJumpHost(AUuid) then
       raise EModelError.Create('This node already serves as a jump host for ' +
         'another connection: giving it a jump host would create a chain ' +
@@ -1307,8 +1277,7 @@ begin
   if AValue and (not JumpInheritAvailable) then
     raise EModelError.Create('This document is too old to inherit a jump ' +
       'host from its folder.');
-  // Un bastion se joint TOUJOURS en direct: le laisser heriter creerait une
-  // chaine des que son dossier recoit un bastion, et un seul saut est gere.
+  // Un bastion se joint TOUJOURS en direct: heriter ferait une chaine, un seul saut gere.
   if AValue and ServesAsJumpHost(AConnUuid) then
     raise EModelError.Create('This host serves as a jump host, so it cannot ' +
       'inherit one from its folder: chained jump hosts are not supported.');
@@ -1402,8 +1371,7 @@ begin
     if GetJumpInherit(AJumpUuid) then
       raise EModelError.Create('Chained jump hosts are not supported: that ' +
         'host inherits a jump host from its folder.');
-    // et aucun hote HERITANT sous ce dossier ne doit servir de bastion:
-    // il se retrouverait avec un bastion sans que rien ne l'ait demande
+    // ni aucun bastion HERITANT dessous: il recevrait un bastion sans l'avoir demande
     st := Db.Prepare('WITH RECURSIVE sub(uuid) AS (' +
       ' SELECT uuid FROM nodes WHERE uuid=?' +
       ' UNION SELECT n.uuid FROM nodes n JOIN sub s ON n.parent_uuid=s.uuid)' +
@@ -1477,8 +1445,7 @@ begin
   AJump := '';
   cur := AStartFolderUuid;
   hops := 0;
-  // La premiere ligne rencontree tranche, une ligne « direct » comprise. Cap
-  // d'iterations: une chaine de parents forgee en cycle ferait boucler.
+  // Premiere ligne trouvee tranche, « direct » compris. Cap: cycle forge.
   while (cur <> '') and (hops <= MAX_TREE_DEPTH) do
   begin
     Inc(hops);
@@ -1493,7 +1460,7 @@ begin
       st.Free;
     end;
   end;
-  AJump := '';   // rien trouve en remontant: direct
+  AJump := '';
 end;
 
 function TRshModel.ResolveFolderJump(const AStartFolderUuid: string): string;
@@ -1608,8 +1575,7 @@ var
 begin
   Result := nil;
   if (AConnUuid = '') or (not ForwardsAvailable) then Exit;
-  // `kind` filtre: une ligne 'dynamic' n'a pas de destination, et ce code ne
-  // sait pas l'ouvrir. La lire comme un tunnel local viserait « :0 ».
+  // `kind` filtre: une ligne 'dynamic' lue comme -L viserait « :0 ».
   st := Db.Prepare('SELECT local_port, dest_host, dest_port, enabled, note' +
     ' FROM ssh_forwards WHERE connection_uuid=? AND kind=''local''' +
     ' ORDER BY sort_order, local_port;');
@@ -1618,8 +1584,7 @@ begin
     n := 0;
     while st.Step do
     begin
-      // plafond cote lecture aussi: un fichier forge ne doit pas faire ouvrir
-      // cent ecoutes au connect
+      // plafond a la lecture aussi: fichier forge, cent ecoutes
       if n >= MAX_LOCAL_FORWARDS then Break;
       SetLength(Result, n + 1);
       Result[n].LocalPort := st.ColInt64(0);
@@ -1664,8 +1629,7 @@ begin
     raise EModelError.CreateFmt('At most %d tunnels per host.',
       [MAX_LOCAL_FORWARDS]);
 
-  // Copie normalisee: ValidateHostname rogne par var, et l'appelant garde sa
-  // liste telle qu'il l'a saisie.
+  // copie: ValidateHostname rogne par var, la liste de l'appelant reste intacte
   clean := Copy(AForwards);
   for i := 0 to High(clean) do
   begin
@@ -1846,8 +1810,7 @@ begin
       n.IconId := ICON_CONTAINER;
       n.SortOrder := NextSortOrder(AParentGroupUuid);
       n.Protocol := rpContainer;
-      // Un conteneur n'a ni hote ni port propres: hostname='' passe le NOT NULL,
-      // mais le CHECK impose 1..65535 au port -- d'ou ce port SSH decoratif.
+      // Pas d'hote ni de port propres, mais le CHECK exige 1..65535: port decoratif.
       n.Hostname := '';
       n.Port := SSH_DEFAULT_PORT;
       n.ConnectTimeoutS := 15;
@@ -1979,8 +1942,7 @@ end;
 procedure TRshModel.CountExternalDependentsOfSet(AUuids: TStrings;
   out AJumps, AContainers, APods: Integer);
 const
-  // les uuid passent par une table temporaire: un « ? » par uuid butait
-  // sur la limite de 64 variables posee a l'ouverture de la base
+  // table temporaire: un « ? » par uuid bute sur la limite de 64 variables
   SEEDS = '(SELECT uuid FROM temp.rssh_dep_seeds)';
 
   function TableExists(const AName: string): Boolean;
@@ -1997,8 +1959,7 @@ const
     end;
   end;
 
-  // UNION et pas UNION ALL: la deduplication fait terminer la recursion sur
-  // un cycle forge, comme dans DuplicateNode
+  // UNION, pas UNION ALL: la deduplication arrete la recursion sur un cycle forge
   function CountIn(const ATable, ARefCol: string): Integer;
   var
     st: TSqliteStmt;
@@ -2045,7 +2006,7 @@ var
 begin
   AJumps := 0; AContainers := 0; APods := 0;
   if (AUuids = nil) or (AUuids.Count = 0) then Exit;
-  // TEMP: hors du fichier, hors du scellement, disparait avec la connexion
+  // TEMP: hors fichier, hors sceau
   Db.ExecScript('CREATE TEMP TABLE IF NOT EXISTS rssh_dep_seeds' +
     ' (uuid TEXT PRIMARY KEY); DELETE FROM temp.rssh_dep_seeds;');
   try
@@ -2062,8 +2023,7 @@ begin
       st.Free;
     end;
     AJumps := CountIn('connection_jump', 'jump_via_uuid');
-    // un dossier exterieur qui pointe ici compte autant: ses hotes herites
-    // repasseraient en direct, en clair, sans que rien ne le dise
+    // un dossier exterieur compte aussi: ses heritiers passeraient en direct en silence
     AJumps := AJumps + CountFolderJumpsOutside;
     AContainers := CountIn('connection_container', 'parent_uuid');
     APods := CountIn('connection_pod', 'parent_uuid');
@@ -2325,8 +2285,8 @@ var
   orphans: TStringArray;
   i, k: Integer;
 begin
-  // Dans une transaction. folder_credentials compte comme reference (0013), et
-  // les GERES sont exclus: ils doivent survivre a zero reference.
+  // En transaction. folder_credentials compte comme reference; les GERES
+  // survivent a zero reference.
   orphans := nil;
   k := 0;
   st := Db.Prepare('SELECT uuid FROM credentials WHERE managed=0 AND uuid NOT IN ' +
@@ -2370,8 +2330,7 @@ begin
     Db.BeginImmediate;
     try
       EnsureParentIsGroup(ANewParentUuid);
-      // Refus des cycles: la destination ne doit pas descendre de AUuid.
-      // Cap d'iterations: un cycle forge sans AUuid ferait boucler la remontee.
+      // Pas de cycle. Cap d'iterations: un cycle forge sans AUuid boucle.
       cur := ANewParentUuid;
       steps := 0;
       while cur <> '' do
@@ -2441,8 +2400,7 @@ begin
   FDoc.MarkDirty;
 end;
 
-// AMap recoit 'ancien uuid=nouveau' pour chaque noeud copie: les tables de
-// reglages sont recopiees ensuite, references internes au sous-arbre remappees.
+// AMap: 'ancien=nouveau' par noeud, pour remapper les reglages ensuite.
 function TRshModel.DuplicateSubtree(const ASrcUuid, ADestParent: string;
   ASortOrder: Integer; const ANameSuffix: string; AMap: TStrings;
   ADepth: Integer): string;
@@ -2497,12 +2455,8 @@ begin
     DuplicateSubtree(children[i], Result, i, '', AMap, ADepth + 1);
 end;
 
-// Tout ce qui pend a une connexion hors de la ligne nodes/connections:
-// bastion, offre de bastion, passerelle RDP, profils SSH/RDP/VNC, conteneur,
-// pod. Sans ca, une copie tentait la connexion directe la ou l'original
-// passait par un bastion, et un conteneur copie n'avait plus d'hote du tout.
-// Une reference vers un noeud du sous-arbre copie suit la copie; vers
-// l'exterieur, elle reste telle quelle.
+// Tout ce qui pend hors de nodes/connections, sinon la copie part en direct.
+// Reference interne au sous-arbre: suit la copie; externe: inchangee.
 procedure TRshModel.CopyConnectionSettings(const ASrc, ADst: string;
   AMap: TStrings);
 
@@ -2533,10 +2487,7 @@ var
   s1, s2, s3, s4: string;
   n1, n2: Boolean;
 begin
-  // v12, et les DOSSIERS passent aussi par ici: le bastion d'un dossier
-  // (cible remappee, NULL = « direct » explicite conserve tel quel) et le
-  // drapeau « herite du dossier ». Sans eux une copie passait en direct la
-  // ou l'original suivait son dossier.
+  // les DOSSIERS passent aussi ici; NULL (« direct » explicite) reste NULL
   if JumpInheritAvailable then
   begin
     st := Db.Prepare('SELECT jump_via_uuid FROM folder_jump' +
@@ -2573,15 +2524,13 @@ begin
     ' view_actual_size FROM vnc_connection_settings WHERE connection_uuid=?;');
   CopyVerbatim('INSERT INTO jump_host_offers(connection_uuid)' +
     ' SELECT ? FROM jump_host_offers WHERE connection_uuid=?;');
-  // v13: la copie garde ses tunnels, memes ports compris. Ouverts en meme
-  // temps, l'original et la copie se disputeront ces ports: le connect le dira.
+  // memes ports: ouverts ensemble, l'original et la copie se battent, le connect le dira
   if ForwardsAvailable then
     CopyVerbatim('INSERT INTO ssh_forwards(connection_uuid, local_port, kind,' +
       ' dest_host, dest_port, enabled, note, sort_order) SELECT ?, local_port,' +
       ' kind, dest_host, dest_port, enabled, note, sort_order FROM ssh_forwards' +
       ' WHERE connection_uuid=?;');
 
-  // ssh_connection_settings: jump_connection_uuid a remapper, NULLs preserves
   st := Db.Prepare('SELECT profile_uuid, jump_connection_uuid, startup_command' +
     ' FROM ssh_connection_settings WHERE connection_uuid=?;');
   try
@@ -2689,8 +2638,7 @@ var
 begin
   src := GetNode(AUuid);
   try
-    // Taille REELLE du sous-arbre, pas du document. UNION et pas UNION ALL:
-    // la deduplication fait terminer la recursion sur un cycle forge.
+    // UNION, pas UNION ALL: un cycle forge doit terminer
     st := Db.Prepare('WITH RECURSIVE sub(uuid) AS (' +
       ' SELECT uuid FROM nodes WHERE uuid=?' +
       ' UNION SELECT n.uuid FROM nodes n JOIN sub s ON n.parent_uuid=s.uuid)' +
@@ -2708,8 +2656,7 @@ begin
       EnsureNodeBudget(cnt);
       Result := DuplicateSubtree(AUuid, src.ParentUuid,
         NextSortOrder(src.ParentUuid), ' (copy)', map);
-      // apres la copie de TOUS les noeuds: une reference vers un noeud copie
-      // plus loin dans l'arbre doit deja connaitre son nouveau uuid
+      // apres TOUS les noeuds: une reference plus loin doit deja etre remappee
       for i := 0 to map.Count - 1 do
         CopyConnectionSettings(map.Names[i], map.ValueFromIndex[i], map);
       Db.Commit;
@@ -2736,8 +2683,6 @@ begin
     n.Free;
   end;
 end;
-
-{ heritage de credentials par dossier }
 
 function TRshModel.GetFolderCredential(const AFolderUuid: string;
   AProtocol: TRshProtocol): string;
@@ -2871,8 +2816,6 @@ begin
   end;
 end;
 
-{ credentials }
-
 procedure TRshModel.StoreSecret(const AOwnerUuid, AFieldName: string;
   ASecret: TSecureBytes; out AValueId: string);
 var
@@ -2991,8 +2934,7 @@ begin
   Result := TRshCredentialList.Create(True);
   all := ListCredentials;
   try
-    // Extract cede l'objet a Result et decale les suivants: n'avancer i QUE
-    // quand on ne retire rien, sinon on saute un element sur deux.
+    // Extract decale la suite: n'avancer i que si on ne retire rien
     i := 0;
     while i < all.Count do
       if all[i].Managed then
@@ -3135,8 +3077,7 @@ begin
     finally
       st.Free;
     end;
-    // Quitter une cle geree efface public_key: sinon Copy SSH ID proposerait
-    // encore d'installer une paire fantome.
+    // plus geree: public_key efface, sinon Copy SSH ID pousse une paire fantome
     if not IsManagedKeyType(AAuthType) then
       Db.ExecScript(Format('UPDATE credentials SET public_key=%s WHERE uuid=%s;',
         [QuotedStr(''), QuotedStr(AUuid)]));
@@ -3198,8 +3139,7 @@ begin
       finally
         st.Free;
       end;
-      // rechiffre sous le nouvel owner_uuid: l'AAD change, recopier les
-      // ciphertexts se ferait rejeter -- et c'est le but
+      // rechiffre: l'AAD porte l'owner_uuid, un ciphertext recopie est rejete (c'est le but)
       fields[0] := FIELD_CRED_PASSWORD;
       cols[0] := 'encrypted_password_id';
       fields[1] := FIELD_CRED_PRIVATE_KEY;
@@ -3243,7 +3183,7 @@ var
 begin
   Result := nil;
   if ACredUuid = '' then Exit;
-  // Credential RESOLU: un WHERE credential_uuid=? raterait les hotes en heritage
+  // RESOLU: un WHERE credential_uuid=? raterait les heritiers
   uuids := nil;
   st := Db.Prepare('SELECT node_uuid FROM connections' +
     ' WHERE protocol=''ssh'' ORDER BY node_uuid;');
@@ -3277,8 +3217,7 @@ begin
     raise EModelError.Create('No private key to store.');
   Db.BeginImmediate;
   try
-    // encrypted_values n'a pas de FK sur owner_uuid: sans cette garde, un uuid
-    // errone insere un secret orphelin et l'UPDATE ne touche rien. En silence.
+    // pas de FK sur owner_uuid: uuid errone = secret orphelin, en silence
     st := Db.Prepare('SELECT auth_type FROM credentials WHERE uuid=?;');
     try
       st.BindText(1, AUuid);
@@ -3421,8 +3360,6 @@ begin
   Result := True;
 end;
 
-{ ---- acces rapides: connexions recentes et favoris ---- }
-
 function SessionResultFromName(const S: string): TSessionResult;
 begin
   if S = 'ok' then Result := srOk
@@ -3438,8 +3375,7 @@ begin
   if AConnUuid = '' then Exit;
   Db.BeginImmediate;
   try
-    // Horodatage STRICTEMENT croissant: deux connexions dans la meme
-    // milliseconde sortiraient au hasard. D'ou max(horloge, dernier + 1).
+    // STRICTEMENT croissant, sinon deux connexions de la meme ms sortent au hasard
     st := Db.Prepare('INSERT INTO recent_sessions' +
       ' (connection_uuid, last_connected_ms, last_result)' +
       ' VALUES(?, MAX(?, COALESCE(' +
@@ -3469,8 +3405,7 @@ begin
     Db.Rollback;
     raise;
   end;
-  // Volontairement PAS de MarkDirty: une tentative de connexion n'est pas une
-  // modification de l'utilisateur. La transaction rescelle le content_mac.
+  // PAS de MarkDirty: se connecter n'est pas editer. Le sceau suit quand meme.
 end;
 
 function TRshModel.ListRecent(AMax: Integer): TRshQuickList;
@@ -3523,8 +3458,7 @@ begin
   FDoc.MarkDirty;
 end;
 
-// Les favoris vivent dans document_settings, pas dans une colonne de nodes:
-// toute DDL en plus imposerait une migration versionnee. Cher, pour un drapeau.
+// Dans document_settings: une colonne coute une migration. Cher, pour un drapeau.
 function FavoriteKey(const AConnUuid: string): string;
 begin
   Result := 'favorite:' + AConnUuid;

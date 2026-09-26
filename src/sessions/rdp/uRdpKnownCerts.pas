@@ -2,10 +2,8 @@ unit uRdpKnownCerts;
 
 {$mode objfpc}{$H+}
 
-// Magasin TOFU des certificats RDP dans le document (.rsh) et pas dans
-// ~/.config/freerdp: la confiance voyage avec le fichier (par analogie).
-// Cle document_settings 'rdp_cert:<host>:<port>' -> JSON. Empreintes en clair,
-// couvertes par content_mac et pas par un AEAD par champ (comme SSH).
+// TOFU RDP dans le .rsh, pas dans ~/.config/freerdp: la confiance suit le
+// fichier. Empreintes en clair, couvertes par content_mac (comme SSH).
 
 interface
 
@@ -27,7 +25,7 @@ type
     FDoc: TRshDocument;
     function KeyOf(const AHost: string; APort: Integer): string;
     function ReadEntry(const AKey: string; out AEntry: TRdpCertEntry): Boolean;
-    // ADirty=False pour un refresh de last_seen: se connecter n'est pas modifier
+    // ADirty=False pour last_seen: se connecter n'est pas modifier
     procedure WriteEntry(const AKey: string; const AEntry: TRdpCertEntry;
       ADirty: Boolean = True);
   public
@@ -56,8 +54,6 @@ begin
      (Result[Length(Result)] = ']') then
     Result := Copy(Result, 2, Length(Result) - 2);
 end;
-
-{ TRdpKnownCerts }
 
 constructor TRdpKnownCerts.Create(ADoc: TRshDocument);
 begin
@@ -107,7 +103,7 @@ begin
       data.Free;
     end;
   except
-    // JSON corrompu (document trafique) = absent: l'UI redemandera la confiance
+    // JSON corrompu = absent: l'UI redemandera
     Result := False;
   end;
 end;
@@ -200,8 +196,8 @@ procedure TRdpKnownCerts.Forget(const AHost: string; APort: Integer);
 var
   st: TSqliteStmt;
 begin
-  // transaction explicite: le content_mac n'est re-scelle qu'au Commit, sinon
-  // Forget puis Save rend un fichier declare altere a la reouverture
+  // content_mac re-scelle au Commit seulement: sans transaction, le fichier
+  // se declare altere a la reouverture
   FDoc.Db.BeginImmediate;
   try
     st := FDoc.Db.Prepare('DELETE FROM document_settings WHERE key = ?;');

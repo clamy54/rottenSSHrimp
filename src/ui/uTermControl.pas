@@ -2,8 +2,8 @@ unit uTermControl;
 
 {$mode objfpc}{$H+}
 
-// Rendu par cellules du TTermEmulator, thread UI, coalesce par timer. Selection
-// = copie immediate; le collage est borne, denulle et desamorce.
+// Rendu coalesce par timer. Selection = copie immediate; collage borne,
+// denulle et desamorce.
 
 interface
 
@@ -126,8 +126,7 @@ type
     property OnTitleChanged: TTermStrEvent read FOnTitleChanged write FOnTitleChanged;
     property OnEscapeCapture: TNotifyEvent read FOnEscapeCapture
       write FOnEscapeCapture;
-    // Ctrl+Alt+fleches (Cmd+Alt sous macOS): passer au terminal voisin dans
-    // une grille. Non assigne = la combinaison va au shell.
+    // Ctrl+Alt+fleches (Cmd+Alt macOS). Non assigne = la combinaison va au shell.
     property OnNeighborFocus: TTermNeighborEvent read FOnNeighborFocus
       write FOnNeighborFocus;
   end;
@@ -711,11 +710,8 @@ begin
   SetLength(cleaned, n);
   cleaned := StringReplace(cleaned, #13#10, #13, [rfReplaceAll]);
   cleaned := StringReplace(cleaned, #10, #13, [rfReplaceAll]);
-  // fin de bracketed paste embarquee = injection: on la desamorce. En une
-  // passe lineaire: on retire le marqueur des qu'il apparait en FIN de sortie,
-  // ce qui couvre ESC[20 + ESC[201~ + 1~ (une suppression en decouvrait un
-  // autre) sans rescanner la chaine, un point fixe par StringReplace etait
-  // quadratique et tenait le thread UI plusieurs secondes sur 200 Ko.
+  // ESC[201~ embarque = injection. Retire en FIN de sortie, une passe: couvre
+  // les emboitements (ESC[20 + ESC[201~ + 1~) sans rescanner.
   cleaned := StripPasteEnd(cleaned);
 
   lineCount := 1;
@@ -825,8 +821,7 @@ begin
     if reportToApp then
       SendMouseReport(1, X, Y, False, False, Shift)
     else
-      // Collage au clic du milieu, sur TOUTES les plateformes: la selection
-      // part deja dans le presse-papiers, l'habitude X11 suit.
+      // partout, pas seulement X11: la selection est deja dans le presse-papiers
       DoPasteClipboard;
     Exit;
   end;
@@ -914,11 +909,8 @@ begin
     Exit;
   end;
 
-  // macOS: PAS de correction de signe. Cocoa a deja applique le reglage
-  // « defilement naturel » du systeme, et le suivre est justement ce qu'on veut
-  // -- c'est ce que font Terminal.app et iTerm. Re-inverser ici redonnait la
-  // convention molette d'antan, a contresens de toutes les autres applications
-  // de la machine (et du trackpad, ou personne ne s'attend a l'ancien sens).
+  // macOS: PAS de correction de signe, Cocoa a deja applique le « defilement
+  // naturel ». Re-inverser = seul contre toutes les autres applis.
 
   if (FEmu.MouseMode <> mtNone) and (not (ssShift in Shift)) and
     (FViewOffset = 0) then
@@ -963,8 +955,8 @@ begin
   end;
 end;
 
-{ IThemedScrollTarget: le terminal defile en LIGNES, expose en PIXELS. FViewOffset
-  compte depuis le BAS (0 = live), la barre depuis le HAUT -- conversion inversee. }
+{ IThemedScrollTarget: LIGNES dedans, PIXELS dehors. FViewOffset compte depuis
+  le BAS (0 = live), la barre depuis le HAUT. }
 
 function TRottenTerminalControl.ScrollViewportHeight: Integer;
 begin
@@ -1059,9 +1051,8 @@ var
   px: Integer;
 begin
   px := -((AWheelDelta * Mouse.WheelScrollLines * FCellH) div 120);
-  // meme parite macOS que DoMouseWheel: on suit le reglage systeme, sans
-  // correction de signe. Les deux doivent rester d'accord, sinon la barre de
-  // defilement et la molette se contredisent dans le meme terminal.
+  // meme convention de signe que DoMouseWheel, sinon barre et molette se
+  // contredisent
   ScrollAnimateBy(px);
 end;
 
@@ -1149,11 +1140,9 @@ var
 var
   isCopyCombo, isPasteCombo, altGr: Boolean;
 begin
-  // AltGr PHYSIQUE tenu (Ctrl+Alt aux yeux de Windows): le caractere compose
-  // arrive par UTF8KeyPress, aucun raccourci Ctrl ne doit le consommer. Un
-  // vrai Ctrl+Alt (touches gauches) garde ses raccourcis plus bas.
+  // AltGr PHYSIQUE (Ctrl+Alt pour Windows): son caractere arrive par
+  // UTF8KeyPress, aucun raccourci Ctrl ne doit le manger.
   altGr := ShiftIsAltGr(Shift);
-  // echappement: rend le focus a l'application, rien ne part au shell
   if (Key = VK_RETURN) and (ssCtrl in Shift) and (ssAlt in Shift) then
   begin
     Key := 0;
@@ -1161,7 +1150,6 @@ begin
       FOnEscapeCapture(Self);
     Exit;
   end;
-  // terminal voisin dans une grille, meme modificateurs que l'echappement
   if Assigned(FOnNeighborFocus) and (ssAlt in Shift) and
      {$IFDEF DARWIN}(ssMeta in Shift){$ELSE}(ssCtrl in Shift){$ENDIF} and
      ((Key = VK_LEFT) or (Key = VK_RIGHT) or (Key = VK_UP) or (Key = VK_DOWN)) then
@@ -1204,8 +1192,8 @@ begin
   {$IFDEF DARWIN}
   if ssMeta in Shift then
   {$ELSE}
-  // sans AltGr: sur azerty, @ vit sur la touche 0 (VK_0) et } sur =
-  // (VK_OEM_PLUS) -- le zoom les avalerait et rien ne partirait au shell
+  // sans AltGr: sur azerty, @ vit sur VK_0 et } sur VK_OEM_PLUS; le zoom les
+  // avalerait
   if (ssCtrl in Shift) and (not altGr) then
   {$ENDIF}
   begin
@@ -1255,10 +1243,7 @@ begin
     VK_F11: seq := TildeSeq(23);
     VK_F12: seq := TildeSeq(24);
   else
-    // sans AltGr: son caractere compose (AltGr+E = euro...) arrive par
-    // UTF8KeyPress, et forger un caractere de controle ici mangerait la
-    // touche (Key := 0 supprime le WM_CHAR). Un vrai Ctrl+Alt+lettre, lui,
-    // doit continuer d'envoyer son caractere de controle.
+    // sans AltGr: Key := 0 supprimerait le WM_CHAR de l'euro et consorts
     if (ssCtrl in Shift) and (not (ssMeta in Shift)) and (not altGr) and
        (Key >= Ord('A')) and (Key <= Ord('Z')) then
       seq := Chr(Key - Ord('A') + 1)

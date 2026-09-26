@@ -2,8 +2,7 @@ unit uRdpControl;
 
 {$mode objfpc}{$H+}
 
-// Affichage RDP: surface peinte sur le thread UI, entrees publiees en
-// evenements. Rien de FreeRDP ici -- la session pourra demenager en worker.
+// Rien de FreeRDP ici: la session doit pouvoir demenager en worker.
 
 interface
 
@@ -81,7 +80,6 @@ type
     property OnKeyEvent: TRdpKeyEvent read FOnKey write FOnKey;
     property OnEscapeCapture: TNotifyEvent read FOnEscapeCapture
       write FOnEscapeCapture;
-    // Le controle reprend le clavier: les verrous ont pu changer ailleurs
     property OnSyncLocks: TNotifyEvent read FOnSyncLocks write FOnSyncLocks;
     // KBD_SYNC_* selon l'etat des verrous du clavier local
     function LockFlags: Cardinal;
@@ -99,9 +97,8 @@ var
   XLockDisp: PDisplay = nil;
   XLockDispTried: Boolean = False;
 
-// GetKeyState GTK2 = cache des touches VUES par l'appli: un verrou deja pose au
-// lancement, ou bascule pendant un Alt+Tab, n'y est pas. XKB donne le voyant.
-// nil = pas de X (Wayland pur, DISPLAY absent): repli sur GetKeyState.
+// GetKeyState GTK2 ne voit que les touches VUES par l'appli; XKB lit le voyant.
+// Pas de X (Wayland pur): repli sur GetKeyState.
 function X11LockOn(const AName: string; AVk: Integer): Boolean;
 var
   ndx: SmallInt;

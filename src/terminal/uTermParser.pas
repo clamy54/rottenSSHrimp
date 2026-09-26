@@ -2,10 +2,8 @@ unit uTermParser;
 
 {$mode objfpc}{$H+}
 
-// Parseur d'echappement terminal, machine a etats type VT500 (Paul Williams),
-// incremental et borne en tout point: params CSI et
-// chaines OSC plafonnes, DCS/SOS/PM/APC consommes sans accumulation, UTF-8
-// invalide -> U+FFFD, sequence inconnue ignoree sans erreur.
+// Machine a etats VT500 (Paul Williams), bornee PARTOUT: le serveur d'en face
+// n'a pas a decider de notre consommation memoire.
 
 interface
 
@@ -13,7 +11,6 @@ uses
   SysUtils, uTermTypes;
 
 type
-  // Recepteur des actions du parseur. Implemente par l'emulateur.
   TTermHandler = class
   public
     procedure Print(C: UCS4Char); virtual; abstract;
@@ -31,17 +28,14 @@ type
   private
     FHandler: TTermHandler;
     FState: TParserState;
-    // decodeur UTF-8 incremental
     FUtfAcc: Cardinal;
     FUtfNeed: Integer;
     FUtfMin: Cardinal;
-    // collecte CSI
     FParams: array[0..TERM_MAX_CSI_PARAMS - 1] of Integer;
     FParamCount: Integer;
     FParamDigits: Boolean;
     FPrivate: Char;
     FInters: string;
-    // collecte OSC
     FOsc: RawByteString;
     FOscOverflow: Boolean;
     FOscEsc: Boolean; // ESC vu, attend '\' (ST)
@@ -115,7 +109,6 @@ begin
   begin
     b := AData[i];
 
-    // decodage UTF-8 incremental; les controles C0 court-circuitent
     if FUtfNeed > 0 then
     begin
       if (b and $C0) = $80 then
@@ -124,7 +117,7 @@ begin
         Dec(FUtfNeed);
         if FUtfNeed = 0 then
         begin
-          // overlong, substituts, hors plage -> U+FFFD
+          // overlong, surrogate, hors plage
           if (FUtfAcc < FUtfMin) or (FUtfAcc > $10FFFF) or
              ((FUtfAcc >= $D800) and (FUtfAcc <= $DFFF)) then
             FUtfAcc := $FFFD;
@@ -132,7 +125,7 @@ begin
         end;
         Continue;
       end;
-      // sequence interrompue: U+FFFD puis retraite l'octet courant
+      // sequence interrompue: l'octet courant est retraite, pas perdu
       FUtfNeed := 0;
       HandleCodepoint($FFFD);
     end;
@@ -142,7 +135,6 @@ begin
       if b < $20 then
         HandleControl(b)
       else if b = $7F then
-        // DEL: ignore en ground, mais octet valide dans OSC? Non: ignore.
         Continue
       else
         HandleCodepoint(UCS4Char(b));
@@ -166,14 +158,14 @@ begin
       FUtfMin := $10000;
     end
     else
-      HandleCodepoint($FFFD); // continuation orpheline ou octet invalide
+      HandleCodepoint($FFFD); // continuation orpheline
   end;
 end;
 
 procedure TTermParser.HandleControl(B: Byte);
 begin
   case B of
-    $18, $1A: // CAN, SUB: abandon de la sequence en cours
+    $18, $1A: // CAN, SUB
       begin
         if FState <> psGround then
           ToGround;
@@ -185,7 +177,7 @@ begin
         case FState of
           psOscString:
             begin
-              FOscEsc := True; // peut etre ST (ESC \)
+              FOscEsc := True; // ST possible (ESC \)
               Exit;
             end;
           psSkipString:
@@ -200,11 +192,11 @@ begin
   else
     case FState of
       psOscString:
-        ; // controles ignores dans OSC (BEL traite dans HandleCodepoint? non, ici)
+        ; // BEL traite juste en dessous
       psSkipString:
         ;
     else
-      FHandler.Execute(B); // C0 execute meme au milieu d'une sequence CSI
+      FHandler.Execute(B); // meme en plein CSI (VT500)
     end;
     if (B = $07) and (FState = psOscString) then
       DispatchOsc
@@ -236,7 +228,7 @@ begin
         else if (C = UCS4Char(Ord('P'))) or (C = UCS4Char(Ord('X'))) or
                 (C = UCS4Char(Ord('^'))) or (C = UCS4Char(Ord('_'))) then
         begin
-          FState := psSkipString; // DCS/SOS/PM/APC: consommes sans stockage
+          FState := psSkipString; // DCS/SOS/PM/APC, rien de stocke
           ResetCollect;
         end
         else if (C >= $20) and (C <= $2F) then
@@ -250,7 +242,7 @@ begin
           ToGround;
         end
         else
-          ToGround; // >7E ou non-ASCII: abandon
+          ToGround;
       end;
 
     psEscInter:
@@ -339,7 +331,6 @@ begin
       begin
         if (C >= $40) and (C <= $7E) then
           ToGround;
-        // sinon: consomme sans effet
       end;
 
     psOscString:
@@ -352,7 +343,7 @@ begin
             DispatchOsc;
             Exit;
           end;
-          // ESC autre chose: abandonne l'OSC, retraite comme nouvelle sequence
+          // ESC sans \: l'OSC saute, l'ESC ouvre une nouvelle sequence
           FState := psEscape;
           FOsc := '';
           FOscOverflow := False;
@@ -376,7 +367,6 @@ begin
           HandleCodepoint(C);
           Exit;
         end;
-        // consomme sans stockage
       end;
   end;
 end;
@@ -399,7 +389,7 @@ end;
 procedure TTermParser.CsiNextParam;
 begin
   if FParamCount = 0 then
-    FParamCount := 1; // le param vide avant le separateur compte (valeur 0)
+    FParamCount := 1; // « ;5 » = deux params, le premier vaut 0
   if FParamCount >= TERM_MAX_CSI_PARAMS then
   begin
     FState := psCsiIgnore;
@@ -428,9 +418,9 @@ var
 begin
   if FOscOverflow then
     Exit;
-  s := CodepointToUtf8(C);   // encodeur unique (uTermTypes)
+  s := CodepointToUtf8(C);
   if Length(FOsc) + Length(s) > TERM_MAX_OSC_LEN then
-    FOscOverflow := True // l'excedent est jete, on attend le terminateur
+    FOscOverflow := True // excedent jete jusqu'au terminateur
   else
     FOsc := FOsc + s;
 end;

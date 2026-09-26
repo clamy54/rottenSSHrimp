@@ -1,6 +1,5 @@
-{ Scrollbar verticale themee: la LCL laisse les barres de la TTreeView au
-  widgetset natif, gris systeme en plein theme sombre. La molette glisse vers une
-  cible ACCUMULEE; un positionnement direct (pouce, clavier) annule l'animation.
+{ Les barres natives de la TTreeView restent gris systeme en theme sombre.
+  Molette: glisse vers une cible ACCUMULEE; pouce ou clavier coupent l'animation.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -99,8 +98,6 @@ const
   THUMB_RADIUS = 6;
   WHEEL_TICK_MS = 15;  // ~60 Hz, WM_TIMER ne descend pas plus bas
 
-{ TScrollTreeView }
-
 function TScrollTreeView.GetScrollTop: Integer;
 begin
   Result := ScrolledTop;
@@ -167,9 +164,8 @@ var
   px: Integer;
 begin
   px := -((AWheelDelta * Mouse.WheelScrollLines * DefaultItemHeight) div 120);
-  // macOS: PAS de correction de signe, on suit le reglage « defilement
-  // naturel » que Cocoa a deja applique -- meme parite que le terminal, sinon
-  // les deux moities de la fenetre defilent en sens contraire.
+  // macOS: PAS de correction de signe, comme le terminal. Sinon les deux
+  // moities de la fenetre defilent en sens contraire.
   AnimateScrollBy(px);
 end;
 
@@ -180,8 +176,6 @@ begin
   WheelScrollBy(WheelDelta);
   Result := True;
 end;
-
-{ TScrollTreeView -- IThemedScrollTarget }
 
 function TScrollTreeView.ScrollViewportHeight: Integer;
 begin
@@ -225,9 +219,7 @@ begin
   inherited KeyDown(Key, Shift);
 end;
 
-// Selection multiple: la LCL ne connait que Ctrl+clic. Sous macOS c'est Cmd
-// qui ajoute a la selection (Ctrl+clic y est le clic droit): on le presente
-// comme Ctrl avant de laisser faire.
+// La LCL ne connait que Ctrl+clic; sous macOS c'est Cmd (Ctrl+clic = clic droit).
 procedure TScrollTreeView.MouseDown(Button: TMouseButton; Shift: TShiftState;
   X, Y: Integer);
 begin
@@ -254,8 +246,6 @@ begin
   if Assigned(FOnViewChanged) then
     FOnViewChanged(Self);
 end;
-
-{ TTreeScrollBar }
 
 constructor TTreeScrollBar.Create(AOwner: TComponent);
 begin

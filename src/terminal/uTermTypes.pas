@@ -2,25 +2,23 @@ unit uTermTypes;
 
 {$mode objfpc}{$H+}
 
-// Types de base du terminal: cellules, couleurs, attributs et limites
-// de ressources. Aucune dependance LCL ici.
+// Aucune dependance LCL ici.
 
 interface
 
 const
-  // Limites de ressources du parseur et de l'ecran
   TERM_MAX_CSI_PARAMS    = 16;      // au-dela: parametres ignores
-  TERM_MAX_CSI_PARAM_VAL = 65535;   // clamp des valeurs numeriques
+  TERM_MAX_CSI_PARAM_VAL = 65535;   // clamp
   TERM_MAX_INTERMEDIATES = 2;
-  TERM_MAX_OSC_LEN       = 4096;    // octets accumules; le reste est jete
-  TERM_MAX_TITLE_LEN     = 256;     // points de code du titre d'onglet
+  TERM_MAX_OSC_LEN       = 4096;    // octets; le reste est jete
+  TERM_MAX_TITLE_LEN     = 256;     // points de code
   TERM_MAX_COLS          = 1000;
   TERM_MAX_ROWS          = 500;
   TERM_MIN_COLS          = 2;
   TERM_MIN_ROWS          = 2;
   TERM_SCROLLBACK_DEFAULT = 10000;  // lignes
-  TERM_SCROLLBACK_HARD    = 100000; // plafond dur par session
-  TERM_SCROLLBACK_BYTES   = 64 * 1024 * 1024; // budget approximatif
+  TERM_SCROLLBACK_HARD    = 100000; // par session
+  TERM_SCROLLBACK_BYTES   = 64 * 1024 * 1024; // approximatif
 
 type
   TTermColorKind = (tckDefault, tckIndexed, tckRgb);
@@ -45,7 +43,7 @@ type
   TTermLine = array of TTermCell;
 
 const
-  TERM_WIDE_CONT: UCS4Char = 1; // seconde cellule d'un caractere large
+  TERM_WIDE_CONT: UCS4Char = 1; // seconde moitie d'un caractere large
 
 function DefaultColor: TTermColor;
 function IndexedColor(AIndex: Cardinal): TTermColor;
@@ -53,10 +51,10 @@ function RgbColor(R, G, B: Byte): TTermColor;
 function SameColor(const A, B: TTermColor): Boolean;
 function BlankCell(const AFg, ABg: TTermColor): TTermCell;
 
-// Largeur d'affichage d'un point de code: 0 (combinant), 1 ou 2 (large)
+// 0 (combinant), 1 ou 2 (large)
 function CodepointWidth(C: UCS4Char): Integer;
 
-// Encodeur UTF-8 UNIQUE du terminal: parseur et affichage passent par ici.
+// Encodeur UTF-8 UNIQUE: parseur et affichage passent par ici.
 function CodepointToUtf8(C: UCS4Char): string;
 
 implementation
@@ -98,7 +96,7 @@ type
   end;
 
 const
-  // Combinants et largeur zero (extrait suffisant: Mn/Me principaux + ZWJ/ZWNJ)
+  // Tables TRIEES: InRanges est une dichotomie. Extrait, pas Unicode complet.
   ZeroRanges: array[0..27] of TCpRange = (
     (Lo: $0300; Hi: $036F), (Lo: $0483; Hi: $0489), (Lo: $0591; Hi: $05BD),
     (Lo: $05BF; Hi: $05BF), (Lo: $05C1; Hi: $05C2), (Lo: $05C4; Hi: $05C5),
@@ -112,7 +110,6 @@ const
     (Lo: $FE20; Hi: $FE2F)
   );
 
-  // Larges: East Asian Wide/Fullwidth (plages principales)
   WideRanges: array[0..22] of TCpRange = (
     (Lo: $1100; Hi: $115F),   // Hangul Jamo
     (Lo: $2E80; Hi: $303E),   // CJK Radicals .. CJK Symbols
@@ -161,7 +158,7 @@ end;
 function CodepointWidth(C: UCS4Char): Integer;
 begin
   if C < $20 then
-    Exit(0); // controles: jamais imprimes tels quels
+    Exit(0);
   if C < $0300 then
     Exit(1);
   if InRanges(C, ZeroRanges) then
@@ -173,8 +170,7 @@ end;
 
 function CodepointToUtf8(C: UCS4Char): string;
 begin
-  // L'encodeur refuse lui-meme surrogates isoles et points hors Unicode
-  // (-> U+FFFD): le parseur filtre en amont, l'appelant n'a rien a garantir.
+  // Filtre ici aussi: l'appelant n'a rien a garantir.
   if ((C >= $D800) and (C <= $DFFF)) or (C > $10FFFF) then
     C := $FFFD;
   if C < $80 then

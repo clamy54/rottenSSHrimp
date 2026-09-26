@@ -1,6 +1,5 @@
-{ Champ de recherche du panneau lateral: TEdit sans bordure dans un pill dessine
-  a la main. TextHint natif est illisible sur fond sombre, d'ou une invite geree
-  en interne -- elle n'apparait jamais dans SearchText.
+{ Champ de recherche: TEdit sans bordure dans un pill dessine a la main.
+  TextHint natif illisible sur fond sombre: invite maison, jamais dans SearchText.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -277,7 +276,7 @@ var
   rad: Integer;
 begin
   {$IFDEF LCLGtk2}
-  // au premier Paint l'entry est realise: moment sur pour reposer son fond
+  // l'entry n'est realise qu'au premier Paint
   if (not FGtkColorDone) and FEdit.HandleAllocated then
   begin
     // padding a zero: sinon l'entry depasse le pill et recouvre sa bordure
@@ -368,7 +367,6 @@ begin
   Color := ABg;
   FEdit.Color := AField;
   {$IFDEF LCLGtk2}
-  // handle deja la = tout de suite, sinon le prochain Paint s'en charge
   FGtkColorDone := False;
   if FEdit.HandleAllocated then
   begin

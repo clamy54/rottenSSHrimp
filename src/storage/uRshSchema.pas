@@ -2,9 +2,8 @@ unit uRshSchema;
 
 {$mode objfpc}{$H+}
 
-// Schema .rsh, validation stricte du texte DDL de sqlite_master,
-// migrations embarquees a checksum. Nous creons ces
-// fichiers: toute divergence est un tampering ou une version inconnue.
+// Nous seuls ecrivons ces fichiers: tout DDL divergent est un tampering ou
+// une version inconnue.
 
 interface
 
@@ -21,17 +20,17 @@ type
   end;
 
 function ExpectedSchema: specialize TArray<TSchemaObj>;
-// un document v(N) se valide contre le schema v(N): le courant le declarerait falsifie
+// v(N) contre v(N): le schema courant le declarerait falsifie
 function ExpectedSchemaFor(AVersion: Integer): specialize TArray<TSchemaObj>;
 
 procedure UpgradeSchema(ADb: TSqliteDb; AFromVersion: Integer);
 
-// Une migration, une transaction. Expose pour la montee pas a pas: chaque
-// palier scelle le content_mac avec SA version (voir TRshDocument.LoadAndUnlock).
+// Une migration, une transaction: chaque palier scelle le content_mac avec
+// SA version (voir TRshDocument.LoadAndUnlock).
 procedure ApplyMigration(ADb: TSqliteDb; AVersion: Integer);
 
 function MigrationDdl(AVersion: Integer): string;
-// checksum BLAKE2b (hex) du script tel qu'embarque
+// BLAKE2b hex
 function MigrationChecksumHex(AVersion: Integer): string;
 
 procedure InitializeSchema(ADb: TSqliteDb);
@@ -40,7 +39,6 @@ function ValidateSchema(ADb: TSqliteDb; out AErr: string): Boolean;
 function ValidateSchemaFor(ADb: TSqliteDb; AVersion: Integer;
   out AErr: string): Boolean;
 
-// les migrations enregistrees doivent correspondre aux scripts du binaire
 function VerifyMigrationLedger(ADb: TSqliteDb; out AErr: string): Boolean;
 
 implementation
@@ -49,7 +47,7 @@ uses
   ctypes, uSodiumApi, uCryptoPolicy, uRsUtil;
 
 const
-  // Texte DDL fige: ne jamais editer apres release, creer une migration.
+  // DDL FIGE: apres release, on ajoute une migration, on n'edite pas.
   DDL_DOCUMENT_META =
     'CREATE TABLE document_meta (' +
     ' key TEXT PRIMARY KEY,' +
@@ -126,8 +124,7 @@ const
     ' created_at_ms INTEGER NOT NULL,' +
     ' updated_at_ms INTEGER NOT NULL )';
 
-  // v11: + ''fido_key''. Meme forme que le v10, seule la liste du CHECK change;
-  // un CHECK ne s'altere pas, d'ou une reconstruction de plus.
+  // v11: + ''fido_key''. Un CHECK ne s'altere pas: reconstruction.
   DDL_CREDENTIALS_V11 =
     'CREATE TABLE credentials (' +
     ' uuid TEXT PRIMARY KEY,' +
@@ -201,32 +198,27 @@ const
     ' credential_uuid TEXT NOT NULL REFERENCES credentials(uuid) ON DELETE CASCADE,' +
     ' PRIMARY KEY (folder_uuid, protocol) )';
 
-  // v5 (, jump host): un cycle se refuse a la resolution, pas ici
+  // v5: un cycle se refuse a la resolution, pas ici
   DDL_CONNECTION_JUMP =
     'CREATE TABLE connection_jump (' +
     ' connection_uuid TEXT PRIMARY KEY REFERENCES connections(node_uuid) ON DELETE CASCADE,' +
     ' jump_via_uuid TEXT NOT NULL REFERENCES nodes(uuid) ON DELETE CASCADE )';
 
-  // v12: bastion pose sur un DOSSIER, pour les hotes qui heritent. Ligne
-  // absente = continuer a remonter; jump_via_uuid NULL = « direct » explicite,
-  // qui arrete la remontee. Un dossier sans rien laisse donc decider au-dessus.
+  // v12: bastion de DOSSIER. Ligne absente = on remonte; jump_via_uuid NULL =
+  // « direct » explicite, la remontee s'arrete.
   DDL_FOLDER_JUMP =
     'CREATE TABLE folder_jump (' +
     ' folder_uuid TEXT PRIMARY KEY REFERENCES nodes(uuid) ON DELETE CASCADE,' +
     ' jump_via_uuid TEXT REFERENCES nodes(uuid) ON DELETE CASCADE )';
 
-  // v12: presence = « Connect via » vaut « herite du dossier parent ». Exclusif
-  // avec connection_jump, le modele efface l'un en posant l'autre.
+  // v12: presence = « herite du dossier ». Exclusif avec connection_jump.
   DDL_CONNECTION_JUMP_INHERIT =
     'CREATE TABLE connection_jump_inherit (' +
     ' connection_uuid TEXT PRIMARY KEY' +
     ' REFERENCES connections(node_uuid) ON DELETE CASCADE )';
 
-  // v13: tunnels locaux (ssh -L) d'une connexion SSH. Le port local est la
-  // cle: deux tunnels d'un meme hote ne peuvent pas ecouter au meme endroit.
-  // Plancher 1025: l'appli ne tourne pas en administrateur, un port reserve
-  // echouerait a chaque connexion. `kind` prevoit le SOCKS dynamique (-D),
-  // qui n'a pas de destination: l'ajouter plus tard ne reconstruira rien.
+  // v13: tunnels ssh -L, cle = port local. Plancher 1025: pas d'admin, pas de
+  // port reserve. `kind` reserve la place au SOCKS (-D), sans reconstruction.
   DDL_SSH_FORWARDS =
     'CREATE TABLE ssh_forwards (' +
     ' connection_uuid TEXT NOT NULL REFERENCES connections(node_uuid) ON DELETE CASCADE,' +
@@ -240,7 +232,7 @@ const
     ' PRIMARY KEY (connection_uuid, local_port),' +
     ' CHECK (kind <> ''local'' OR (dest_host <> '''' AND dest_port >= 1)) )';
 
-  // v6: presence = "proposer dans Connect via". PIEGE: connections(node_uuid)
+  // v6: presence = « proposer dans Connect via ». PIEGE: connections(node_uuid)
   // porte 9 FK entrantes; une reconstruction recopie TOUT, node_uuid preserve.
   DDL_JUMP_HOST_OFFERS =
     'CREATE TABLE jump_host_offers (' +
@@ -375,7 +367,7 @@ const
     ' connection_uuid TEXT PRIMARY KEY REFERENCES connections(node_uuid) ON DELETE CASCADE,' +
     ' profile_uuid TEXT REFERENCES vnc_profiles(uuid) ON DELETE SET NULL )';
 
-  // v3: + view_actual_size. Pas d'ALTER ADD COLUMN: SQLite reecrirait le DDL stocke
+  // v3: + view_actual_size. Pas d'ALTER ADD COLUMN: SQLite reecrirait le DDL stocke.
   DDL_VNC_CONNECTION_SETTINGS =
     'CREATE TABLE vnc_connection_settings (' +
     ' connection_uuid TEXT PRIMARY KEY REFERENCES connections(node_uuid) ON DELETE CASCADE,' +
@@ -406,7 +398,7 @@ begin
   Result.Ddl := ADdl;
 end;
 
-// v1 publie, FIGE: ne sert qu'a rejouer la migration 1 pour son checksum.
+// FIGE: ne sert qu'a rejouer la migration 1 pour son checksum.
 function SchemaObjectsV1: specialize TArray<TSchemaObj>;
 begin
   Result := [
@@ -635,8 +627,8 @@ begin
   end;
 end;
 
-// Listes FIGEES (entrent dans le texte des migrations, couvert par checksum).
-// Recopie par liste explicite, jamais SELECT *; colonne absente = son DEFAULT.
+// FIGEES: elles entrent dans le texte checksumme des migrations.
+// Jamais de SELECT *; colonne absente = son DEFAULT.
 const
   CONNECTIONS_COLUMNS =
     'node_uuid, protocol, hostname, port, credential_uuid,' +
@@ -654,12 +646,10 @@ const
     ' encrypted_password_id, encrypted_key_id, encrypted_key_pass_id,' +
     ' key_path_hint, managed, created_at_ms, updated_at_ms';
 
-  // public_key doit voyager avec: l'oublier viderait la cle publique de toutes
-  // les cles gerees a la migration.
+  // sans elle, la migration vide la cle publique de toutes les cles gerees
   CREDENTIALS_COLUMNS_V10 = CREDENTIALS_COLUMNS_V9 + ', public_key';
 
-// Un CHECK ne s'altere pas: reconstruction. Pas de RENAME -- SQLite reecrirait
-// le DDL stocke, que ValidateSchema compare au texte.
+// Pas de RENAME: SQLite reecrirait le DDL stocke, que ValidateSchema compare au texte.
 function MigrationDdl2: string;
 begin
   Result :=
@@ -852,16 +842,13 @@ begin
     'DROP TABLE credentials_mig11;';
 end;
 
-// Les documents existants ne bougent pas: un hote sans bastion reste en
-// direct EXPLICITE, pas en « herite ». Basculer tout le parc en herite ferait
-// changer de chemin des sessions le jour ou un dossier recoit un bastion.
+// L'existant reste en direct EXPLICITE: en « herite », poser un bastion sur
+// un dossier ferait changer de chemin tout le parc en silence.
 function MigrationDdl12: string;
 begin
   Result := DDL_FOLDER_JUMP + ';' + DDL_CONNECTION_JUMP_INHERIT + ';';
 end;
 
-// Table neuve et vide: un document existant garde ses sessions telles quelles,
-// aucun tunnel ne s'ouvre tant qu'on n'en a pas declare.
 function MigrationDdl13: string;
 begin
   Result := DDL_SSH_FORWARDS + ';';
@@ -926,8 +913,8 @@ begin
   end;
 end;
 
-// FK coupees HORS transaction (dedans, PRAGMA foreign_keys est un no-op muet):
-// DROP TABLE avec foreign_keys=ON cascade sur les tables filles. Verifie, pas theorique.
+// FK coupees HORS transaction (dedans, le PRAGMA est un no-op muet): sinon
+// DROP TABLE cascade sur les tables filles. Verifie, pas theorique.
 procedure ApplyMigration(ADb: TSqliteDb; AVersion: Integer);
 var
   needsFkOff: Boolean;
@@ -964,7 +951,7 @@ procedure InitializeSchema(ADb: TSqliteDb);
 var
   v: Integer;
 begin
-  // une base neuve rejoue tout l'historique: un seul registre, une seule verite
+  // base neuve = tout l'historique rejoue: un seul registre
   ADb.BeginImmediate;
   try
     ADb.ExecScript(MigrationDdl(1));
@@ -980,7 +967,7 @@ begin
     ApplyMigration(ADb, v);
 end;
 
-// espaces -> simple, sans ';' final: robuste au formatage, pas au contenu
+// tolere le formatage, pas le contenu
 function NormalizeSql(const S: string): string;
 var
   i: Integer;

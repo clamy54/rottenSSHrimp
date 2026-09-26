@@ -1,15 +1,5 @@
-{ Separateur deplacable, peint aux couleurs du theme, et qui repeint tout de
-  suite ce qu'il vient de redimensionner.
-
-  Deux raisons de ne pas utiliser TSplitter tel quel:
-
-  - sans OnPaint, la LCL y dessine le motif du systeme. Celui-ci reste clair
-    en theme sombre, et le separateur devient invisible -- on ne sait plus
-    qu'il y a quelque chose a attraper;
-  - les panneaux suivent la souris pendant le glissement, mais les WM_PAINT
-    passent APRES les messages de souris. Chaque largeur intermediaire reste
-    a l'ecran et les panneaux se couvrent de trainees. Repeindre de force a
-    chaque pas ne laisse rien derriere, au prix d'un repeint par mouvement.
+{ TSplitter nu: motif systeme clair, invisible en theme sombre. Et les
+  WM_PAINT passent APRES la souris: sans repeint force, trainees garanties.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -23,8 +13,6 @@ uses
   Classes, Controls, Graphics, ExtCtrls, uTheme;
 
 const
-  // Assez epais pour se voir et s'attraper a la souris sans etre une
-  // bordure: c'est une poignee, pas une decoration.
   SPLITTER_THICKNESS = 7;
 
 type
@@ -38,8 +26,7 @@ type
 
 implementation
 
-// Invalide ET repeint, en descendant: Update ne vaut que pour la fenetre a
-// laquelle il s'adresse, les filles ont la leur.
+// En descendant: Update ne repeint que sa propre fenetre, pas les filles.
 procedure RepaintNow(AControl: TWinControl);
 var
   i: Integer;
@@ -56,10 +43,8 @@ constructor TThemedSplitter.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
   Beveled := False;
-  // PIEGE AutoSnap (vrai par defaut): sous MinSize, la LCL ne bloque pas le
-  // geste, elle REPLIE le volet redimensionne a 1 px -- il semble disparu.
-  // Et seulement de ce cote-la: l'autre volet est protege par le calcul du
-  // maximum. Sans AutoSnap, le glissement s'arrete a MinSize, des deux cotes.
+  // PIEGE AutoSnap: sous MinSize, la LCL replie le volet a 1 px au lieu de
+  // bloquer. Sans lui, le glissement bute sur MinSize.
   AutoSnap := False;
   Width := SPLITTER_THICKNESS;
   Height := SPLITTER_THICKNESS;
@@ -76,7 +61,6 @@ begin
   Canvas.Brush.Style := bsSolid;
   Canvas.FillRect(r);
 
-  // Trois points au milieu: ce qui dit qu'une barre se prend a la souris.
   vertical := Align in [alLeft, alRight];
   cx := (r.Left + r.Right) div 2;
   cy := (r.Top + r.Bottom) div 2;

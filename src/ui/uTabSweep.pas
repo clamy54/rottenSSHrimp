@@ -1,17 +1,10 @@
 { Balayage sur instantane des onglets de session.
 
-  Parcourir les onglets rend la main a la boucle LCL (modale de ConfirmClose,
-  Free qui joint le worker, AskHostKey en attente). La file async s'y vide, et
-  les DeferredClose qui y dorment font Free: un onglet DISPARAIT au milieu du
-  parcours, la borne du for est deja evaluee. D'ou la regle: figer la liste,
-  revalider chaque element contre la collection VIVANTE avant de le toucher.
-
-  On ne compare que des POINTEURS, jamais de dereferencement d'un objet
-  peut-etre mort. Un TTabSheet detruit se retire seul du PageControl: absent de
-  la collection = libere.
-
-  Unite separee pour etre testable sans LCL -- une fausse collection qui se
-  vide pendant le rappel reproduit le DeferredClose sous modale.
+  Visiter un onglet rend la main a la boucle LCL (modale, join du worker,
+  AskHostKey): un DeferredClose en attente y libere un onglet en plein for.
+  Donc liste figee, et chaque POINTEUR revalide contre la collection vivante
+  avant usage, sans jamais dereferencer un mort. Un TTabSheet detruit quitte
+  seul le PageControl: absent = libere.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -25,9 +18,7 @@ uses
   Classes;
 
 type
-  // Vue de la collection VIVANTE (le PageControl en production). Le filtre
-  // « onglet de session » vit ici: instantane et revalidation doivent partager
-  // exactement le meme critere.
+  // Le filtre vit ici: instantane et revalidation, MEME critere.
   ITabList = interface
     ['{4E5A2C10-9B3D-4F71-A6C2-1D7E8F0A2B34}']
     function RawCount: Integer;
@@ -36,8 +27,7 @@ type
     function IsSessionTab(APtr: Pointer): Boolean;
   end;
 
-  // False interrompt le balayage. Le visiteur PEUT liberer l'onglet: le tour
-  // suivant revalidera.
+  // False interrompt. Le visiteur PEUT liberer l'onglet.
   TTabVisitor = function(APtr: Pointer): Boolean of object;
 
 procedure SnapshotSessionTabs(const AList: ITabList; ASnap: TFPList);

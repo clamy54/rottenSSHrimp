@@ -1,9 +1,6 @@
-{ Controles de dialogue aux couleurs du theme: bouton, case a cocher, liste
-  deroulante, barre d'onglets. Les versions natives ne se recolorent pas: sous
-  Windows avec les styles visuels, un TCheckBox ignore Font.Color (texte noir
-  sur fond sombre, illisible), un TButton et un TComboBox en liste restent
-  clairs. Ceux-ci se peignent eux-memes, en relisant les couleurs du theme a
-  chaque dessin: un changement de theme n'a rien a leur repasser.
+{ Les natifs ne se recolorent pas: sous Windows a styles visuels, TCheckBox
+  ignore Font.Color (noir sur noir), TButton et TComboBox restent clairs.
+  Ceux-ci se peignent seuls et relisent le theme a chaque dessin.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -53,9 +50,8 @@ type
     procedure Click; override;
     property Caption;
     property OnClick;
-    // Default: bouton a l'accent. La touche Entree, elle, est routee par la
-    // fenetre (voir TNodeDialog.KeyDown): un controle peint ne la recoit
-    // que s'il a le focus.
+    // Visuel seulement: Entree n'arrive qu'au focus, la fenetre la route
+    // (TNodeDialog.KeyDown).
     property Default: Boolean read FDefault write SetDefault;
     property ModalResult: TModalResult read FModalResult write FModalResult;
     property Glyph: TThemedButtonGlyph read FGlyph write SetGlyph;
@@ -81,15 +77,12 @@ type
     procedure Click; override;
     property Caption;
     property Checked: Boolean read FChecked write SetChecked;
-    // Clic ou barre d'espace seulement: poser Checked par code ne notifie pas,
-    // comme un TCheckBox dont on ne veut pas les echos.
+    // Clic ou Espace seulement: Checked par code ne notifie pas.
     property OnChange: TNotifyEvent read FOnChange write FOnChange;
   end;
 
-  // Liste deroulante non editable. Meme surface que le TComboBox qu'elle
-  // remplace (Items, ItemIndex, OnChange, Style), pour que le code qui la
-  // remplit n'ait pas a changer. La liste s'ouvre en menu aux couleurs du
-  // theme (menus de l'appli).
+  // Surface du TComboBox remplace (Items, ItemIndex, OnChange, Style); la
+  // liste s'ouvre en menu theme.
   TThemedCombo = class(TCustomControl)
   private
     FItems: TStringList;
@@ -123,7 +116,7 @@ type
     // Poser ItemIndex par code ne notifie pas: comme un TComboBox.
     property ItemIndex: Integer read FItemIndex write SetItemIndex;
     property OnChange: TNotifyEvent read FOnChange write FOnChange;
-    // Garde pour la compatibilite du code d'appel: il n'y a qu'un style.
+    // Decoratif: un seul style.
     property Style: TComboBoxStyle read FStyle write FStyle;
   end;
 
@@ -132,8 +125,7 @@ type
     FTabs: TStringList;
     FTabIndex: Integer;
     FHot: Integer;
-    // Focus pris a la souris: pas de cadre, il ne sert qu'a qui navigue au
-    // clavier et, apres un clic, ressemble a un onglet encadre par erreur.
+    // Focus a la souris: pas de cadre, il ne sert qu'au clavier.
     FMouseFocus: Boolean;
     FOnChange: TNotifyEvent;
     function TabRect(AIndex: Integer): TRect;
@@ -158,15 +150,10 @@ type
     property OnChange: TNotifyEvent read FOnChange write FOnChange;
   end;
 
-// Fond d'un champ de saisie: a peine detache du fond de la fenetre, dans le
-// sens du theme (plus clair en sombre, plus sombre en clair).
 function ThemeFieldColor: TColor;
-// Texte lisible sur AColor: sombre sur un fond clair, clair sur un fond sombre.
 function ContrastTextColor(AColor: TColor): TColor;
-// Couleurs d'un TEdit/TMemo.
 procedure ThemeField(AEdit: TWinControl);
-// Passe AControl et ses enfants aux couleurs du theme: fonds, libelles
-// (selon leur Tag), champs. Les controles peints ici se debrouillent seuls.
+// Recursif. Les controles peints de cette unite se debrouillent seuls.
 procedure ThemeControls(AControl: TControl);
 
 {$IFDEF LCLGtk2}
@@ -267,7 +254,7 @@ begin
 end;
 
 type
-  // Porte les gestionnaires du cadre des champs: la LCL veut des methodes.
+  // La LCL veut des methodes, pas des procedures.
   TFieldFramer = class
     procedure PanelPaint(Sender: TObject);
     procedure FieldFocus(Sender: TObject);
@@ -282,7 +269,7 @@ const
   FIELD_PAD_X = 7;
   FIELD_PAD_Y = 4;
 
-// Le cadre d'un champ, deduit de ses bornes actuelles (champ deja rentre).
+// Deduit des bornes du champ DEJA rentre.
 function FieldFrame(AEdit: TControl): TRect;
 begin
   if AEdit is TCustomMemo then
@@ -336,10 +323,8 @@ begin
     TControl(Sender).Parent.Invalidate;
 end;
 
-// Le cadre natif d'un champ (blanc et epais sous Windows en theme sombre)
-// jure avec les listes deroulantes peintes. On l'enleve, on rentre le champ
-// dans ses anciennes bornes, et son panneau peint un cadre arrondi a la
-// place, a l'accent quand le champ a le focus.
+// Cadre natif blanc et epais sous Windows en sombre: retire, champ rentre dans
+// ses bornes, le panneau peint un cadre arrondi a la place.
 procedure FrameField(AEdit: TCustomEdit);
 var
   l, t, w, h, eh: Integer;
@@ -393,8 +378,7 @@ begin
   end
   else if AControl is TLabel then
   begin
-    // Pas de ParentFont: ApplyUiFont a pose nom et taille un par un, la
-    // couleur doit l'etre aussi, sinon elle reste au noir du systeme.
+    // Pas de ParentFont (ApplyUiFont): couleur posee a la main, sinon noir systeme.
     case AControl.Tag of
       THEME_TAG_SECONDARY: AControl.Font.Color := clTextSecondary;
       THEME_TAG_WARN: AControl.Font.Color := clScpWarn;
@@ -423,8 +407,6 @@ begin
     RADIUS, RADIUS);
   ACanvas.Pen.Width := 1;
 end;
-
-{ TThemedButton }
 
 constructor TThemedButton.Create(AOwner: TComponent);
 begin
@@ -522,7 +504,7 @@ begin
   end;
   if FGlyph <> tbgNone then
   begin
-    // bouton-icone (l'oeil du mot de passe): discret tant qu'on ne le survole pas
+    // bouton-icone: invisible hors survol
     if not (FHot or FDown) then
     begin
       bg := clAppBg;
@@ -621,8 +603,6 @@ begin
   inherited EnabledChanged;
   Invalidate;
 end;
-
-{ TThemedCheck }
 
 constructor TThemedCheck.Create(AOwner: TComponent);
 begin
@@ -755,8 +735,6 @@ begin
   inherited EnabledChanged;
   Invalidate;
 end;
-
-{ TThemedCombo }
 
 constructor TThemedCombo.Create(AOwner: TComponent);
 begin
@@ -957,8 +935,6 @@ begin
   inherited EnabledChanged;
   Invalidate;
 end;
-
-{ TThemedTabs }
 
 constructor TThemedTabs.Create(AOwner: TComponent);
 begin

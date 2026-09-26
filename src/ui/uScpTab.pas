@@ -1,13 +1,6 @@
-{ Onglet Scp: deux panneaux de fichiers, une file de transferts, et les trois
-  fils qui les alimentent -- le thread UI, qui ne fait ni DNS, ni reseau, ni
-  listing, ni copie; TSftpTransport; et TLocalFsWorker. Ce dernier existe
-  parce qu'un partage reseau hors ligne fait bloquer un listing le temps du
-  timeout systeme: sur le thread UI cela gele l'application, sur celui du
-  transport cela arrete un envoi en cours.
-
-  Le chemin AFFICHE et le chemin DEMANDE sont deux choses: FLocalPath et
-  FRemotePath ne bougent qu'a l'arrivee d'un listing reussi, et toute
-  operation se construit sur le chemin affiche.
+{ Le thread UI ne fait ni DNS, ni reseau, ni listing, ni copie. TLocalFsWorker
+  existe parce qu'un partage hors ligne bloque le temps du timeout systeme.
+  Toute operation vise le chemin AFFICHE, jamais le chemin demande.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -29,8 +22,8 @@ uses
 type
   TScpTab = class;
 
-  // Reconstruit la connexion, invites comprises. Fournie par uScpConnect, seul
-  // a savoir rejouer credentials, rebond et FIDO2. False + AErr vide = annule.
+  // Fournie par uScpConnect, seul a savoir rejouer credentials, rebond et
+  // FIDO2. False + AErr vide = annule.
   TScpReconnectBuilder = function(ADoc: TRshDocument; AModel: TRshModel;
     const AConnUuid: string; out AParams: TSshConnectParams;
     out ATunnel: TSshTunnel; out ABroker: TSshTunnelBroker;
@@ -57,15 +50,13 @@ type
     procedure Push(const APath: string);
     function CanBack: Boolean;
     function CanForward: Boolean;
-    // Rendent le chemin vise SANS bouger l'index: Commit s'en charge, quand le
-    // dossier est reellement affiche.
+    // SANS bouger l'index: Commit le fera, une fois le dossier affiche.
     function PendBack: string;
     function PendForward: string;
     procedure Commit;
     procedure Abandon;
     function Current: string;
-    // Le chemin qu'un Back ou un Forward attend, '' si aucun. Un rechargement du
-    // dossier affiche ne doit pas valider ce deplacement a sa place.
+    // '' si aucun Back/Forward en attente.
     function PendingPath: string;
   end;
 
@@ -83,14 +74,13 @@ type
     FEverConnected: Boolean;
     FUserAbort: Boolean;
     FSkNotice: TObject;
-    // ProcessMessages peut reentrer dans la fermeture: le drapeau l'arrete.
+    // ProcessMessages peut reentrer dans la fermeture.
     FCleaningPartials: Boolean;
 
     FLocalFs: TLocalFileSystem;
     FLocalWorker: TLocalFsWorker;
     FQueue: TTransferQueue;
-    // Le moteur est a l'onglet, pas au transport: il porte le registre des
-    // partiels, donc la reprise apres reconnexion.
+    // A l'onglet, pas au transport: les partiels survivent a la reconnexion.
     FEngine: TScpTransferEngine;
     FTransport: TSftpTransport;
     FTunnel: TSshTunnel;
@@ -109,26 +99,21 @@ type
     FMiddle: TPanel;
     FQueueView: TTransferQueueView;
     FNotices: TLabel;
-    // Part du volet local dans la largeur utile: 50 % a l'ouverture, puis la
-    // proportion que l'utilisateur a choisie en deplacant le separateur --
-    // c'est elle que chaque redimensionnement de la fenetre preserve.
-    FSplitRatio: Double;
+    FSplitRatio: Double;   // part du volet local
 
-    // Chemins AFFICHES, ceux dont les noms sont a l'ecran: ils ne changent qu'a
-    // l'arrivee d'un listing reussi.
+    // AFFICHES: ne changent qu'a l'arrivee d'un listing reussi.
     FLocalPath: string;
     FRemotePath: string;
     FLocalWanted: string;
     FRemoteWanted: string;
-    // Numero de la DERNIERE demande de chaque cote. Le chemin seul ne suffirait
-    // pas a reperer une reponse en retard: on peut revenir sur ses pas.
+    // Le chemin seul ne repere pas une reponse en retard: on revient sur ses pas.
     FLocalWantedSerial: Int64;
     FRemoteWantedSerial: Int64;
-    // Fermeture en cours de confirmation ou de nettoyage: ces deux moments
-    // pompent la boucle, et un second clic detruirait l'onglet sous le premier.
+    // Confirmation et nettoyage pompent la boucle: un second clic detruirait
+    // l'onglet sous le premier.
     FClosePending: Boolean;
-    // Inscrite dans l'historique quand elle a REUSSI: un dossier jamais affiche
-    // n'a rien a faire dans « arriere ».
+    // Historique seulement si REUSSI: un dossier jamais vu n'a rien a faire
+    // dans « arriere ».
     FLocalPushPending: Boolean;
     FRemotePushPending: Boolean;
     FLocalHistory: TNavHistory;
@@ -167,21 +152,18 @@ type
 
     procedure ReconnectClick(Sender: TObject);
     procedure CloseClick(Sender: TObject);
-    // ADestDir vide = le dossier affiche en face. Un depot sur un dossier le
-    // designe, et il devient la racine de confinement du lot.
+    // ADestDir vide = le dossier affiche en face. Sinon, racine de confinement.
     procedure StartTransfer(ASide: TFilePanelSide; const ADestDir: string);
     procedure StartDuplicate(ASide: TFilePanelSide);
     procedure PanelDrop(ASourceSide: TFilePanelSide; const ASubFolder: string);
     procedure QueueCommand(ACommand: TQueueCommand);
     procedure RefreshTick(Sender: TObject);
 
-    // --- relais du worker local (thread UI) ---
     procedure LocalListed(const APath: string; ASerial: Int64;
       const AEntries: TScpEntryArray; const AError: TScpError);
     procedure LocalOpDone(const AError: TScpError);
     procedure LocalVolumes(const AVolumes: TLocalVolumeArray);
 
-    // --- relais du transport (thread UI) ---
     procedure RemoteListed(const APath: string; ASerial: Int64;
       const AEntries: TScpEntryArray; const AError: TScpError);
     procedure RemoteHomeReady(const APath: string; ASerial: Int64;
@@ -213,8 +195,7 @@ type
 
     procedure Start;
     procedure AttachTunnel(ATunnel: TSshTunnel; ABroker: TSshTunnelBroker);
-    // Rend « Reconnect » capable de reconnecter. Sans cet appel il explique
-    // comment faire, il ne pretend pas le faire.
+    // Sans cet appel, « Reconnect » explique, il ne reconnecte pas.
     procedure EnableReconnect(AModel: TRshModel;
       ABuilder: TScpReconnectBuilder);
     procedure RefreshTheme;
@@ -240,14 +221,9 @@ uses
 const
   NAV_HISTORY_MAX = 64;
   REFRESH_DEBOUNCE_MS = 120;
-  // En dessous, un volet de fichiers n'affiche plus rien d'utilisable, meme
-  // avec les colonnes qui s'effacent; c'est aussi la borne du separateur.
-  PANE_MIN_W = 220;
-  // Delai laisse au transport pour retirer ses temporaires: un aller-retour
-  // SFTP, pas de quoi figer une fermeture.
+  PANE_MIN_W = 220;   // en dessous, le volet n'affiche plus rien d'utile
+  // un aller-retour SFTP, pas de quoi figer une fermeture
   PARTIAL_CLEANUP_GRACE_MS = 5000;
-
-{ TScpSessionHandle }
 
 constructor TScpSessionHandle.Create(ATab: TScpTab);
 begin
@@ -269,8 +245,6 @@ procedure TScpSessionHandle.BeginShutdown;
 begin
   FTab.BeginShutdown;
 end;
-
-{ TNavHistory }
 
 constructor TNavHistory.Create;
 begin
@@ -310,9 +284,7 @@ begin
   Result := (FIndex >= 0) and (FIndex < FItems.Count - 1);
 end;
 
-// L'index ne BOUGE PAS ici, mais quand le dossier sera affiche: un listing
-// qui echoue laisse le panneau en place, et un historique qui aurait avance
-// ferait sauter des entrees ou inverser Back et Forward.
+// L'index ne BOUGE PAS: si le listing echoue, Back et Forward s'inverseraient.
 function TNavHistory.PendBack: string;
 begin
   FPending := -1;
@@ -357,14 +329,11 @@ begin
     Result := '';
 end;
 
-{ TScpTab }
-
 constructor TScpTab.CreateSession(APages: TPageControl; ADoc: TRshDocument;
   AManager: TSessionManager; const ADisplayName, AConnUuid: string;
   AParams: TSshConnectParams);
 begin
-  // AParams appartient a l'onglet des l'entree, echec compris. Passe cette
-  // ligne c'est le transport qui le porte, et son destructeur s'en chargera.
+  // AParams est a nous des l'entree, echec compris; puis au transport.
   try
     inherited Create(APages);
     PageControl := APages;
@@ -405,14 +374,12 @@ destructor TScpTab.Destroy;
 var
   cb: TNotifyEvent;
 begin
-  // 1. Marquer ferme: tout relais teste ce drapeau avant de toucher un
-  //    controle.
+  // tout relais teste ce drapeau avant de toucher un controle
   FClosing := True;
   if (FManager <> nil) and (FHandle <> nil) then
     FManager.UnregisterSession(FHandle);
 
-  // 2. Detacher les callbacks du worker local AVANT de le couper: un
-  //    resultat deja en vol ne doit pas trouver de destinataire.
+  // Detacher AVANT de couper: un resultat en vol ne trouve plus personne.
   if FLocalWorker <> nil then
   begin
     FLocalWorker.OnListed := nil;
@@ -420,8 +387,7 @@ begin
     FLocalWorker.OnVolumes := nil;
   end;
 
-  // 3. Couper puis JOINDRE les deux threads: TThread attend la fin d'Execute,
-  //    d'ou l'importance que toute attente reseau soit reveillable.
+  // JOINDRE: toute attente reseau doit etre reveillable, sinon on attend ici.
   DropTransport;
   if FLocalWorker <> nil then
   begin
@@ -430,7 +396,6 @@ begin
     FLocalWorker := nil;
   end;
 
-  // 4. Retirer ce qui attendait encore dans la file asynchrone de la LCL.
   Application.RemoveAsyncCalls(Self);
   FreeAndNil(FSkNotice);
 
@@ -466,8 +431,7 @@ begin
   FTransport.OnSkPin := @SkPin;
 end;
 
-// Detache, coupe, joint et libere le transport puis son tunnel. Fermeture et
-// reconnexion: dans les deux cas aucun rappel de l'ancien fil ne doit venir.
+// Fermeture et reconnexion: plus aucun rappel de l'ancien fil.
 procedure TScpTab.DropTransport;
 begin
   if FTransport <> nil then
@@ -537,9 +501,8 @@ begin
   FHeaderInfo.Layout := tlCenter;
   FHeaderInfo.BorderSpacing.Left := 8;
 
-  // Top explicite avant alBottom: a Top egal, la LCL range les alBottom dans
-  // l'ordre INVERSE de leur creation -- le separateur filait sous le journal,
-  // tout en bas, sans plus rien a redimensionner: il ne bougeait plus.
+  // Top explicite: a egalite, la LCL empile les alBottom a l'ENVERS de leur
+  // creation, et le separateur fuyait sous le journal.
   FNotices := TLabel.Create(Self);
   FNotices.Parent := Self;
   FNotices.Top := 3000;
@@ -570,7 +533,7 @@ begin
   FLocalPanel := TFilePanel.CreateSide(Self, fpsLocal);
   FLocalPanel.Parent := FMiddle;
   FLocalPanel.Align := alLeft;
-  FLocalPanel.Width := 480;   // provisoire: MiddleResize posera le 50/50 reel
+  FLocalPanel.Width := 480;   // provisoire: MiddleResize tranche
   FLocalPanel.OnAction := @LocalAction;
   FLocalPanel.OnNavigate := @LocalNavigate;
   FLocalPanel.OnDrop := @PanelDrop;
@@ -579,8 +542,7 @@ begin
   FSplit := TThemedSplitter.Create(Self);
   FSplit.Parent := FMiddle;
   FSplit.Align := alLeft;
-  // Left explicite: a egalite, la LCL range les alLeft dans l'ordre inverse de
-  // leur creation, et le separateur se collait au bord gauche.
+  // Left explicite: meme piege, le separateur se collait au bord gauche.
   FSplit.Left := FLocalPanel.Left + FLocalPanel.Width;
   FSplit.MinSize := PANE_MIN_W;
   FSplit.OnMoved := @SplitMoved;
@@ -594,7 +556,7 @@ begin
   FRemotePanel.OnNavigate := @RemoteNavigate;
   FRemotePanel.OnDrop := @PanelDrop;
   FRemotePanel.List.OnAction := @RemoteAction;
-  // maintenant que les DEUX volets existent, le vrai minimum est connu
+  // le vrai minimum exige les DEUX volets
   FSplit.MinSize := PaneMinW;
 
   FRefreshTimer := TTimer.Create(Self);
@@ -605,8 +567,7 @@ begin
   RefreshTheme;
 end;
 
-// PANE_MIN_W ou, si elle est plus grande, la largeur ou TOUTES les icones du
-// bandeau restent visibles: un volet plus etroit cachait la derniere icone.
+// Au moins de quoi voir TOUTES les icones du bandeau.
 function TScpTab.PaneMinW: Integer;
 begin
   Result := PANE_MIN_W;
@@ -616,10 +577,7 @@ begin
     Result := FRemotePanel.ToolbarMinWidth;
 end;
 
-// La largeur utile se partage selon FSplitRatio: 50/50 a l'ouverture, puis la
-// proportion choisie au separateur. Chaque volet garde PaneMinW tant que la
-// place existe; en dessous, moitie-moitie du peu qu'il reste -- les colonnes
-// des volets s'effacent deja d'elles-memes.
+// Sous 2 x PaneMinW, moitie-moitie du peu qui reste.
 procedure TScpTab.MiddleResize(Sender: TObject);
 var
   avail, w, minW: Integer;
@@ -639,8 +597,7 @@ begin
   FLocalPanel.Width := w;
 end;
 
-// Le geste de l'utilisateur fait LOI: c'est sa proportion que les
-// redimensionnements suivants preservent, pas un retour au 50/50.
+// Le geste fait LOI: sa proportion survit aux redimensionnements.
 procedure TScpTab.SplitMoved(Sender: TObject);
 var
   avail: Integer;
@@ -671,8 +628,7 @@ begin
   FTransport.Start;
   FLocalWorker.Start;
   FLocalWorker.RequestVolumes;
-  // Un panneau est actif des le depart: sinon aucune des deux selections
-  // ne se distingue, et F5 n'a pas de sens defini.
+  // sans panneau actif, F5 ne sait pas de quel cote copier
   FLocalPanel.List.SetPanelActive(True);
   FRemotePanel.List.SetPanelActive(False);
   NavigateTo(fpsLocal, LocalHomePath, True);
@@ -729,14 +685,11 @@ end;
 procedure TScpTab.Note(const AText: string);
 begin
   if FClosing or (FNotices = nil) then Exit;
-  // Le texte peut contenir un nom du serveur: deja neutralise, mais une seconde
-  // passe ne coute rien.
+  // Nom du serveur deja neutralise; une seconde passe ne coute rien.
   FNotices.Caption := DisplaySafeName(AText);
   if Assigned(FOnNotice) then
     FOnNotice(Format('%s: %s', [FDisplayName, AText]));
 end;
-
-// --- Navigation -----------------------------------------------------------
 
 procedure TScpTab.CaptureSide(ASide: TFilePanelSide);
 begin
@@ -748,8 +701,6 @@ begin
       FRemoteSavedTop);
 end;
 
-// Le chemin AFFICHE ne change qu'a l'arrivee d'un listing REUSSI: entre les
-// deux l'ancien contenu reste a l'ecran, et toute operation le vise.
 procedure TScpTab.NavigateTo(ASide: TFilePanelSide; const APath: string;
   APushHistory: Boolean);
 var
@@ -770,8 +721,7 @@ begin
       CaptureSide(fpsLocal);
     FLocalWanted := norm;
     FLocalPushPending := APushHistory;
-    // Un listing qui n'est pas celui du Back en attente ne doit pas le valider:
-    // l'index avancerait alors que le dossier d'avant est encore a l'ecran.
+    // Un autre listing ne valide pas le Back en attente.
     if (not APushHistory) and (FLocalHistory.PendingPath <> norm) then
       FLocalHistory.Abandon;
     FLocalPanel.SetBusy(True, 'Reading ' + DisplaySafeName(norm) + '...');
@@ -782,7 +732,7 @@ begin
     norm := RemoteNormalize(APath);
     if (FTransport = nil) or (FState <> rssConnected) then
     begin
-      // Poser la commande a un fil mort laisserait « Reading... » pour toujours.
+      // Un fil mort laisserait « Reading... » pour l'eternite.
       FRemotePanel.ShowError(MakeScpError(sekConnectionLost, 'Listing',
         DisplaySafeName(norm), 'not connected'));
       Exit;
@@ -824,8 +774,7 @@ procedure TScpTab.RefreshTick(Sender: TObject);
 begin
   FRefreshTimer.Enabled := False;
   if FClosing then Exit;
-  // On recharge ce qui est AFFICHE, et le resultat est attendu comme tel: sans
-  // NavigateTo il arriverait pour un chemin que personne n'attend.
+  // Via NavigateTo, sinon la reponse arrive pour un chemin que nul n'attend.
   if FPendingLocalRefresh then
   begin
     FPendingLocalRefresh := False;
@@ -898,7 +847,7 @@ begin
   case AAction of
     fpaNavigate:
       begin
-        // « .. » remonte. Son nom ne passerait aucune verification, et c'est voulu.
+        // « .. » ne passerait aucune verification de nom, et c'est voulu.
         if panel.List.FocusedIsParent then
         begin
           if ASide = fpsLocal then
@@ -908,13 +857,11 @@ begin
           Exit;
         end;
         if not panel.List.FocusedEntry(entry) then Exit;
-        // Un lien n'est jamais SUIVI en recursion; y entrer a la main est un
-        // choix. Cible non etablie (listing distant): on tente, le serveur
-        // tranche -- un refus laisse le panneau en place avec le motif.
+        // Jamais SUIVI en recursion, mais y entrer a la main est un choix.
+        // Cible inconnue: on tente, le serveur tranche.
         if not (entry.IsDir or (entry.IsLink and
            (entry.TargetIsDir or not entry.TargetKnown))) then
         begin
-          // Aucune ouverture ni execution automatique d'un fichier distant.
           Note('Double-click opens folders only; files are never opened ' +
             'or run from here.');
           Exit;
@@ -939,8 +886,7 @@ begin
         NavigateTo(ASide, LocalHomePath, True)
       else if (FTransport <> nil) and (FState = rssConnected) then
       begin
-        // Le home est une navigation comme une autre: il porte un numero, et une
-        // reponse en retard est ignoree comme le serait un listing.
+        // numerote comme un listing: une reponse en retard est ignoree
         FRemotePanel.SetBusy(True, 'Reading the home folder...');
         FRemoteWantedSerial := FTransport.RequestHome;
       end;
@@ -1002,8 +948,7 @@ begin
       begin
         names := panel.List.SelectedNames;
         if Length(names) = 0 then Exit;
-        // Le contenu d'un dossier n'est pas compte d'avance: la formulation
-        // le dit, plutot que de laisser croire a un total.
+        // contenu des dossiers non compte: pas de faux total
         if Length(names) = 1 then
           msg := Format('Delete "%s"?', [DisplaySafeName(names[0])])
         else
@@ -1044,8 +989,6 @@ begin
       end;
     fpaProperties:
       begin
-        // Droits Unix: le panneau local n'en a pas a montrer, et une session
-        // coupee ne peut rien poser.
         if (ASide <> fpsRemote) or (FTransport = nil) or
            (FState <> rssConnected) then Exit;
         sel := panel.List.SelectedEntries;
@@ -1055,8 +998,7 @@ begin
         SetLength(names, 0);
         for i := 0 to High(sel) do
         begin
-          // Un nom que le validateur refuse ne part pas en chemin: la
-          // fenetre l'a montre, elle ne le rend pas modifiable pour autant.
+          // Montre, oui; modifiable, non.
           if CheckRemoteChildName(sel[i].Name) <> nvOk then Continue;
           SetLength(names, Length(names) + 1);
           names[High(names)] := RemoteJoin(cur, sel[i].Name);
@@ -1072,8 +1014,6 @@ begin
         FLocalPanel.FocusList;
   end;
 end;
-
-// --- Transferts -----------------------------------------------------------
 
 procedure TScpTab.StartTransfer(ASide: TFilePanelSide; const ADestDir: string);
 var
@@ -1096,15 +1036,13 @@ begin
       Note('Select what you want to send first.');
       Exit;
     end;
-    // Aucun filtre ici: un nom refuse entre en file avec sa raison, sinon il
-    // disparait du bilan.
+    // Pas de filtre: un nom refuse entre en file avec sa raison.
     SetLength(sources, Length(names));
     for i := 0 to High(names) do
       sources[i] := LocalJoin(FLocalPath, names[i]);
     dest := ADestDir;
     if dest = '' then dest := FRemotePath;
-    // La RACINE de confinement est le dossier distant VISE: rien de ce lot
-    // ne pourra etre ecrit en dehors.
+    // RACINE de confinement = dossier VISE: rien n'ecrit en dehors.
     FTransport.RequestUpload(sources, dest, dest);
   end
   else
@@ -1125,8 +1063,7 @@ begin
   FQueueView.Refresh;
 end;
 
-// Duplication sur place. Le nom libre n'est PAS choisi ici: le dossier peut
-// changer avant l'ecriture, et c'est au fil qui copie de trancher.
+// Nom libre choisi par le fil qui copie, PAS ici: le dossier bouge entre-temps.
 procedure TScpTab.StartDuplicate(ASide: TFilePanelSide);
 var
   names, sources: TStringArray;
@@ -1134,8 +1071,7 @@ var
   i, n: Integer;
 begin
   if FClosing or (FTransport = nil) then Exit;
-  // Meme en local, la copie passe par le fil de la session: il porte le moteur,
-  // la file et les conflits.
+  // Meme en local: le fil de session porte moteur, file et conflits.
   if FState <> rssConnected then
   begin
     Note('Not connected: reconnect before duplicating.');
@@ -1166,7 +1102,6 @@ begin
   FQueueView.Refresh;
 end;
 
-// Un lot depose va dans le dossier survole, sinon dans celui qui est affiche.
 // Le nom repasse par les regles de la DESTINATION avant de servir de chemin.
 procedure TScpTab.PanelDrop(ASourceSide: TFilePanelSide;
   const ASubFolder: string);
@@ -1223,8 +1158,7 @@ begin
       end;
     qcClearCompleted:
       begin
-        // Les lignes restantes changent de position: la selection est reprise
-        // par identifiant, sinon elle viserait d'autres elements.
+        // Les lignes bougent: selection reprise par identifiant.
         ids := FQueueView.SelectedItemIds;
         id := FQueueView.FocusedItemId;
         FQueue.ClearFinished;
@@ -1240,9 +1174,7 @@ begin
   FQueueView.Refresh;
 end;
 
-// Reconstruire la session passe par le chemin de l'ouverture, fourni par
-// EnableReconnect. Le moteur, la file et le registre des partiels restent:
-// c'est ce qui permet a un element interrompu de reprendre a son offset.
+// Moteur, file et partiels restent: un element interrompu reprend a son offset.
 procedure TScpTab.ReconnectClick(Sender: TObject);
 var
   params: TSshConnectParams;
@@ -1267,8 +1199,7 @@ begin
     if err <> '' then Note(err);     // vide = l'utilisateur a renonce
     Exit;
   end;
-  // On joint l'ancien transport avant de brancher le neuf, sinon deux fils se
-  // disputeraient la file.
+  // Joindre l'ancien d'abord, sinon deux fils se disputent la file.
   DropTransport;
   FTunnel := tun;
   FTunnelBroker := broker;
@@ -1289,8 +1220,6 @@ procedure TScpTab.CloseClick(Sender: TObject);
 var
   ok: Boolean;
 begin
-  // Confirmation et nettoyage pompent la boucle: un second clic traite pendant
-  // ce temps detruirait l'onglet sous le premier appel, encore sur sa pile.
   if FClosePending or FClosing then Exit;
   FClosePending := True;
   try
@@ -1302,8 +1231,6 @@ begin
   if ok then Free;
 end;
 
-// --- Relais du worker local ----------------------------------------------
-
 procedure TScpTab.LocalListed(const APath: string; ASerial: Int64;
   const AEntries: TScpEntryArray; const AError: TScpError);
 var
@@ -1311,15 +1238,13 @@ var
 begin
   if FClosing then Exit;
   norm := LocalNormalize(APath);
-  // En retard: un autre listing aura le dernier mot. Le NUMERO et pas le
-  // chemin, sinon aller en A, en B, puis revenir en A ferait prendre la
-  // premiere reponse A pour la troisieme.
+  // Le NUMERO, pas le chemin: A, B, puis A prendrait la premiere reponse A
+  // pour la derniere.
   if ASerial <> FLocalWantedSerial then Exit;
   FLocalPanel.SetBusy(False, '');
   if AError.Kind <> sekNone then
   begin
-    // L'ancien contenu RESTE affiche, chemin compris: vider ferait croire a un
-    // dossier vide, et changer le chemin ferait agir sur ce que nul ne voit.
+    // L'ancien contenu RESTE, chemin compris: sinon on agit sur ce que nul ne voit.
     FLocalPanel.ShowError(AError);
     FLocalPanel.SetPathText(FLocalPath);
     FLocalWanted := FLocalPath;
@@ -1366,8 +1291,6 @@ begin
     FLocalPanel.SelectVolumeFor(FLocalPath);
 end;
 
-// --- Relais du transport --------------------------------------------------
-
 procedure TScpTab.RemoteListed(const APath: string; ASerial: Int64;
   const AEntries: TScpEntryArray; const AError: TScpError);
 var
@@ -1384,8 +1307,7 @@ begin
     FRemoteWanted := FRemotePath;
     FRemoteWantedSerial := 0;
     FRemoteHistory.Abandon;
-    // Une erreur de listing n'invalide pas la connexion: seule une perte reseau
-    // le fait, par TransportFailed.
+    // La connexion ne tombe que par TransportFailed, pas pour un listing.
     Exit;
   end;
   FRemotePanel.ClearError;
@@ -1404,8 +1326,6 @@ procedure TScpTab.RemoteHomeReady(const APath: string; ASerial: Int64;
   const AError: TScpError);
 begin
   if FClosing then Exit;
-  // Par numero, comme un listing: un home demande avant une navigation plus
-  // recente ne doit pas la defaire.
   if ASerial <> FRemoteWantedSerial then Exit;
   if APath = '' then
   begin
@@ -1479,8 +1399,7 @@ begin
     FErrorMsg := FTunnel.LastError;
   UpdateCaption;
   UpdateHeader;
-  // Un echec garde l'onglet OUVERT avec sa raison, et les elements en vol
-  // passent a « interrompu », pas a « reussi ».
+  // Onglet OUVERT avec sa raison; les elements en vol passent a « interrompu ».
   FRemotePanel.ShowError(MakeScpError(sekConnectionLost, 'Connection',
     FDisplayName, FErrorMsg));
   FQueueView.Refresh;
@@ -1534,7 +1453,7 @@ end;
 procedure TScpTab.HostKeyAsk(const AInfo: TSshHostKeyInfo;
   var ADecision: TSshHostKeyDecision);
 begin
-  // Exactement le dialogue des sessions SSH: une cle modifiee reste bloquante.
+  // Meme dialogue que SSH: une cle modifiee reste bloquante.
   if AInfo.Verdict = hkChanged then
     ADecision := AskChangedHostKey(AInfo)
   else
@@ -1574,8 +1493,6 @@ begin
   ACancelled := not AskFidoPin(APrompt, APin);
 end;
 
-// --- Cycle de vie ---------------------------------------------------------
-
 function TScpTab.ConfirmClose: Boolean;
 var
   s: TQueueSummary;
@@ -1592,8 +1509,7 @@ begin
   msg := Format('%d transfer(s) are still queued or in progress.',
     [s.Pending + s.Running + s.Interrupted]);
   if partials > 0 then
-    // Le nombre de partiels est DIT: ils restent sur le disque ou le serveur, et
-    // les decouvrir plus tard sans explication est le pire des deux mondes.
+    // Le nombre est DIT: un partiel decouvert plus tard, c'est pire.
     msg := msg + LineEnding + Format('%d partial file(s) have been written ' +
       'and will be removed if possible, or left clearly named otherwise.',
       [partials]);
@@ -1605,17 +1521,15 @@ begin
   if Result and (FTransport <> nil) then
   begin
     FQueue.CancelAll;
-    // Le compte a ete pris AVANT l'annulation, et un transfert en cours peut
-    // n'avoir pas encore enregistre son temporaire: on nettoie des qu'un
-    // transfert etait en vie, pas seulement si un partiel etait compte.
+    // Compte pris AVANT l'annulation: un transfert vivant n'a peut-etre pas
+    // encore declare son temporaire.
     if (partials > 0) or (s.Running > 0) or (s.Interrupted > 0) then
       WaitForPartialCleanup;
   end;
 end;
 
-// On vient de promettre de retirer les temporaires « si possible ». Detruire
-// l'onglet dans la foulee tuerait le thread avant qu'il voie la commande: on
-// lui laisse un court delai en pompant la boucle, et on DIT ce qui reste.
+// Promesse « si possible »: detruire tout de suite tuerait le thread avant
+// qu'il voie la commande. Court delai, puis on DIT ce qui reste.
 procedure TScpTab.WaitForPartialCleanup;
 var
   waited: Integer;
@@ -1628,8 +1542,7 @@ begin
   try
     if FState <> rssConnected then
     begin
-      // Fil de transport mort: les partiels locaux se retirent d'ici, les distants
-      // attendront une session vivante, et on le dit.
+      // Fil mort: les partiels locaux partent d'ici, les distants attendront.
       leftover := FEngine.CleanupPartials(FLocalFs);
       for i := 0 to High(leftover) do
         EmitNotice(Format('%s: a partial file could not be removed and is ' +
@@ -1646,8 +1559,7 @@ begin
     while waited < PARTIAL_CLEANUP_GRACE_MS do
     begin
       Application.ProcessMessages;
-      // Plus de partiel ET plus rien en cours: un element qui ecrit encore peut en
-      // creer un a l'instant qui suit.
+      // ET plus rien en cours: qui ecrit encore peut en creer un a l'instant.
       if (FEngine.Partials.ActiveCount = 0) and
          (FQueue.Summary.Running = 0) then Break;
       Sleep(20);
@@ -1655,7 +1567,7 @@ begin
     end;
     remaining := FEngine.Partials.ActiveCount;
     if remaining > 0 then
-      // Pas de silence: un partiel tu se decouvre des semaines plus tard.
+      // Un partiel tu se decouvre des semaines plus tard.
       EmitNotice(Format('%s: %d partial file(s) could not be removed in ' +
         'time and are still there, named ".rssh-*.part".',
         [FDisplayName, remaining]));

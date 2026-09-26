@@ -2,9 +2,7 @@ unit uRdpCertDialog;
 
 {$mode objfpc}{$H+}
 
-// Confiance d'un certificat RDP. Confiance ponctuelle ou pinning explicite,
-// mais AUCUN « toujours ignorer toutes les erreurs »: chaque decision porte
-// sur un seul hote, jamais en bloc.
+// AUCUN « toujours tout ignorer »: une decision, un hote.
 
 interface
 
@@ -43,8 +41,7 @@ begin
     lblTitle.Parent := f;
     lblTitle.Left := 16;
     lblTitle.Top := y;
-    // AutoSize:=False AVANT WordWrap: sous Win32 un label autosize s'elargit
-    // pour tenir sur UNE ligne et sort de la fenetre. macOS tolerait.
+    // AutoSize AVANT WordWrap: sous Win32 le label s'etire sur UNE ligne.
     lblTitle.AutoSize := False;
     lblTitle.Width := 588;
     lblTitle.Height := 36;
@@ -110,7 +107,7 @@ begin
     end;
     Inc(y, 146);
 
-    // Cancel par defaut: un Entree reflexe ne doit pas accepter le certificat
+    // Cancel par defaut: un Entree reflexe n'accepte rien
     btnCancel := TButton.Create(f);
     btnCancel.Parent := f;
     btnCancel.Caption := 'Cancel';

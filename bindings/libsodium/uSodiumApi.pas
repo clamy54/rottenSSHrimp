@@ -2,8 +2,7 @@ unit uSodiumApi;
 
 {$mode objfpc}{$H+}
 
-// Binding dynamique libsodium, charge par chemins absolus controles: repertoire
-// applicatif puis emplacements systeme. Jamais le cwd ni PATH.
+// Chemins absolus: dossier de l'appli puis systeme. JAMAIS le cwd ni PATH.
 
 interface
 
@@ -149,7 +148,7 @@ var
   p: string;
 begin
   if GReady then Exit;
-  // deux connexions concurrentes ne doivent pas initialiser la lib deux fois
+  // deux connexions concurrentes: une seule initialisation
   EnterCriticalSection(GInitLock);
   try
   if GReady then Exit;

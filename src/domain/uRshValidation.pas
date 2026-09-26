@@ -2,8 +2,7 @@ unit uRshValidation;
 
 {$mode objfpc}{$H+}
 
-// Validation des entrees utilisateur. Message d'erreur vide = valeur
-// acceptable; la valeur normalisee (trim) ressort par le parametre var.
+// La valeur normalisee (trim) ressort par le parametre var.
 
 interface
 
@@ -21,12 +20,11 @@ function ValidatePort(AValue: Int64; out AErr: string): Boolean;
 
 function ValidateDescription(const AValue: string; out AErr: string): Boolean;
 
-// DEFENSE contre l'injection: le nom finit dans une ligne de
-// commande shell distante, et le jeu Docker/Podman n'a aucun metacaractere.
+// Anti-injection: le nom finit dans un shell distant.
 function ValidateContainerName(var AValue: string; out AErr: string): Boolean;
 
-// Meme defense pour kubectl, jeu RFC 1123 minuscule. Name =
-// sous-domaine du pod (253, points admis), Label = un seul label (63, sans).
+// Idem pour kubectl, RFC 1123. Name: sous-domaine (253, points admis);
+// Label: un seul label (63).
 function ValidateK8sName(var AValue: string; out AErr: string): Boolean;
 function ValidateK8sLabel(var AValue: string; out AErr: string): Boolean;
 
@@ -192,8 +190,7 @@ begin
     AErr := 'The ' + AKind + ' is too long.';
     Exit;
   end;
-  // RFC 1123 vaut pour CHAQUE label entre points, pas seulement pour le nom
-  // entier: 64 x 'a' + '.b', 'a..b' et 'a-.b' passaient, refuses cote cluster.
+  // RFC 1123 vaut pour CHAQUE label, pas seulement pour le nom entier.
   if AAllowDot then
   begin
     labLen := 0;

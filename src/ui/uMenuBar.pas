@@ -2,13 +2,8 @@ unit uMenuBar;
 
 {$mode objfpc}{$H+}
 
-// Barre de menu custom Windows/Linux: titres peints aux couleurs du theme,
-// une racine = un TPopupMenu owner-draw. macOS n'utilise PAS cette unite, son
-// TMainMenu part au menu global natif.
-//
-// La barre ADOPTE le TMainMenu de uFrmMain: les enfants de chaque racine sont
-// DEPLACES (pas clones, les FMiXxx du formulaire doivent rester valides) dans
-// le popup correspondant.
+// Pas sous macOS: menu global natif. Les items du TMainMenu sont DEPLACES, pas
+// clones: les FMiXxx du formulaire doivent rester valides.
 
 interface
 
@@ -40,9 +35,8 @@ type
     procedure AdoptMainMenu(AMenu: TMainMenu);
     function MenuCount: Integer;
     function MenuRoot(AIndex: Integer): TMenuItem;
-    // les popups ne sont pas rattaches au Menu du formulaire: la LCL ne les
-    // interroge jamais. A appeler depuis IsShortcut du form, sinon zero
-    // raccourci ne marche.
+    // Depuis IsShortcut du form: la LCL n'interroge jamais ces popups, sans
+    // cet appel aucun raccourci ne marche.
     function DispatchShortcut(var AMessage: TLMKey): Boolean;
     procedure RefreshTheme;
   end;
@@ -105,8 +99,6 @@ begin
   for i := 0 to APopup.Items.Count - 1 do
     ThemeMenuItems(APopup.Items[i]);
 end;
-
-{ TRSMenuRenderer }
 
 procedure TRSMenuRenderer.MeasureItem(Sender: TObject; ACanvas: TCanvas;
   var AWidth, AHeight: Integer);
@@ -178,8 +170,6 @@ begin
   end;
   ACanvas.Brush.Style := bsSolid;
 end;
-
-{ TRSMenuBar }
 
 constructor TRSMenuBar.Create(AOwner: TComponent);
 begin
@@ -302,8 +292,7 @@ begin
   for i := 0 to High(FMenus) do
     if FMenus[i] = Sender then
     begin
-      // rejouer le OnClick de la racine d'origine (Favorites/Recent se
-      // reconstruisent la), PUIS habiller ce qu'il vient de creer
+      // OnClick d'origine (Favorites/Recent s'y reconstruisent), PUIS habiller
       if Assigned(FRootClicks[i]) then
         FRootClicks[i](Sender);
       ThemeMenuItems(FMenus[i].Items);

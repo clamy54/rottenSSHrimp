@@ -1,7 +1,5 @@
-// GENERE par scripts/gen-icons.lpr -- NE PAS EDITER.
-// Jeu de l'onglet de transfert. Les identifiants nomment les
-// ressources XFER_<ID>_<TAILLE>; les tailles sont celles qui
-// existent reellement, et le dessin ne choisit que parmi elles.
+// GENERE par scripts/gen-icons.lpr: NE PAS EDITER.
+// Ressources XFER_<ID>_<TAILLE>; seules ces tailles existent.
 const
   XFER_ICON_IDS: array[0..21] of string = (
     'alert-circle',

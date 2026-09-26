@@ -2,8 +2,6 @@ unit uRdpSessionTab;
 
 {$mode objfpc}{$H+}
 
-// Onglet de session RDP: le transport vit dans un thread, l'onglet relie la vue.
-
 interface
 
 uses
@@ -32,7 +30,7 @@ type
     FSurface: TRemoteSurface;
     FTransport: TRdpTransport;
     FKnownCerts: TRdpKnownCerts;
-    // Tunnel de rebond: nil si direct. Libere APRES le transport.
+    // Libere APRES le transport.
     FTunnel: TSshTunnel;
     FTunnelBroker: TSshTunnelBroker;
     FManager: TSessionManager;
@@ -43,18 +41,16 @@ type
     FErrorMsg: string;
     FClosing: Boolean;
     FLastReqW, FLastReqH: Integer;
-    // Debounce: sans lui la surface est reallouee a chaque pixel du geste.
+    // Sans debounce, une reallocation par pixel du geste.
     FResizeTimer: TTimer;
     // Pas de notification presse-papiers sur Cocoa: on sonde.
     FClipTimer: TTimer;
     FClipBridge: TClipboardBridge;
-    // Copier-coller de FICHIERS: signature du dernier CF_HDROP vu, pour ne
-    // renvoyer ni ce qui vient d'un serveur ni deux fois la meme copie.
+    // Dernier CF_HDROP vu: ni echo vers le serveur, ni double envoi.
     FClipFilesSig: string;
     FFilesPrimed: Boolean;
-    // Lot arrive pendant que l'onglet etait cache: il attend le retour au
-    // premier plan, et le numero de sequence dit si le presse-papiers a bouge
-    // entre-temps -- auquel cas il ne sera PAS pose.
+    // Lot recu onglet cache. Si la sequence a bouge d'ici le retour, il n'est
+    // PAS pose.
     FPendingFiles: TStringArray;
     FPendingSeq: LongWord;
     FReconnectMsg: string;
@@ -107,7 +103,7 @@ type
     procedure FailDismiss(Sender: TObject);
     procedure TunnelFailed;
   public
-    // Prend possession de AParams.
+    // Possede AParams.
     constructor CreateSession(APages: TPageControl; ADoc: TRshDocument;
       AManager: TSessionManager; const ADisplayName, AConnUuid: string;
       AParams: TRdpConnectParams);
@@ -138,13 +134,10 @@ uses
   uRdpCertDialog, uClipDropFiles, uRdpClipFiles;
 
 var
-  // Signature du dernier LOT de fichiers ecrit par un serveur, tous onglets
-  // confondus: ce qui vient du serveur A ne repart jamais vers B. Thread UI
-  // seulement, comme la signature texte du pont.
+  // Tous onglets confondus: ce qui vient du serveur A ne repart jamais vers B.
+  // Thread UI seulement.
   GFilesRemoteSig: string = '';
 
-// Les chemins eux-memes font la signature: courts, sur le thread UI, et deux
-// lots differents dans le meme dossier temporaire different par leurs noms.
 function FilesSig(const APaths: TStringArray): string;
 var
   i: Integer;
@@ -209,8 +202,7 @@ begin
   FClipTimer.Enabled := False;
   FClipTimer.Interval := 700;
   FClipTimer.OnTimer := @ClipPoll;
-  // Le transport tronque a 2 Mo d'UNITES UTF-16, une unite pesant jusqu'a 3
-  // octets UTF-8: sous-couvrir la borne = resynchro manquee.
+  // Le transport coupe a 2 Mo d'unites UTF-16, jusqu'a 3 octets UTF-8 chacune.
   FClipBridge := TClipboardBridge.Create(
     @TryReadLocalClipboard, @SendClipToServer, 3 * 2 * 1024 * 1024,
     @ClipForeground);
@@ -353,8 +345,7 @@ begin
     FTransport.SendSynchronize(FView.LockFlags);
 end;
 
-// retour d'Alt+Tab: le focus revient sur la vue SANS DoEnter, un verrou
-// bascule pendant l'absence resterait faux cote serveur
+// Retour d'Alt+Tab: le focus revient SANS DoEnter, les verrous resteraient faux.
 procedure TRdpSessionTab.AppActivated(Sender: TObject);
 begin
   if FClosing or (FView = nil) then Exit;
@@ -467,12 +458,11 @@ begin
     FLastReqW := 0;
     FLastReqH := 0;
     RequestRemoteSize;
-    // le focus a pu arriver AVANT l'etat connecte: on le dit ici aussi
+    // le focus a pu arriver AVANT la connexion
     ViewSyncLocks(nil);
     if (FTransport <> nil) and FTransport.ClipboardTextEnabled then
     begin
-      // Ligne de base, PAS un renvoi: le premier sondage expedierait au serveur
-      // ce qui etait copie avant la session.
+      // Sinon le premier sondage offre au serveur ce qui trainait avant.
       FClipBridge.PrimeBaseline;
       FFilesPrimed := False;
       FClipTimer.Enabled := True;
@@ -560,7 +550,6 @@ begin
   if AText = '' then
     Exit;
   u := UTF8Encode(AText);
-  // Le pont note la provenance autour de l'ecriture et l'oublie si elle rate.
   FClipBridge.NoteRemote(u, @WriteLocalClipboard);
 end;
 
@@ -593,8 +582,7 @@ begin
     FTransport.AnnounceLocalClipboard(UTF8Decode(AText));
 end;
 
-// Onglet visible seulement: un onglet cache n'annonce rien, sinon ce que le
-// serveur A vient de deposer dans le presse-papiers partirait chez B.
+// Un onglet cache n'annonce rien: ce que A vient de poser partirait chez B.
 function TRdpSessionTab.ClipForeground: Boolean;
 begin
   Result := (PageControl <> nil) and (PageControl.ActivePage = Self);
@@ -606,8 +594,6 @@ var
 begin
   if (FTransport = nil) or (FState <> rssConnected) then
     Exit;
-  // Lot arrive en arriere-plan: pose au retour au premier plan, et seulement
-  // si personne n'a rien copie d'autre entre-temps.
   if (Length(FPendingFiles) > 0) and ClipForeground then
   begin
     pending := FPendingFiles;
@@ -623,9 +609,7 @@ begin
   PollLocalFiles;
 end;
 
-// Fichiers copies localement -> annonces au serveur. Memes regles que le
-// texte: premier plan seulement, jamais ce qui vient d'un serveur, et une
-// lecture qui echoue (presse-papiers verrouille) se retente au tick suivant.
+// Presse-papiers verrouille: retente au tick suivant.
 procedure TRdpSessionTab.PollLocalFiles;
 {$IFDEF WINDOWS}
 var
@@ -637,15 +621,13 @@ begin
   sig := FilesSig(paths);
   if not FFilesPrimed then
   begin
-    // Ligne de base: ce qui etait copie avant la session n'est pas envoye.
     FClipFilesSig := sig;
     FFilesPrimed := True;
     Exit;
   end;
   if sig = FClipFilesSig then
     Exit;
-  // Arriere-plan: ni envoi ni adoption, la copie partira au retour au premier
-  // plan, comme le ferait un client RDP classique.
+  // Ni envoi ni adoption: la copie partira au retour au premier plan.
   if not ClipForeground then
     Exit;
   FClipFilesSig := sig;
@@ -653,8 +635,7 @@ begin
     Exit;
   if (GFilesRemoteSig <> '') and (sig = GFilesRemoteSig) then
     Exit;   // recu d'un serveur: adopte, jamais retransmis
-  // Refus MOTIVE plutot qu'une selection tronquee en silence; la signature
-  // est adoptee, le message ne se repete donc pas a chaque sondage.
+  // Refus MOTIVE, pas de troncature muette. Signature adoptee: un seul message.
   if Length(paths) > RDPCLIP_MAX_FILES then
   begin
     if Assigned(FOnNotice) then
@@ -670,8 +651,7 @@ begin
 end;
 {$ENDIF}
 
-// Lot COMPLET arrive du serveur: pose en CF_HDROP local, provenance marquee
-// AVANT l'ecriture pour que le sondage suivant ne le renvoie pas.
+// Provenance marquee AVANT l'ecriture, sinon le sondage suivant le renvoie.
 procedure TRdpSessionTab.ClipboardFilesFromRemote(const APaths: TStringArray);
 {$IFDEF WINDOWS}
 var
@@ -682,8 +662,7 @@ begin
     Exit;
   if not ClipForeground then
   begin
-    // L'onglet n'est plus devant: poser le lot maintenant ecraserait ce que
-    // l'utilisateur manipule AILLEURS. Il attend le retour.
+    // Poser maintenant ecraserait ce que l'utilisateur manipule AILLEURS.
     FPendingFiles := APaths;
     FPendingSeq := ClipSequence;
     if Assigned(FOnNotice) then
@@ -748,7 +727,7 @@ begin
       FOnStatusChanged(Self);
     Exit;
   end;
-  // Differe: on est dans un evenement du transport qu'on s'apprete a liberer.
+  // Differe: on scie la branche du transport sur laquelle on est assis.
   if not FClosing then
   begin
     FClosing := True;

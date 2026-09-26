@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
-# Build portable (Linux / macOS). Localise lazbuild tout seul, chemin .lpi
-# relatif, tue l'exe avant de recompiler.
-# Usage: scripts/build.sh [--release]
+# Build Linux / macOS. Usage: scripts/build.sh [--release]
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 lpi="$root/app/rottensshrimp.lpi"
 
-# lazbuild : PATH d'abord, puis emplacements d'install classiques
 lazbuild="$(command -v lazbuild || true)"
 if [ -z "$lazbuild" ]; then
   for c in \
@@ -24,14 +21,8 @@ if [ -z "$lazbuild" ]; then
 fi
 [ -n "$lazbuild" ] || { echo "lazbuild introuvable. Ajoute-le au PATH ou installe Lazarus." >&2; exit 1; }
 
-# Repertoire Lazarus (celui qui contient lcl/). lazbuild le lit normalement dans
-# sa configuration primaire, mais celle-ci peut etre vide ou absente: c'est le
-# cas dans un environnement d'empaquetage, ou HOME est neuf. Le message est
-# alors « Invalid Lazarus directory "": directory lcl not found », qui ne dit
-# pas qu'il suffit de le nommer. On le cherche donc, et on ne passe l'option que
-# si on a trouve un repertoire credible -- sinon on laisse lazbuild a sa
-# configuration, qui reste la reference quand elle existe.
-# LAZARUS_DIR dans l'environnement tranche en dernier ressort.
+# HOME neuf (empaquetage) = config lazbuild vide et « directory lcl not found ».
+# --lazarusdir seulement si on trouve mieux; LAZARUS_DIR tranche.
 lazdir="${LAZARUS_DIR:-}"
 if [ -z "$lazdir" ]; then
   for c in \
@@ -42,34 +33,31 @@ if [ -z "$lazdir" ]; then
     /Applications/Lazarus \
     "$HOME/Applications/Lazarus" \
     "$HOME/fpcupdeluxe/lazarus"; do
-    # lcl/interfaces et pas seulement lcl: un dossier « lcl » vide ne suffit pas
+    # lcl/interfaces: un « lcl » vide ne prouve rien
     if [ -d "$c/lcl/interfaces" ]; then lazdir="$c"; break; fi
   done
 fi
 lazdirarg=""
 [ -n "$lazdir" ] && lazdirarg="--lazarusdir=$lazdir"
 
-# tuer l'exe s'il tourne (sinon lien impossible)
+# exe en cours = lien impossible
 pkill -f '[Rr]ottensshrimp$' 2>/dev/null || true
 
 buildarg=""
 [ "${1:-}" = "--release" ] && buildarg="--build-mode=Release"
 
-# macOS: le linker Xcode >= 15 rejette les metadonnees ObjC generees par FPC
-# pour la LCL Cocoa ("malformed method list atom"). ld-classic les accepte.
+# Xcode >= 15 rejette l'ObjC de FPC ("malformed method list atom"); ld-classic non.
 optarg=""
 if [ "$(uname -s)" = "Darwin" ]; then
   optarg="--opt=-k-ld_classic"
 fi
 
-# Shim FreeRDP: facultatif. Sans en-tetes freerdp3, il s'arrete proprement et
-# l'app retombe sur ses offsets en dur -- le build n'echoue pas pour autant.
+# shim facultatif ici: sans en-tetes, l'app retombe sur ses offsets
 "$root/scripts/build-rdp-shim.sh" || true
 
 echo "lazbuild: $lazbuild"
 [ -n "$lazdir" ] && echo "lazarusdir: $lazdir"
-# lazbuild resout les chemins des ressources RCDATA relativement au CWD,
-# pas au .lpi: se placer dans app/ est obligatoire
+# lazbuild resout les RCDATA depuis le cwd, PAS depuis le .lpi
 cd "$root/app"
 "$lazbuild" $buildarg ${lazdirarg:+"$lazdirarg"} ${optarg:+"$optarg"} "$lpi"
 echo "OK -> $root/rottensshrimp"

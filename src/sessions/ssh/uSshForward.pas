@@ -2,31 +2,19 @@ unit uSshForward;
 
 {$mode objfpc}{$H+}
 
-// Tunnels locaux (ssh -L) portes par la session du TERMINAL: pas de seconde
-// connexion ni de seconde authentification. Tout tourne dans le thread de la
-// session, pompe a chaque tour de sa boucle: une session libssh2 ne se
-// partage pas entre threads.
+// ssh -L sur la session du TERMINAL, pompe dans SON thread: une session
+// libssh2 ne se partage pas entre threads.
 //
-// Trois contraintes de libssh2 (1.11) dictent la forme, verifiees dans ses
-// sources et pas theoriques:
-// - UNE seule ouverture de canal a la fois par session: l'etat de l'ouverture
-//   est porte par la SESSION. Un second appel reprendrait le premier et
-//   rendrait son canal a la mauvaise connexion. Les connexions acceptees font
-//   donc la queue, et une ouverture commencee va TOUJOURS a son terme. PIEGE:
-//   une destination filtree (paquets jetes, pas de refus) retient ainsi les
-//   ouvertures de TOUS les tunnels jusqu'a ce que libssh2 renonce (son delai
-//   de lecture, 60 s) ou que le serveur reponde. Le terminal, lui, continue.
-// - Un envoi qui a rendu EAGAIN doit etre rejoue a l'identique avant tout
-//   autre envoi; les autres recoivent EAGAIN en attendant. On ne quitte
-//   jamais un canal avec un envoi en suspens: on le vide d'abord, sinon la
-//   session entiere (terminal compris) resterait bloquee.
-// - channel_send_eof construit son paquet sur la PILE: deux canaux qui s'y
-//   relaieraient au meme endroit seraient confondus. EOF et fermeture passent
-//   donc un par un (jeton FSerialOwner).
+// libssh2 1.11, lu dans ses sources:
+// - UNE ouverture de canal a la fois: l'etat vit dans la SESSION. File
+//   d'attente, et une ouverture commencee va a son terme. Une destination
+//   filtree gele ainsi TOUS les tunnels jusqu'a 60 s. Le terminal survit.
+// - Un envoi en EAGAIN se rejoue a l'identique avant tout autre. Ne jamais
+//   quitter un canal avec un envoi en suspens: la session entiere y reste.
+// - channel_send_eof batit son paquet sur la PILE: EOF et fermeture un par un
+//   (jeton FSerialOwner).
 //
-// Ecoute sur la boucle locale SEULEMENT (127.0.0.1 et ::1): jamais sur une
-// interface reseau, sinon n'importe quelle machine du voisinage entrerait
-// dans le reseau du serveur par ce poste.
+// Boucle locale SEULEMENT (127.0.0.1, ::1), sinon le voisinage entre chez le serveur.
 
 interface
 
@@ -52,9 +40,7 @@ type
 
   TSshForwardReport = array of TSshForwardStatus;
 
-  // Probleme APRES la mise en place (serveur qui refuse, destination muette).
-  // Appelee depuis le thread de session, au plus une fois par tunnel: cinq
-  // connexions refusees ne font pas cinq messages.
+  // Thread de session, UNE fois par tunnel: cinq refus, un seul message.
   TSshForwardProblem = procedure(AIndex: Integer;
     const AMessage: string) of object;
 
@@ -109,35 +95,27 @@ type
       const ASpecs: TSshForwardSpecs; AOpenTimeoutS: Integer);
     destructor Destroy; override;
 
-    // Ouvre les ecoutes. Rend l'etat de CHAQUE tunnel, dans l'ordre recu.
     function Listen: TSshForwardReport;
-    // Un tour, sans jamais bloquer. True = quelque chose a bouge.
-    // AFromServer: des octets sont arrives du serveur (preuve de vie).
+    // Ne bloque jamais. AFromServer: preuve de vie du serveur.
     function Pump(out AFromServer: Boolean): Boolean;
-    // Sockets a surveiller en plus de celle de la session.
     procedure AddWaitFds(var ARead, AWrite: TSockSet; var AMaxFd: cint);
-    // Ferme ecoutes et connexions locales. Les canaux partent avec la session:
-    // les liberer apres elle viserait de la memoire rendue.
+    // Les canaux partent avec la session: les liberer apres, c'est de la memoire rendue.
     procedure CloseAll;
     function ListeningCount: Integer;
 
     property OnProblem: TSshForwardProblem read FOnProblem write FOnProblem;
   end;
 
-// Texte d'un echec de mise en place, pour le message a l'utilisateur.
 function ForwardFailText(const AStatus: TSshForwardStatus): string;
 
 implementation
 
 const
-  // Un select Windows surveille 64 sockets au plus: 1 (session) + 32 ecoutes
-  // (16 tunnels, IPv4 et IPv6) + 28 connexions = 61. Au-dela, les clients
-  // attendent dans la file d'ecoute qu'une connexion se libere.
+  // select Windows: 64 sockets max. 1 session + 32 ecoutes (16 x v4/v6) + 28 = 61.
   MAX_FWD_CONNS = 28;
   MAX_FWD_LISTENERS = 16;
   LISTEN_BACKLOG = 16;
-  // Au-dela, on renonce a liberer un canal: la socket de la session n'ecrit
-  // plus depuis ce temps, la session est morte et le keepalive le dira.
+  // Au-dela, la session est morte; le keepalive signera le certificat de deces.
   CLOSE_GIVEUP_MS = 10000;
   {$IFDEF WINDOWS}
   SO_EXCLUSIVEADDRUSE = cint(not cint(SO_REUSEADDR));
@@ -174,7 +152,7 @@ begin
   FOpenTimeoutS := AOpenTimeoutS;
   if FOpenTimeoutS <= 0 then
     FOpenTimeoutS := 15;
-  // le modele borne deja; on rebornerait sans lui, le select en depend
+  // deja borne par le modele, mais le select en depend
   n := Length(ASpecs);
   if n > MAX_FWD_LISTENERS then
     n := MAX_FWD_LISTENERS;
@@ -248,10 +226,8 @@ var
     end;
   end;
 
-  // False: pas d'ecoute sans cette garantie. Sous Windows, SO_REUSEADDR
-  // laisserait un AUTRE processus se lier au meme port et detourner les
-  // connexions -- semantique inverse d'Unix. Ailleurs, SO_REUSEADDR n'est
-  // qu'un confort (rebind pendant TIME_WAIT): son echec ne retire rien.
+  // Windows: sans exclusivite, un AUTRE processus peut voler le port; pas
+  // d'ecoute. Unix: SO_REUSEADDR n'est qu'un confort (TIME_WAIT).
   function Prepare(AFd: cint): Boolean;
   begin
     yes := 1;
@@ -275,8 +251,7 @@ begin
     Classify(SockLastError, 'socket');
     Exit;
   end;
-  // Hors capacite de select(), l'ecoute serait SOURDE (fpFD_SET la refuse
-  // sans bruit): trop de fichiers ouverts dans le processus, on renonce.
+  // Hors FD_SETSIZE, fpFD_SET l'ignore sans bruit: ecoute SOURDE.
   if not SockFitsInSet(s4) then
   begin
     CloseSocket(s4);
@@ -301,8 +276,7 @@ begin
     CloseSocket(s4);
     Exit;
   end;
-  // Restee bloquante, la boucle d'accept se figerait au second appel et le
-  // TERMINAL avec elle (meme thread): mieux vaut un tunnel refuse.
+  // Bloquante, l'accept figerait le TERMINAL (meme thread).
   if not SockSetNonBlocking(s4, True) then
   begin
     Classify(SockLastError, 'nonblock');
@@ -310,12 +284,8 @@ begin
     Exit;
   end;
 
-  // ::1 aussi: « localhost » y mene d'abord sous Windows et macOS. Un poste
-  // SANS IPv6 (socket refusee, ou ::1 inconnu au bind) s'en passe: personne
-  // ne peut ni y joindre ni y detourner quoi que ce soit. Mais des qu'IPv6
-  // existe, TOUT autre echec refuse le tunnel: annoncer un tunnel qui laisse
-  // ::1 libre ou pris, c'est laisser les clients de « localhost » echouer,
-  // voire tomber sur un autre programme.
+  // ::1 aussi: « localhost » y va d'abord (Windows, macOS). Sans IPv6, on s'en
+  // passe; avec, TOUT echec refuse le tunnel, sinon un autre programme y repond.
   s6 := fpSocket(AF_INET6, SOCK_STREAM, 0);
   if s6 >= 0 then
   begin
@@ -329,8 +299,6 @@ begin
     end;
     if not Prepare(s6) then
     begin
-      // meme exigence que l'IPv4: ecouter ::1 sans exclusivite serait
-      // detournable, et « localhost » y passe en premier
       Classify(SockLastError, 'setsockopt v6');
       CloseSocket(s6);
       CloseSocket(s4);
@@ -352,7 +320,6 @@ begin
         CloseSocket(s4);
         Exit;
       end;
-      // ::1 absent du poste: l'ecoute IPv4 suffit
     end
     else if not SockSetNonBlocking(s6, True) then
     begin
@@ -412,7 +379,6 @@ begin
     CloseSocket(AConn.Sock);
     AConn.Sock := -1;
   end;
-  // plus personne a qui livrer
   AConn.ToLocal := '';
 end;
 
@@ -431,16 +397,13 @@ begin
       begin
         s := fpAccept(FListeners[i].Socks[k], nil, nil);
         if s < 0 then Break;
-        // Non bloquante ou rien: restee bloquante, fpRecv figerait la pompe,
-        // donc la session entiere. Le client, coupe, retentera.
+        // Non bloquante ou rien: fpRecv figerait la session entiere.
         if (not SockFitsInSet(s)) or (not SockSetNonBlocking(s, True)) then
         begin
           CloseSocket(s);
           Continue;
         end;
-        // meme raison que le tunnel de rebond: de petits echanges
-        // interactifs, que Nagle retiendrait jusqu'a 200 ms
-        SockSetNoDelay(s);
+        SockSetNoDelay(s);   // Nagle: jusqu'a 200 ms par petit echange
         c := TFwdConn.Create;
         c.Listener := i;
         c.Sock := s;
@@ -477,15 +440,12 @@ begin
 
   c := FOpening;
   l := @FListeners[c.Listener];
-  // Trop long: on ne peut PAS lacher l'ouverture (etat de session), mais le
-  // client n'a pas a attendre le delai du noyau d'en face (~2 min). On le
-  // libere, et le canal, s'il vient, sera referme aussitot.
+  // L'ouverture ne se lache PAS (etat de session), le client si: le canal
+  // tardif sera referme aussitot.
   if (c.Sock >= 0) and
      (GetTickCount64 - c.Since > QWord(FOpenTimeoutS) * 1000) then
   begin
     CloseLocal(c);
-    // Dire aussi l'effet de bord: l'ouverture reste en cours dans la session,
-    // les AUTRES tunnels attendent qu'elle aboutisse avant d'ouvrir les leurs.
     Problem(c.Listener, Format('no answer from %s:%d within %ds, seen from ' +
       'the SSH server (unreachable, filtered, or the name does not resolve ' +
       'there). New connections through the other tunnels of this session ' +
@@ -510,13 +470,10 @@ begin
   if libssh2_session_last_errno(FSession) = LIBSSH2_ERROR_EAGAIN then
     Exit;
 
-  // Le code de refus du serveur passe dans le texte de libssh2: il distingue
-  // « interdit » (AllowTcpForwarding no, PermitOpen) de « injoignable ».
+  // Le code de refus n'existe que dans le TEXTE de libssh2.
   FOpening := nil;
   why := LastError;
-  // libssh2 renonce seul au bout de son delai de lecture (60 s): la
-  // destination n'a jamais repondu. Deja signale par notre propre delai si
-  // le client attendait encore; sinon, le dire ici.
+  // TIMEOUT: libssh2 a renonce apres 60 s de silence
   if libssh2_session_last_errno(FSession) = LIBSSH2_ERROR_TIMEOUT then
     Problem(c.Listener, Format('no answer from %s:%d, seen from the SSH ' +
       'server (unreachable, filtered, or the name does not resolve there).',
@@ -552,8 +509,7 @@ begin
   Result := False;
   with AConn do
   begin
-    // local -> canal. On ne lit la suite qu'une fois le morceau precedent
-    // parti: c'est le meme tampon qui doit etre rejoue apres EAGAIN.
+    // Rien de neuf tant que ToChan n'est pas parti: EAGAIN exige le MEME tampon.
     if (ToChan = '') and (not LocalEof) and (Sock >= 0) then
     begin
       n := fpRecv(Sock, @FBuf[0], SizeOf(FBuf), 0);
@@ -570,7 +526,7 @@ begin
       end
       else if not SockErrIsWouldBlock(SockLastError) then
       begin
-        // remise a zero cote client: ce qui a deja ete lu part quand meme
+        // RST client: le deja-lu part quand meme
         LocalEof := True;
         CloseLocal(AConn);
         Result := True;
@@ -587,14 +543,13 @@ begin
       end
       else if (w <> LIBSSH2_ERROR_EAGAIN) and (w <> 0) then
       begin
-        // canal mort: rien n'est en suspens dans la session pour lui
+        // canal mort: rien en suspens dans la session
         ToChan := '';
         Broken := True;
       end;
     end;
 
-    // canal -> local, meme discipline: un client lent retient le canal, et
-    // la fenetre SSH retient le serveur. Rien ne grossit sans borne.
+    // Client lent: la fenetre SSH freine le serveur, aucun tampon n'enfle.
     if (not Broken) and (ToLocal = '') and (not RemoteEof) then
     begin
       n := libssh2_channel_read_ex(Channel, 0, @FBuf[0], SizeOf(FBuf));
@@ -632,14 +587,13 @@ begin
       end;
     end;
 
-    // demi-fermetures, comme ssh -L: le serveur a fini, le client le voit;
-    // le client a fini, le serveur le voit -- l'autre sens continue.
+    // demi-fermetures, comme ssh -L: l'autre sens continue
     if RemoteEof and (ToLocal = '') and (not WriteShut) and (Sock >= 0) then
     begin
       fpShutdown(Sock, SHUT_WR_);
       WriteShut := True;
     end;
-    // Client parti (Sock < 0): pas d'EOF a part, la fermeture l'envoie.
+    // Sock < 0: la fermeture enverra l'EOF.
     if LocalEof and (Sock >= 0) and (ToChan = '') and (not EofSent) and
        (not Broken) and ((FSerialOwner = nil) or (FSerialOwner = AConn)) then
     begin
@@ -655,8 +609,7 @@ begin
       end;
     end;
 
-    // Fin: canal casse, client parti, ou les deux sens termines. JAMAIS avec
-    // ToChan non vide: un envoi abandonne bloquerait toute la session.
+    // JAMAIS avec ToChan non vide: un envoi abandonne bloque toute la session.
     if (ToChan = '') and (FSerialOwner <> AConn) and
        (Broken or (Sock < 0) or
         (LocalEof and EofSent and RemoteEof and (ToLocal = ''))) then
@@ -685,7 +638,7 @@ begin
   begin
     FSerialOwner := AConn;
     if GetTickCount64 - AConn.Since < CLOSE_GIVEUP_MS then Exit;
-    // session sans issue: le canal partira avec elle
+    // session morte: le canal partira avec elle
   end;
   if FSerialOwner = AConn then
     FSerialOwner := nil;

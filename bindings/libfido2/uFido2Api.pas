@@ -2,17 +2,8 @@ unit uFido2Api;
 
 {$mode objfpc}{$H+}
 
-// Binding dynamique libfido2 (cles de securite FIDO2/CTAP), charge par chemins
-// absolus controles: repertoire applicatif puis emplacements systeme. Jamais le
-// cwd ni PATH, comme les autres bindings.
-//
-// A LA DIFFERENCE des autres, celui-ci ne LEVE JAMAIS: la fonctionnalite est
-// optionnelle. Une application sans libfido2 doit demarrer, ouvrir ses
-// documents et ouvrir toutes ses sessions -- seuls les identifiants FIDO2 sont
-// indisponibles, avec un message qui dit quoi installer. Fido2TryLoad rend
-// False et Fido2LoadError explique; le modele est celui du shim RDP
-// (bindings/freerdp/uFreeRdpApi.pas): toute anomalie desactive la lib EN
-// ENTIER, jamais une lib a moitie liee.
+// Chemins absolus, JAMAIS cwd ni PATH. Optionnelle, donc ne LEVE JAMAIS: sans
+// elle seul FIDO2 manque. Tout ou rien, jamais une lib a moitie liee.
 
 interface
 
@@ -20,10 +11,8 @@ uses
   SysUtils, ctypes;
 
 const
-  // fido/err.h. Les negatifs sont internes a libfido2, les positifs viennent
-  // du CTAP. USER_PRESENCE_REQUIRED (-8) n'est pas un echec pour nous: c'est la
-  // reponse d'un token qui DETIENT la cle mais attend le doigt, donc le signe
-  // qu'on a trouve le bon token (cf. uSshFido.SelectDeviceFor).
+  // fido/err.h: negatifs libfido2, positifs CTAP. -8 n'est pas un echec: le
+  // token DETIENT la cle et attend le doigt (cf. uSshFido.SelectDeviceFor).
   FIDO_OK = $00;
   FIDO_ERR_INVALID_PARAMETER = $02;
   FIDO_ERR_INVALID_LENGTH = $03;
@@ -76,7 +65,7 @@ const
   FIDO_ERR_COMPRESS = -11;
 
   // fido_opt_t (fido/types.h)
-  FIDO_OPT_OMIT = 0;    // laisser le defaut de l'authentificateur
+  FIDO_OPT_OMIT = 0;    // defaut du token
   FIDO_OPT_FALSE = 1;
   FIDO_OPT_TRUE = 2;
 
@@ -84,14 +73,13 @@ const
   COSE_ES256 = -7;
   COSE_EDDSA = -8;
 
-  // credProtect, pour une cle qui exige la verification utilisateur
+  // credProtect
   FIDO_CRED_PROT_UV_OPTIONAL = 1;
   FIDO_CRED_PROT_UV_OPTIONAL_WITH_ID = 2;
   FIDO_CRED_PROT_UV_REQUIRED = 3;
 
-  // Peripherique virtuel Windows Hello: passe par l'API WebAuthn du systeme,
-  // donc PAS de privileges administrateur (l'acces HID direct, lui, en exige
-  // sous Windows) et c'est Windows qui affiche « touchez » et demande le PIN.
+  // Via WebAuthn: pas d'admin (le HID direct en exige sous Windows), et c'est
+  // Windows qui demande le doigt et le PIN.
   FIDO_WINHELLO_PATH = 'windows://hello';
 
   FIDO_MAX_DEVICES = 16;
@@ -120,7 +108,7 @@ type
   Tfido_dev_close = function(d: Pfido_dev_t): cint; cdecl;
   Tfido_dev_cancel = function(d: Pfido_dev_t): cint; cdecl;
   Tfido_dev_set_timeout = function(d: Pfido_dev_t; ms: cint): cint; cdecl;
-  // bool C = 1 octet: ByteBool, surtout pas LongBool
+  // bool C = 1 octet: ByteBool, SURTOUT pas LongBool
   Tfido_dev_flag = function(d: Pfido_dev_t): ByteBool; cdecl;
 
   Tfido_cbor_info_new = function: Pfido_cbor_info_t; cdecl;
@@ -207,8 +195,7 @@ var
   fido_cred_pubkey_ptr: Tfido_cred_bytes_ptr = nil;
   fido_cred_pubkey_len: Tfido_cred_bytes_len = nil;
   fido_cred_type: Tfido_cred_type = nil;
-  // AAGUID de l'authentificateur qui a cree la cle: dit SI la cle vit sur un
-  // token amovible ou dans la machine (TPM Windows Hello).
+  // AAGUID: token amovible ou TPM Windows Hello
   fido_cred_aaguid_ptr: Tfido_cred_bytes_ptr = nil;
   fido_cred_aaguid_len: Tfido_cred_bytes_len = nil;
   fido_dev_make_cred: Tfido_dev_make_cred = nil;
@@ -227,11 +214,10 @@ var
   fido_assert_sigcount: Tfido_assert_sigcount = nil;
   fido_dev_get_assert: Tfido_dev_get_assert = nil;
 
-// Idempotent, silencieux, ne leve jamais. True = tous les symboles sont lies.
+// Idempotent, ne leve jamais. True = TOUS les symboles lies.
 function Fido2TryLoad: Boolean;
 function Fido2Available: Boolean;
-// Vide tant qu'aucune tentative n'a eu lieu; sinon dit CE QUI a manque et OU on
-// a cherche -- le message part tel quel dans l'interface.
+// Ce qui manque et ou on a cherche; part tel quel dans l'interface.
 function Fido2LoadError: string;
 function Fido2LoadedPath: string;
 // « FIDO_ERR_PIN_REQUIRED (0x36): <texte libfido2> »
@@ -288,8 +274,7 @@ begin
   ];
   {$ENDIF}
   {$IFDEF WINDOWS}
-  // vcpkg nomme la DLL « fido2.dll » (OUTPUT_NAME fido2), pas « libfido2.dll »:
-  // les deux sont essayes, l'installateur livre la premiere.
+  // vcpkg sort « fido2.dll », pas « libfido2.dll »; l'installateur livre la premiere.
   Result := [exeDir + 'fido2.dll', exeDir + 'libfido2.dll'];
   {$ENDIF}
 end;
@@ -328,8 +313,7 @@ var
   p, missing: string;
   tried: string;
 
-  // Toute anomalie desactive la lib en entier: on note le premier symbole
-  // manquant et on n'appellera rien.
+  // Un seul symbole manquant et on n'appelle RIEN.
   function Sym(const AName: string): Pointer;
   begin
     Result := GetProcAddress(GLib, AName);
@@ -342,7 +326,7 @@ begin
   EnterCriticalSection(GInitLock);
   try
     if GReady then Exit(True);
-    if GTried then Exit(False);   // un echec ne se retente pas a chaque session
+    if GTried then Exit(False);   // pas de nouvel essai par session
     GTried := True;
     tried := '';
     for p in CandidatePaths do
@@ -483,8 +467,7 @@ initialization
   InitCriticalSection(GInitLock);
 
 finalization
-  // Ni UnloadLibrary ni fido_dev_close global: une operation peut encore
-  // tourner dans un thread de session, comme pour libssh2.
+  // Pas d'UnloadLibrary: un thread de session peut encore etre dedans.
   DoneCriticalSection(GInitLock);
 
 end.

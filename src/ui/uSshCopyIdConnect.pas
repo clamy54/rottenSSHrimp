@@ -2,11 +2,8 @@ unit uSshCopyIdConnect;
 
 {$mode objfpc}{$H+}
 
-// « Copy SSH ID » et rotation de cle geree, par le transport SSH standard.
-// Rotation en deux passes, ordre non negociable: poser la nouvelle ligne partout
-// avec l'ANCIENNE cle, stocker, SAUVEGARDER le document, puis retirer
-// l'ancienne avec la NOUVELLE. Sans la sauvegarde entre les deux, un .rsh que
-// l'on n'arrive plus a ecrire garderait une cle deja revoquee partout.
+// Rotation, ordre sacre: pose sous l'ANCIENNE cle, stockage, SAUVEGARDE, retrait
+// sous la NOUVELLE. Sans sauvegarde, un .rsh non inscriptible garde une cle morte.
 
 interface
 
@@ -18,9 +15,7 @@ function CanCopySshId(AModel: TRshModel; const AConnUuid: string): Boolean;
 function CopySshIdToHost(ADoc: TRshDocument; AModel: TRshModel;
   const AConnUuid: string; out AErr: string): Boolean;
 
-// ASave: sauvegarde du document (celle du menu, dialogues compris). Elle est
-// appelee entre les deux passes; si le document reste non sauve, la seconde
-// passe est SAUTEE et le resume le dit.
+// ASave: appele entre les passes. Document toujours non sauve = passe 2 SAUTEE.
 function RotateManagedKey(ADoc: TRshDocument; AModel: TRshModel;
   const ACredUuid: string; ASave: TNotifyEvent; out ASummary: string;
   out AErr: string): Boolean;
@@ -33,8 +28,7 @@ uses
   uSshKeyGen, uAuthPrompt, uFidoPrompt, uSshSkKeyGen;
 
 const
-  // Sortie distante conservee au plus: un script bavard ou un serveur hostile
-  // ne doit pas pouvoir remplir la memoire, le delai ne borne que le temps.
+  // Le delai borne le temps, pas la memoire face a un serveur hostile.
   COPYID_OUTPUT_MAX = 256 * 1024;
 
 type
@@ -126,9 +120,8 @@ begin
   btn.OnClick := @CancelClick;
 
   FForm.Show;
-  // Non modale (la boucle est a l'appelant) mais les autres fenetres doivent
-  // dormir comme sous ShowModal: ProcessMessages livrait leurs clics, et une
-  // seconde rotation pouvait s'imbriquer dans la premiere.
+  // Non modale, mais le reste dort: sinon ProcessMessages livre les clics et
+  // une seconde rotation s'imbrique dans la premiere.
   FDisabled := Screen.DisableForms(FForm);
 end;
 
@@ -209,9 +202,8 @@ begin
     'printf ''%s\n'' ' + esc + ' >> ~/.ssh/authorized_keys; }';
 end;
 
-// Le blob base64 de la cle: c'est LUI qui identifie la cle, pas la ligne.
-// Une ligne d'authorized_keys peut porter des options devant et un autre
-// commentaire derriere; filtrer la ligne entiere laissait la cle en place.
+// Le blob identifie la cle, pas la ligne: options devant, commentaire derriere,
+// filtrer la ligne entiere laisse la cle en place.
 function KeyBlobOf(const ALine: string): string;
 var
   parts: TStringArray;
@@ -226,9 +218,7 @@ begin
 end;
 
 // rc <= 1 ET temporaire non vide: sinon un disque plein tronque authorized_keys.
-// La branche d'abandon sort en 1: son rm -f reussissait et rendait 0, la
-// rotation annoncait alors une revocation qui n'avait pas eu lieu. Et on relit
-// le fichier a la fin: le blob doit avoir DISPARU, pas seulement ete filtre.
+// exit 1 a l'abandon (rm -f rendrait 0), puis relecture: le blob doit AVOIR DISPARU.
 function RevokeCommand(const AOldLine: string): string;
 var
   esc, blob: string;
@@ -514,17 +504,11 @@ begin
       end;
     end;
 
-    // Une cle de securite ne se « regenere » pas: on en enrole une autre sur le
-    // meme token. L'utilisateur doit y poser le doigt avant que la premiere
-    // passe ne commence.
+    // Cle de securite: pas de regeneration, un nouvel enrolement avant la passe 1.
     if cred.AuthType = atFidoKey then
     begin
-      // La nouvelle cle reprend l'exigence de PIN de l'ancienne: le drapeau
-      // vit dans le key handle, on le relit plutot que de le deviner -- une
-      // rotation qui retirait le PIN en silence affaiblissait ce que
-      // l'utilisateur avait choisi.
-      // Et si on ne peut pas la relire, on s'arrete: deviner « sans PIN »
-      // serait choisir le reglage le plus faible a la place de l'utilisateur.
+      // Exigence de PIN RELUE dans le key handle, jamais devinee: illisible =
+      // abandon, plutot que choisir en douce le reglage le plus faible.
       if not AModel.GetSecret(ACredUuid, FIELD_CRED_PRIVATE_KEY, oldPem) then
       begin
         AErr := 'Rotation aborted: the current security-key credential ' +
@@ -558,7 +542,7 @@ begin
     else
       GenerateEd25519KeyPair(cred.Username + '@rottensshrimp', newPem, newLine);
 
-    // ---- Passe 1: nouvelle ligne partout, sous l'ANCIENNE cle ----
+    // Passe 1: nouvelle ligne partout, sous l'ANCIENNE cle
     for i := 0 to High(hosts) do
     begin
       if not RunSshExecOnHost(ADoc, AModel, hosts[i],
@@ -587,7 +571,7 @@ begin
       end;
     end;
 
-    // ---- Bascule: stockage rate = passe 2 sautee, ancienne paire active ----
+    // Stockage rate = passe 2 sautee, ancienne paire active
     try
       AModel.SetManagedKeyPair(ACredUuid, newPem, newLine);
     except
@@ -600,10 +584,8 @@ begin
       end;
     end;
 
-    // ---- Sauvegarde du .rsh AVANT de revoquer quoi que ce soit ----
-    // La nouvelle paire ne vit que dans la copie de travail. Revoquer d'abord
-    // et echouer a sauver ensuite laissait le fichier principal avec une cle
-    // morte partout: on s'arrete ici, les deux cles restent valables.
+    // SAUVER avant de revoquer: la nouvelle paire ne vit que dans la copie de
+    // travail. Pas sauve = on s'arrete, les deux cles restent valables.
     if Length(hosts) > 0 then
     begin
       if Assigned(ASave) then
@@ -621,7 +603,7 @@ begin
       end;
     end;
 
-    // ---- Passe 2: retirer l'ancienne ligne, sous la NOUVELLE ----
+    // Passe 2: retrait de l'ancienne ligne, sous la NOUVELLE
     warnings := '';
     for i := 0 to High(hosts) do
     begin

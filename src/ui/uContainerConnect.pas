@@ -2,13 +2,8 @@ unit uContainerConnect;
 
 {$mode objfpc}{$H+}
 
-// Un conteneur n'est pas un protocole reseau: c'est la session SSH du noeud
-// PARENT plus une commande forcee (docker/podman exec ou logs). Tout vient du
-// parent -- identifiants ET rebond unique -- on n'injecte que la commande.
-//
-// SECURITE: le nom du conteneur est valide a la saisie ET quote en simple, donc
-// sans metacaractere shell; la commande passe par 'exec', jamais par un shell
-// de login.
+// Conteneur = session SSH du PARENT + commande forcee; tout le reste vient du parent.
+// SECURITE: nom valide a la saisie ET quote en simple; 'exec', jamais de shell de login.
 
 interface
 
@@ -16,7 +11,7 @@ uses
   ComCtrls, uRshDocument, uRshModel, uSessionManager, uSshSessionTab,
   uSessionTabBase;
 
-// nil avec AErr vide = annulation utilisateur (cle d'hote du parent refusee...)
+// nil avec AErr vide = annulation (cle d'hote du parent refusee...)
 function StartContainerSession(APages: TPageControl; ADoc: TRshDocument;
   AModel: TRshModel; AManager: TSessionManager; const AConnUuid: string;
   ANotice: TSessionNoticeEvent; out AErr: string): TSshSessionTab;
@@ -60,7 +55,7 @@ begin
   finally
     node.Free;
   end;
-  // la cle d'hote sera verifiee contre l'hote du PARENT (params.Host)
+  // cle d'hote verifiee contre le PARENT (params.Host)
   if not BuildSshConnectParams(ADoc, AModel, cfg.ParentUuid, params,
     parentDisplay, AErr) then
     Exit;
@@ -69,7 +64,7 @@ begin
       cfg.Shell);
     params.RequestPty := cfg.Shell <> csLog;   // log = flux sans PTY
 
-    // rebond du PARENT: un seul saut, le conteneur n'en ajoute aucun
+    // rebond du PARENT, le conteneur n'en ajoute aucun
     jumpUuid := AModel.ResolveJumpVia(cfg.ParentUuid);
     if jumpUuid <> '' then
     begin
@@ -89,8 +84,8 @@ begin
     tun := nil;
     broker := nil;
     tab.SetCaptionSuffix('Container');
-    // log = lecture seule stricte, et l'onglet survit a la fin du flux: les
-    // derniers journaux d'un conteneur qui meurt sont ceux qui interessent
+    // l'onglet survit a la fin du flux: les dernieres lignes d'un conteneur
+    // qui meurt sont les seules qu'on veut lire
     tab.SetLogMode(cfg.Shell = csLog);
     hostLabel := parentDisplay;
     tab.AddExitMessage(CONTAINER_EXIT_NO_ENGINE, Format(
@@ -107,7 +102,7 @@ begin
     tab.Start;
     Result := tab;
   finally
-    params.Free;   // nil si l'onglet l'a prise
+    params.Free;
     if tun <> nil then begin tun.Shutdown; tun.Free; end;
     broker.Free;
   end;

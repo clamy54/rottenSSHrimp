@@ -1,11 +1,5 @@
-{ Vue de la file de transferts: une ligne par element, barre de progression,
-  debit, ETA, etat et motif d'echec, plus les commandes du lot.
-
-  Dessinee a la main pour les memes raisons que les panneaux de fichiers, et
-  avec une regle supplementaire: rien n'y est ecrit qui ne soit vrai. Un
-  element de taille inconnue n'affiche pas de pourcentage, une ETA sans debit
-  ne s'affiche pas, et le bandeau de fin ne dit « Completed » que si tout a
-  reussi -- c'est TTransferQueue.SummaryText qui en decide, pas cette vue.
+{ Regle: rien d'affiche qui ne soit vrai. Pas de pourcentage sans taille, pas
+  d'ETA sans debit; « Completed », c'est TTransferQueue.SummaryText qui decide.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -48,8 +42,7 @@ type
     procedure Refresh;
     function SelectedItemIds: TStringArray;
     procedure ClearSelection;
-    // Reselectionne par identifiant apres un « Clear completed »: les lignes
-    // restantes ont change de position, pas d'identite.
+    // Par identifiant: apres « Clear completed », les positions ont bouge.
     procedure RestoreSelection(const AIds: TStringArray; AFocusId: Int64);
     function FocusedItemId: Int64;
     property OnCommand: TQueueCommandEvent read FOnCommand write FOnCommand;
@@ -59,8 +52,7 @@ type
   TQueueListView = class(TCustomControl, IThemedScrollTarget)
   private
     FQueue: TTransferQueue;
-    // Par POSITION: la file n'ajoute qu'en queue, et seul le thread UI en
-    // retire, par « Clear completed », qui reselectionne par identifiant.
+    // Par POSITION: ajout en queue seulement, retrait par le seul thread UI.
     FSelected: array of Boolean;
     FFocus: Integer;         // -1 = aucune ligne
     FAnchor: Integer;        // origine d'une plage au Maj+clic
@@ -96,7 +88,7 @@ type
     procedure RecomputeMetrics;
     property OnSelectionChanged: TNotifyEvent
       read FOnSelectionChanged write FOnSelectionChanged;
-    // Suppr: annuler la selection, comme le bouton du meme nom.
+    // Suppr
     property OnCancelKey: TNotifyEvent read FOnCancelKey write FOnCancelKey;
 
     function ScrollViewportHeight: Integer;
@@ -145,8 +137,6 @@ begin
     Result := siNone;
   end;
 end;
-
-{ TQueueListView }
 
 constructor TQueueListView.CreateFor(AOwner: TComponent;
   AQueue: TTransferQueue);
@@ -282,8 +272,7 @@ begin
   end;
 end;
 
-// Liste triee: un Ctrl+A sur des milliers de fichiers suivi d'un « Clear
-// completed » ferait sinon des millions de comparaisons sur le thread UI.
+// Liste triee: sinon Ctrl+A puis « Clear completed » = O(n^2) sur le thread UI.
 procedure TQueueListView.SelectIds(const AIds: TStringArray;
   AFocusId: Int64);
 var
@@ -329,8 +318,7 @@ begin
   Invalidate;
 end;
 
-// Memes gestes que dans les panneaux de fichiers. Ctrl et Cmd font la meme
-// chose: sous macOS la LCL rend Cmd dans ssMeta, et c'est lui qu'on y attend.
+// ssMeta = Cmd sous macOS: meme role que Ctrl.
 procedure TQueueListView.KeyDown(var Key: Word; Shift: TShiftState);
 var
   target, page: Integer;
@@ -384,8 +372,6 @@ begin
   end;
   Key := 0;
   if Length(FSelected) = 0 then Exit;
-  // Sans ligne courante, la premiere fleche se pose sur la premiere ligne au
-  // lieu de la sauter.
   if FFocus < 0 then target := 0;
   target := Max(0, Min(target, High(FSelected)));
   if ssShift in Shift then
@@ -425,7 +411,6 @@ begin
   iconBox := FRowHeight - 6;
   x := PAD;
 
-  // Sens du transfert, puis etat: deux icones, jamais de texte redondant.
   case it.Direction of
     tdUpload:
       DrawScpIcon(Canvas, Rect(x, AY + 3, x + iconBox, AY + 3 + iconBox),
@@ -464,7 +449,7 @@ begin
   end
   else if pct < 0 then
   begin
-    // Taille inconnue, transfert commence: hachures plutot qu'un faux pourcentage.
+    // Taille inconnue: pas de faux pourcentage.
     Canvas.Brush.Color := BlendColor(clProgressBar, clProgressTrack, 40);
     Canvas.FillRect(barR);
   end;
@@ -498,8 +483,6 @@ begin
   Canvas.TextRect(Rect(x, AY, ClientWidth - PAD, AY + FRowHeight), x,
     textTop, s);
 
-  // Ligne courante: celle que visent les fleches et Espace. Montree tant que
-  // la liste a le focus, sinon rien ne dirait ou il est.
   if Focused and (AIndex = FFocus) then
   begin
     Canvas.Pen.Color := BlendColor(clAppFg, rowBg, 45);
@@ -518,8 +501,7 @@ begin
   Canvas.Brush.Style := bsSolid;
   Canvas.FillRect(ClientRect);
   Canvas.Brush.Style := bsClear;
-  // Sous verrou le temps du dessin: le fil de transfert y ecrit pendant qu'on
-  // lit.
+  // le fil de transfert ecrit pendant qu'on lit
   FQueue.Lock;
   try
     if FQueue.Count = 0 then
@@ -550,8 +532,7 @@ begin
   if CanFocus then SetFocus;
   SyncSelection;
   idx := (Y + FTop) div FRowHeight;
-  // Contre FSelected et non contre la file: entre SyncSelection et ici, le
-  // fil de transfert a pu ajouter des elements.
+  // FSelected, pas la file: elle a pu grossir depuis SyncSelection.
   if (idx < 0) or (idx >= Length(FSelected)) then Exit;
   if ssShift in Shift then
   begin
@@ -624,8 +605,6 @@ procedure TQueueListView.SetOnScrollViewChanged(AHandler: TNotifyEvent);
 begin
   FOnViewChanged := AHandler;
 end;
-
-{ TTransferQueueView }
 
 constructor TTransferQueueView.CreateView(AOwner: TComponent;
   AQueue: TTransferQueue);
@@ -743,8 +722,7 @@ begin
   begin
     if FRate.BytesPerSecond > 0 then
       extra := '  -  ' + FormatRate(FRate.BytesPerSecond);
-    // ETA annoncee seulement si le total est COMPLET: sinon elle raccourcirait
-    // a vue d'oeil.
+    // total partiel = ETA qui fond a vue d'oeil: on s'abstient
     if not s.BytesTotalIsPartial then
     begin
       remaining := s.BytesTotal - s.BytesDone;
@@ -760,7 +738,7 @@ begin
   FBtnPause.Enabled := (not FQueue.IsPaused) and (s.Pending + s.Running > 0);
   FBtnResume.Enabled := FQueue.IsPaused;
   FBtnRetry.Enabled := s.Failed + s.Interrupted > 0;
-  // Les echecs restent a la purge: ils ne suffisent pas a l'activer.
+  // les echecs survivent a la purge, ils ne l'activent pas
   FBtnClear.Enabled := s.Completed + s.Skipped + s.Canceled > 0;
   FBtnCancel.Enabled := FList.SelectionCount > 0;
   FList.Invalidate;

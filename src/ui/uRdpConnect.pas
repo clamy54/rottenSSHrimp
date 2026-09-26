@@ -2,8 +2,7 @@ unit uRdpConnect;
 
 {$mode objfpc}{$H+}
 
-// Lancement d'une session RDP depuis un noeud du document. Modele et secrets se
-// touchent ici, sur le thread UI; le thread reseau ne recoit qu'un instantane.
+// Modele et secrets se lisent ICI, thread UI; le reseau ne recoit qu'un instantane.
 
 interface
 
@@ -170,8 +169,8 @@ begin
     jumpUuid := AModel.ResolveJumpVia(AConnUuid);
     if jumpUuid <> '' then
     begin
-      // Gateway ET rebond: le certificat de la passerelle serait reindexe sous
-      // l'identite de la cible. On refuse plutot que d'affaiblir le TOFU.
+      // Gateway ET rebond: le certificat de la passerelle passerait pour celui
+      // de la cible. Le TOFU n'y survivrait pas.
       if params.GatewayHostname <> '' then
       begin
         AErr := 'Unsupported combination: an RDP connection cannot use ' +

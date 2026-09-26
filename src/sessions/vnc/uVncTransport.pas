@@ -2,8 +2,8 @@ unit uVncTransport;
 
 {$mode objfpc}{$H+}
 
-// Transport VNC/RFB, sans LCL. libvncclient interdit deux threads sur une
-// connexion: tout passe par le thread de session, les entrees UI par une file.
+// libvncclient refuse deux threads par connexion: tout passe par le thread de
+// session, l'UI poste dans une file.
 
 interface
 
@@ -78,10 +78,10 @@ type
     FPwLock: TCriticalSection;    // FPassword lu (thread session) / efface (UI)
     FReconnectInhibited: Boolean;
     FClient: PVncClient;
-    FFrameBuffer: PByte;          // NOTRE tampon, possede independamment de FClient
+    FFrameBuffer: PByte;          // a NOUS, pas a FClient
     FSockFd: cint;
-    // Duplicata confie a libvncclient (SockDup). Sous Windows, shutdown() sur
-    // l'original ne debloque pas le duplicata: BeginShutdown vise LES DEUX.
+    // Duplicata pour libvncclient. Sous Windows, shutdown() sur l'original ne
+    // debloque pas le duplicata: BeginShutdown vise LES DEUX.
     FLibSockFd: cint;
     FSockLock: TCriticalSection;
     FThread: TVncThread;
@@ -236,7 +236,7 @@ begin
 
     t.FSurface.Resize(w, h);
 
-    // Le framebuffer est a NOUS et vit hors de FClient: sinon il fuit a l'init ratee.
+    // Hors de FClient: sinon il fuit quand l'init rate.
     buf := GetMem(PtrUInt(w) * PtrUInt(h) * REMOTE_BYTES_PER_PIXEL);
     FillChar(buf^, PtrUInt(w) * PtrUInt(h) * REMOTE_BYTES_PER_PIXEL, 0);
     old := t.FFrameBuffer;

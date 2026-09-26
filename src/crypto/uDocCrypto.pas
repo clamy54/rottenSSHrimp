@@ -2,9 +2,8 @@ unit uDocCrypto;
 
 {$mode objfpc}{$H+}
 
-// Primitives crypto du document: Argon2id -> KEK, DEK aleatoire,
-// AEAD XChaCha20-Poly1305 avec AAD canonique par champ, MAC global du
-// contenu en clair. Aucun secret dans les messages d'exception.
+// Argon2id -> KEK, DEK aleatoire, XChaCha20-Poly1305, MAC global.
+// Aucun secret dans les messages d'exception.
 
 interface
 
@@ -17,22 +16,20 @@ type
 const
   AAD_FIELD_DEK = 'document.dek';
 
-// AAD canonique. Serialisation stable, testee.
+// Serialisation FIGEE: la changer rend illisibles tous les documents existants.
 function BuildAad(const ADocUuid, AOwnerUuid, AFieldName: string;
   ACryptoVersion: Integer): TBytes;
 
 function GenerateRandomBytes(ACount: Integer): TBytes;
 function GenerateDek: TSecureBytes;
 
-// Argon2id. Rejette les parametres hors bornes TCryptoPolicy avant
-// toute allocation (anti-DoS).
+// Bornes verifiees AVANT d'allouer: un document ne choisit pas notre RAM.
 function DeriveKek(const APassword: RawByteString; const ASalt: TBytes;
   AOps, AMem: Int64): TSecureBytes;
 
-// chiffrement authentifie; nonce aleatoire genere ici
 procedure AeadEncrypt(APlain: TSecureBytes; AKey: TSecureBytes;
   const AAad: TBytes; out ANonce, ACipher: TBytes);
-// False = authentification echouee (mauvaise cle, donnee alteree ou AAD faux)
+// False: mauvaise cle, donnee alteree ou AAD faux; impossible de dire lequel.
 function AeadDecrypt(const ACipher, ANonce: TBytes; AKey: TSecureBytes;
   const AAad: TBytes; out APlain: TSecureBytes): Boolean;
 
@@ -42,16 +39,12 @@ function UnwrapDek(const ACipher, ANonce: TBytes; AKek: TSecureBytes;
   const ADocUuid: string; ACryptoVersion: Integer;
   out ADek: TSecureBytes): Boolean;
 
-// cle dediee a l'enveloppe v2, derivee de la KEK (contexte
-// RSSH-env). Une seule passe Argon2id a l'ouverture: la KEK sert a la fois a
-// deballer la DEK et, via cette sous-cle, a ouvrir l'enveloppe.
+// Derivee de la KEK: une seule passe Argon2id ouvre enveloppe et DEK.
 function DeriveEnvelopeKey(AKek: TSecureBytes): TSecureBytes;
 
-// cle dediee au MAC global, derivee de la DEK (contexte RSSH-doc)
 function DeriveContentMacKey(ADek: TSecureBytes): TSecureBytes;
-// BLAKE2b keye sur la serialisation canonique du contenu
 function ComputeKeyedMac(AKey: TSecureBytes; const AData: TBytes): TBytes;
-// comparaison a temps constant de deux MAC
+// temps constant
 function MacEquals(const A, B: TBytes): Boolean;
 
 implementation

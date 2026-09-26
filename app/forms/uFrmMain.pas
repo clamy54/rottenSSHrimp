@@ -2,8 +2,7 @@ unit uFrmMain;
 
 {$mode objfpc}{$H+}
 
-// Fenetre principale, construite par code (pas de .lfm): document .rsh,
-// arborescence, onglets de session SSH/RDP/VNC.
+// Construite par code, pas de .lfm.
 
 interface
 
@@ -44,8 +43,8 @@ type
     FDoc: TRshDocument;
     FModel: TRshModel;
     FSessions: TSessionManager;
-    // Un etablissement de session pompe la boucle de messages: toute commande
-    // qui libererait FDoc/FModel s'abstient (UAF). Idem pendant BruteForceDelay.
+    // Le connect (et BruteForceDelay) pompe la boucle: rien ne libere
+    // FDoc/FModel pendant ce temps, sinon UAF.
     FConnecting: Boolean;
     FPwDelay: Boolean;
     FMiSave, FMiSaveAs, FMiIntegrity, FMiClose, FMiChangePw: TMenuItem;
@@ -65,7 +64,7 @@ type
     FPwFailCount: Integer;
     FEditRequested: Boolean;
     FRecoveryChecked: Boolean;
-    // odoc du Finder recu avant l'affichage de la fenetre: on differe
+    // odoc du Finder recu avant l'affichage: differe
     FPendingOpenPath: string;
     FShortcutsSuspended: Boolean;
     FSavedShortcutItems: array of TMenuItem;
@@ -177,7 +176,7 @@ type
     procedure ClusterSelection(AMode: TClusterMode);
     procedure StartClusterFor(AList: TRshQuickList; const AName: string;
       AMode: TClusterMode);
-    // nil si moins de deux noeuds selectionnes; les dossiers sont developpes
+    // nil sous deux noeuds; les dossiers sont developpes
     function SelectedConnUuids(out AAllSsh: Boolean): TStringList;
     procedure TrimSelection;
     function GroupNameOf(const AUuid: string): string;
@@ -258,7 +257,7 @@ type
     constructor Create(TheOwner: TComponent); override;
     destructor Destroy; override;
     {$IFNDEF DARWIN}
-    // la LCL n'interroge pas les popups de la barre custom: on dispatch nous-memes
+    // la LCL ignore les popups de la barre custom: dispatch maison
     function IsShortcut(var Message: TLMKey): Boolean; override;
     {$ENDIF}
   end;
@@ -316,10 +315,8 @@ begin
   ApplyThemeToUi;
   OnCloseQuery := @FormCloseQuery;
   OnShow := @FormShow;
-  // canal des documents ouverts depuis le SYSTEME: sous macOS le Finder envoie
-  // un Apple Event « odoc » que la LCL rend ici, la ligne de commande n'etant
-  // pas utilisee pour cela. Assigne des le constructeur, l'evenement pouvant
-  // arriver avant l'affichage de la fenetre.
+  // macOS: le Finder ouvre par Apple Event « odoc », pas par la ligne de
+  // commande. Des le constructeur: il peut arriver avant l'affichage.
   Application.OnDropFiles := @AppDropFiles;
   Application.OnException := @HandleAppException;
   Screen.AddHandlerActiveControlChanged(@ActiveControlChanged);
@@ -436,8 +433,7 @@ begin
   {$IFDEF DARWIN}
   Menu := FMenu;
   {$ELSE}
-  // la LCL auto-assigne tout TMainMenu dont l'Owner est la fenetre: sans cette
-  // annulation, le menu natif s'affiche EN PLUS de la barre custom
+  // la LCL auto-assigne le TMainMenu: sinon menu natif EN PLUS de la barre custom
   Menu := nil;
   {$ENDIF}
 
@@ -447,8 +443,7 @@ begin
 
   AddItem(mFile, 'New Document…', PlatformShortCut(VK_N), True, @NewDocClick);
   AddItem(mFile, 'Open Document…', PlatformShortCut(VK_O), True, @OpenDocClick);
-  // peuple a l'ouverture du menu File (FileMenuNeeded), comme les connexions
-  // recentes le font a l'ouverture du menu Connection
+  // peuple par FileMenuNeeded
   FMiOpenRecent := AddItem(mFile, 'Open Recent', 0, False, nil);
   mFile.OnClick := @FileMenuNeeded;
   AddItem(mFile, '-', 0, True, nil);
@@ -603,9 +598,7 @@ begin
   FTree.Images := FTreeImages;
   FTree.ReadOnly := False;
   FTree.RightClickSelect := True;
-  // Ctrl+clic / Maj+clic comme l'explorateur (Cmd sous macOS, voir
-  // TScrollTreeView.MouseDown); un clic droit sur un noeud deja selectionne
-  // garde la selection, la LCL s'en charge.
+  // Cmd au lieu de Ctrl sous macOS: voir TScrollTreeView.MouseDown
   FTree.MultiSelect := True;
   FTree.MultiSelectStyle := [msControlSelect, msShiftSelect, msVisibleOnly];
   FTree.DragMode := dmAutomatic;
@@ -693,11 +686,8 @@ begin
   LayoutStatusBar;
 end;
 
-// Des largeurs figees (400 + 200 + 380 px) depassaient la fenetre a sa
-// largeur minimale (480 px): les panneaux de droite -- dont le rappel qui dit
-// COMMENT liberer le clavier capture -- etaient coupes sans recours. Le
-// chemin du document cede en premier (tronque, il reste reconnaissable), le
-// compte de sessions ensuite, le message de capture en dernier.
+// Fenetre etroite: le chemin cede d'abord, puis le compte de sessions. Le
+// rappel qui dit COMMENT liberer le clavier capture reste visible le plus longtemps.
 procedure TfrmMain.LayoutStatusBar;
 var
   w, docW, sesW, over, d: Integer;
@@ -853,8 +843,8 @@ begin
   locked := (FDoc <> nil) and FDoc.Locked;
   if locked then
   begin
-    // Clear deselectionne -> TreeSelectionChanged -> UpdateLockState -> Clear:
-    // recursion infinie, run loop figee. Le rappel se tait pendant le vidage.
+    // Clear -> TreeSelectionChanged -> UpdateLockState -> Clear: recursion
+    // infinie. Le rappel se tait pendant le vidage.
     savedOnSel := FTree.OnSelectionChanged;
     FTree.OnSelectionChanged := nil;
     try
@@ -929,8 +919,7 @@ begin
   UpdateDocumentState;
 end;
 
-// Pas plus de CLUSTER_MAX_SESSIONS noeuds selectionnes: au-dela, une plage
-// Maj+clic est tronquee aux premiers dans l'ordre de l'arbre, et on le dit.
+// Au-dela de CLUSTER_MAX_SESSIONS: tronque dans l'ordre de l'arbre, et on le dit.
 procedure TfrmMain.TrimSelection;
 var
   kept: Integer;
@@ -964,10 +953,8 @@ begin
       [CLUSTER_MAX_SESSIONS]));
 end;
 
-// Selection multiple: au moins deux noeuds. Un dossier vaut toutes les
-// connexions qu'il contient, sous-dossiers compris: selectionner le dossier
-// revient a selectionner ses hotes, pour Connect comme pour Broadcast. La
-// racine est ignoree. Doublons (un hote ET son dossier) comptes une fois.
+// Un dossier vaut toutes ses connexions, recursivement. Racine ignoree,
+// doublons (hote ET son dossier) comptes une fois.
 function TfrmMain.SelectedConnUuids(out AAllSsh: Boolean): TStringList;
 
   procedure AddConn(const AUuid: string; AProto: TRshProtocol);
@@ -1501,8 +1488,8 @@ begin
   try
     fs := TFileStream.Create(APath, fmOpenRead or fmShareDenyWrite);
     try
-      // taille lue UNE fois pour la borne, l'allocation ET la lecture: sur un
-      // montage reseau, grandir entre SetLength et ReadBuffer deborde le tas
+      // taille lue UNE fois: sur un montage reseau, le fichier grandit entre
+      // SetLength et ReadBuffer, et le tas deborde
       n := fs.Size;
       if n > AMaxBytes then
       begin
@@ -1869,8 +1856,7 @@ begin
   UpdateDocumentState;
 end;
 
-// File > Open Recent, peuple a chaque ouverture du menu: une autre instance a
-// pu ouvrir un document entre-temps, et RecentReload refusionne le fichier.
+// A chaque ouverture: une autre instance a pu ouvrir un document entre-temps.
 procedure TfrmMain.FileMenuNeeded(Sender: TObject);
 var
   i, n: Integer;
@@ -1883,8 +1869,7 @@ begin
   for i := 0 to n - 1 do
   begin
     mi := TMenuItem.Create(FMiOpenRecent);
-    // « & » est l'accelerateur de la LCL: tel quel, un chemin qui en contient
-    // perdrait le caractere et soulignerait la lettre suivante
+    // « & » = accelerateur LCL: un chemin qui en contient perdrait un caractere
     mi.Caption := StringReplace(RecentDisplay(i), '&', '&&', [rfReplaceAll]);
     mi.Hint := RecentPath(i);   // chemin BRUT: le libelle est tronque a 200
     mi.OnClick := @OpenRecentClick;
@@ -1910,8 +1895,7 @@ begin
   if not (Sender is TMenuItem) then Exit;
   path := TMenuItem(Sender).Hint;
   if path = '' then Exit;
-  // Deplace, renomme, ou sur un volume absent: l'entree ne servira plus jamais.
-  // On le dit et on la retire, plutot que de laisser un choix mort dans le menu.
+  // disparu: on le dit et on retire l'entree morte
   if not FileExists(path) then
   begin
     MessageDlg('Document not found',
@@ -2402,8 +2386,7 @@ begin
     ref := TNodeRef(Node.Data);
   isActive := (ref <> nil) and (ref.Kind = nkConnection) and
     HasOpenSessionForConn(ref.Uuid);
-  // cdsMarked = membre d'une selection multiple sans le focus: sans lui, ce
-  // post-paint repeignait ces noeuds en fond ordinaire et effacait la selection
+  // cdsMarked: selectionne sans le focus; l'oublier efface la selection multiple
   selected := (cdsSelected in State) or (cdsMarked in State);
   if selected and (not isActive) then Exit;
   if selected then
@@ -2464,9 +2447,8 @@ var
 begin
   FTreePopup.Items.Clear;
   if FModel = nil then Exit;
-  // Plusieurs hotes selectionnes: Connect, et Broadcast si tous sont SSH.
-  // Suppression groupee seulement si la selection ne contient QUE des hotes:
-  // un dossier dans le lot emporterait tout son contenu sans qu'on le voie.
+  // Suppression groupee: hotes SEULEMENT. Un dossier dans le lot emporterait
+  // tout son contenu sans qu'on le voie.
   multi := SelectedConnUuids(allSsh);
   if multi <> nil then
   begin
@@ -2519,7 +2501,6 @@ begin
     try
       n := FModel.GetNode(ref.Uuid);
       try
-        // Deux sessions vers CE meme hote, cote a cote dans le meme onglet.
         if n.Protocol = rpSsh then
           Add('Connect Side by Side', @DualTerminalClick);
         if n.Protocol in [rpSsh, rpRdp, rpVnc] then
@@ -2530,12 +2511,9 @@ begin
     except
       on EModelError do ;
     end;
-    // SFTP over SSH. Le libelle dit ce que c'est, pas le nom d'un protocole
-    // que la fonctionnalite n'utilise pas.
     if CanOpenScp(FModel, ref.Uuid) then
       Add('File Transfer', @ScpClick);
     Add('-', nil);
-    // ssh-copy-id sans terminal, si le credential est une cle geree
     if CanCopySshId(FModel, ref.Uuid) then
     begin
       Add('Copy SSH ID to This Host…', @CopySshIdClick);
@@ -2657,8 +2635,7 @@ begin
   Accept := target <> nil;
 end;
 
-// Deplace tout ce qui est selectionne, comme l'explorateur: un noeud dont un
-// ancetre est aussi selectionne suit son ancetre, on ne le bouge pas deux fois.
+// Un noeud dont un ancetre est selectionne suit l'ancetre: pas deux deplacements.
 procedure TfrmMain.TreeDragDrop(Sender, Source: TObject; X, Y: Integer);
 var
   target, node, anc: TTreeNode;
@@ -2697,12 +2674,10 @@ begin
       if not covered then
         srcs.Add(TNodeRef(node.Data).Uuid);
     end;
-    // le noeud qui a le focus fait partie de Selections: le reinserer ici
-    // court-circuitait l'exclusion des descendants et sortait un enfant de
-    // son dossier pourtant deplace avec lui
+    // le focus est deja dans Selections: le reinserer contournerait
+    // l'exclusion des descendants
     if srcs.Count = 0 then Exit;
-    // tout ou rien: un refus au troisieme noeud ne laisse pas les deux
-    // premiers deplaces
+    // tout ou rien
     try
       FModel.BeginBatch;
       try
@@ -2942,7 +2917,6 @@ begin
   ClusterSelection(cmMulti);
 end;
 
-// True si au moins deux noeuds sont selectionnes et qu'aucun n'est un dossier.
 function TfrmMain.SelectionIsHostsOnly: Boolean;
 var
   i: Integer;
@@ -2961,9 +2935,8 @@ begin
   Result := True;
 end;
 
-// Memes gardes que DeleteClick, mais les dependances se jugent sur le LOT:
-// un bastion et tous ses dependants se suppriment ensemble. Puis une seule
-// confirmation, et une seule transaction: le lot part entier ou pas du tout.
+// Dependances jugees sur le LOT (bastion et dependants partent ensemble).
+// Une transaction: tout ou rien.
 procedure TfrmMain.DeleteSelectedClick(Sender: TObject);
 var
   uuids: TStringList;
@@ -3056,8 +3029,6 @@ begin
   end;
 end;
 
-// Grille sur les hotes selectionnes dans l'arbre, dossiers indifferents:
-// c'est le seul moyen de grouper des hotes qui ne partagent pas un dossier.
 procedure TfrmMain.ClusterSelection(AMode: TClusterMode);
 var
   uuids: TStringList;
@@ -3097,9 +3068,6 @@ begin
   end;
 end;
 
-// Deux sessions vers le MEME hote SSH, cote a cote dans un onglet: la grille
-// Multi-Terminal a deux cellules. Suivre un journal d'un cote pendant qu'on
-// agit de l'autre, sans changer d'onglet.
 procedure TfrmMain.DualTerminalClick(Sender: TObject);
 var
   ref: TNodeRef;
@@ -3112,8 +3080,7 @@ begin
   if (FModel = nil) or (FDoc = nil) then Exit;
   ref := SelectedRef;
   if (ref = nil) or (ref.Uuid = '') or (ref.Kind <> nkConnection) then Exit;
-  // Le message generique parlerait de « none of these connections » pour un
-  // seul hote: la cause se dit ici, au singulier.
+  // le message generique parle au pluriel: ici, un seul hote
   if SshConnectWouldPrompt(FModel, ref.Uuid) then
   begin
     MessageDlg('Connect Side by Side', 'This host asks for credentials at ' +
@@ -3150,8 +3117,7 @@ begin
   end;
 end;
 
-// Ouvre la grille (Broadcast ou Multi-Terminal) pour les connexions SSH
-// d'AList, les autres protocoles sont ignores. AName nomme l'onglet.
+// SSH seulement, le reste est ignore
 procedure TfrmMain.StartClusterFor(AList: TRshQuickList; const AName: string;
   AMode: TClusterMode);
 var
@@ -3210,9 +3176,8 @@ begin
         mtInformation, [mbOK], 0);
       Exit;
     end;
-    // Une cle de securite signe une session a la fois: N hotes = N touchers,
-    // l'un apres l'autre, et le sshd des derniers peut fermer avant son tour
-    // (LoginGraceTime, 120 s par defaut). L'utilisateur decide en connaissance.
+    // FIDO2: N hotes = N touchers en serie; les derniers sshd peuvent tomber
+    // avant leur tour (LoginGraceTime, 120 s). A l'utilisateur de choisir.
     if (nbFido > 0) and (MessageDlg(title, Format(
       '%d of these hosts authenticate with a FIDO2 security key: expect one ' +
       'touch per host, one after the other. Hosts left waiting too long may ' +
@@ -3300,9 +3265,7 @@ begin
         for i := 0 to High(params) do
           if Length(kh.KnownKeyTypes(params[i].Host, params[i].Port)) = 0 then
           begin
-            // Le meme hote deux fois (vue cote a cote) ne se liste qu'une
-            // fois, mais compte pour deux: c'est le nombre de SESSIONS qui
-            // dit si les questions s'empileraient.
+            // liste une fois, compte deux fois: ce sont les SESSIONS qui empilent
             Inc(unknownCnt);
             newEntry := Format('%s  (%s:%d)',
               [displays[i], params[i].Host, params[i].Port]);
@@ -3398,9 +3361,8 @@ begin
         'it before deleting it.', mtWarning, [mbOK], 0);
     Exit;
   end;
-  // Dependants HORS de ce qu'on supprime (dossier compris): un bastion
-  // efface ferait passer ses connexions en acces direct, en clair, au prochain
-  // Connect -- on refuse. Conteneurs et pods orphelins: on previent.
+  // Bastion efface = ses clients en direct au prochain Connect: refus.
+  // Conteneurs et pods orphelins: simple avertissement.
   FModel.CountExternalDependents(ref.Uuid, jumps, conts, pods);
   if jumps > 0 then
   begin
@@ -3705,9 +3667,7 @@ begin
   tab.FocusContent;
 end;
 
-// Gestionnaire de fichiers SFTP. Un seul onglet par connexion: le second
-// clic RAMENE le premier plutot que d'ouvrir une deuxieme session vers le
-// meme hote, avec sa deuxieme invite FIDO2 et son deuxieme mot de passe.
+// Un onglet par connexion: le second clic RAMENE le premier (une invite FIDO2 suffit).
 procedure TfrmMain.ScpClick(Sender: TObject);
 var
   ref: TNodeRef;
@@ -3730,8 +3690,7 @@ begin
   end;
 
   err := '';
-  // Le tunnel de rebond pompe la boucle de messages: sans ce drapeau, un
-  // second clic repartirait sur un etat a moitie bati.
+  // le rebond pompe la boucle: un second clic trouverait un etat a moitie bati
   FConnecting := True;
   try
     tab := StartScpSession(FPages, FDoc, FModel, FSessions, ref.Uuid,
@@ -3749,9 +3708,7 @@ begin
   UpdateSessionUi;
 end;
 
-// Un onglet par hote (uuid de connexion), PING_MAX_TABS au plus. Un hote
-// joint par un bastion n'est pas pingable d'ici: on le dit plutot que
-// d'afficher des pertes qui n'en sont pas.
+// Derriere un bastion, pas de ping possible: on le dit au lieu d'inventer des pertes.
 procedure TfrmMain.PingHostClick(Sender: TObject);
 var
   ref: TNodeRef;
@@ -3855,7 +3812,6 @@ begin
     FTreeScroll.ApplyTheme(clSideBg,
       BlendColor(clSideText, clSideBg, 22),
       BlendColor(clSideText, clSideBg, 42));
-  // Le separateur relit les couleurs a son dessin: un Invalidate suffit.
   if FSplitter <> nil then
     FSplitter.Invalidate;
   if FSearchBox <> nil then
@@ -3886,14 +3842,12 @@ begin
   if FMenuBar <> nil then
     FMenuBar.RefreshTheme;
   {$ENDIF}
-  // Les onglets Scp sont entierement dessines a la main: ils ne se
-  // recolorent pas tout seuls, et un Invalidate global ne suffit pas a leur
-  // faire relire les polices et les metriques de ligne.
+  // Scp dessine a la main: un Invalidate ne lui fait pas relire polices et metriques
   RefreshScpTabsTheme;
   Invalidate;
 end;
 
-// Sans perdre l'etat: ni la selection, ni le defilement, ni la file en cours.
+// selection, defilement et file en cours preserves
 procedure TfrmMain.RefreshScpTabsTheme;
 var
   i: Integer;
@@ -3977,8 +3931,7 @@ begin
   if FPwFailCount <= 0 then Exit;
   waitMs := Min(1 shl Min(FPwFailCount - 1, 5), 30) * 1000;
   slept := 0;
-  // ProcessMessages evite la fenetre gelee mais rend le menu cliquable: sans
-  // cette garde, un Fermer libere FDoc sous les pieds de l'appelant suspendu ici
+  // ProcessMessages rend le menu cliquable: un Fermer libererait FDoc sous nos pieds
   FPwDelay := True;
   Screen.Cursor := crHourGlass;
   try
@@ -4009,8 +3962,7 @@ begin
        mrCancel, 'Cancel', 'IsCancel'], 0) of
       mrYes:
         begin
-          // resceller l'enveloppe exige la matiere de cle effacee au
-          // verrou -- on la redemande plutot que de rendre « Save » morte
+          // resceller exige la cle effacee au verrou: on la redemande
           if FDoc.Locked and not UnlockInteractive then
             Exit(False);
           if FDoc.SourcePath = '' then
@@ -4032,7 +3984,7 @@ begin
   CloseDashboard;
   FreeAndNil(FModel);
   FreeAndNil(FDoc);
-  // drapeau global: fermer sans deverrouiller le laissait leve pour toujours
+  // drapeau global: fermer verrouille le laisserait leve pour toujours
   SetClipboardSharingSuspended(False);
   BuildTree;
   UpdateDocumentState;
@@ -4104,9 +4056,7 @@ begin
   OpenDocumentPath(path);
 end;
 
-// Ouverture par CHEMIN, sans dialogue: partagee par File > Open Document et
-// par File > Open Recent, pour que la MRU emprunte exactement le meme chemin
-// de code (verrou, lecture seule, reessai du mot de passe).
+// Open Document et Open Recent passent ici: un seul chemin de code, verrou compris.
 procedure TfrmMain.OpenDocumentPath(const APath: string);
 var
   pw: RawByteString;
@@ -4120,15 +4070,14 @@ begin
   path := APath;
   ro := False;
   havePw := False;
-  // rouvrir LE fichier deja ouvert: le verrou est a nous, on ferme d'abord.
-  // ResolveLink car ExpandFileNameUTF8 ne suit pas les symlinks.
+  // LE fichier deja ouvert: le verrou est a nous, fermer d'abord.
+  // ExpandFileNameUTF8 ne suit pas les symlinks.
   sameFile := (FDoc <> nil) and (FDoc.SourcePath <> '') and
     (CompareFilenames(ResolveLink(ExpandFileNameUTF8(path)),
       ResolveLink(ExpandFileNameUTF8(FDoc.SourcePath))) = 0);
   if sameFile then
   begin
-    // verifie sur le document deja ouvert: fermer d'abord puis decouvrir la
-    // faute de frappe laissait l'utilisateur sans document ni sessions
+    // mdp verifie AVANT de fermer: une faute de frappe ne coute pas les sessions
     repeat
       if not AskOpenPassword(path, pw) then Exit;
       BruteForceDelay;
@@ -4248,8 +4197,7 @@ begin
   UpdateDocumentState;
 end;
 
-// OPENFILENAME n'ajoute pas DefaultExt si un fichier porte exactement le nom
-// TAPE: on force .rsh et on repose la question d'ecrasement sur le nom corrige
+// OPENFILENAME oublie DefaultExt si le nom TAPE existe deja: .rsh force, question reposee.
 function TfrmMain.NormalizeRshSaveName(var APath: string): Boolean;
 begin
   Result := True;
@@ -4282,7 +4230,7 @@ begin
     if FDoc.SaveAs(path, err) then
     begin
       Result := True;
-      RecentAdd(path);   // le document vit desormais ici, pas a son ancien nom
+      RecentAdd(path);
     end
     else
       ShowDocError(err);
@@ -4389,14 +4337,12 @@ begin
   WindowState := wsMaximized;
   // no-op sous Unix: supprimer un temoin sous flock casserait l'exclusion
   PurgeStaleDocumentLocks;
-  // la recuperation d'abord: elle porte sur du travail non enregistre d'une
-  // session precedente, et l'ouverture demandee proposera de la fermer
+  // recuperation d'abord: l'ouverture demandee proposera de la fermer
   CheckCrashRecovery;
   OpenStartupDocument;
 end;
 
-// Document demande par le SYSTEME (association .rsh) plutot que choisi dans le
-// dialogue: la valeur est filtree avant d'aller plus loin, voir uOpenArg.
+// Valeur venue du SYSTEME, donc suspecte: filtree par uOpenArg.
 procedure TfrmMain.OpenExternalDocument(const ARaw: string);
 var
   path, reason: string;
@@ -4406,8 +4352,7 @@ begin
   begin
     if reason <> '' then
     begin
-      // ni le journal ni la boite ne repetent la valeur brute: elle est
-      // justement suspecte, et un nom maquille n'a pas a etre reaffiche
+      // la valeur brute n'est jamais reaffichee: un nom maquille reste cache
       LogInfo('document argument refused: ' + reason);
       MessageDlg('Cannot open document',
         'The document was not opened because ' + reason + '.',

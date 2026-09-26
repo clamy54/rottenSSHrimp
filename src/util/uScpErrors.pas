@@ -1,15 +1,6 @@
-{ Taxonomie des erreurs de l'onglet Scp. Unite pure, partagee par le transport,
-  la file et l'interface.
-
-  Elle existe pour une raison precise: « Access denied » affiche a la place d'un
-  disque plein, d'une perte reseau ou d'un conflit est le defaut le plus couteux
-  de ce genre d'outil -- il envoie l'utilisateur regarder des permissions
-  pendant que la vraie cause est ailleurs. Chaque cause a donc son code, et la
-  conversion depuis SFTP ou depuis l'OS se fait une seule fois, ici.
-
-  Un cas merite d'etre souligne: sekAttrRefused n'est PAS un echec. Le contenu
-  est arrive intact; seule la date ou le mode n'a pas pu etre repose. Le
-  transfert reste un succes assorti d'un avertissement.
+{ Erreurs de l'onglet Scp. Un « Access denied » pour un disque plein envoie
+  l'admin fouiller les permissions pendant une heure: chaque cause a son code.
+  sekAttrRefused n'est PAS un echec: contenu intact, date ou mode perdus.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -25,44 +16,35 @@ uses
 type
   TScpErrorKind = (
     sekNone,
-    // --- droits, et QUI exactement refuse ---
-    sekAccessDeniedDir,     // dossier non lisible ou non traversable
-    sekAccessDeniedRead,    // source listee mais refusee a l'ouverture
-    sekAccessDeniedWrite,   // creation ou ecriture refusee dans la cible
-    sekReadOnlyTarget,      // cible existante en lecture seule
-    sekRenameRefused,       // le dossier accepte un temporaire, pas le rename
-    // --- ressources ---
-    sekNoSpace,             // disque plein ou quota depasse
-    sekTooManyFiles,        // handles epuises, limite de fichiers atteinte
-    // --- etat du fichier ---
+    sekAccessDeniedDir,     // non lisible ou non traversable
+    sekAccessDeniedRead,    // listee, mais refusee a l'ouverture
+    sekAccessDeniedWrite,
+    sekReadOnlyTarget,
+    sekRenameRefused,       // le temporaire passe, le rename non
+    sekNoSpace,             // disque plein ou quota
+    sekTooManyFiles,
     sekLocked,              // verrou d'un autre processus
     sekNotFound,            // absent des le depart
     sekPathGone,            // present au listing, disparu depuis
-    sekAlreadyExists,       // la cible existe (conflit, PAS un refus de droit)
-    sekNotADirectory,       // un composant du chemin n'est pas un dossier
+    sekAlreadyExists,       // conflit, PAS un refus de droit
+    sekNotADirectory,
     sekDirNotEmpty,
-    // --- ce qu'on refuse de traiter ---
-    sekInvalidName,         // nom inacceptable sur la plateforme de destination
+    sekInvalidName,         // sur la plateforme de destination
     sekIsSpecialFile,       // socket, tube, peripherique
-    sekSymlinkSkipped,      // lien non suivi: une decision, pas une panne
-    sekOutsideRoot,         // la cible sortirait du dossier choisi
-    // --- transport ---
+    sekSymlinkSkipped,      // une decision, pas une panne
+    sekOutsideRoot,         // sortirait du dossier choisi
     sekConnectionLost,
     sekTimeout,
     sekCanceled,
-    sekPrematureEof,        // le flux s'arrete avant la taille annoncee
-    sekUnsupported,         // operation refusee par le serveur
-    // --- avertissement, jamais un echec ---
-    sekAttrRefused,         // date ou mode non reposes apres un transfert reussi
+    sekPrematureEof,        // flux plus court que la taille annoncee
+    sekUnsupported,
+    sekAttrRefused,         // avertissement, JAMAIS un echec
     sekOther);
 
-  // Cause, operation et objet: les trois font un message qu'on puisse suivre.
   TScpError = record
     Kind: TScpErrorKind;
-    // 'Uploading', 'Listing', 'Creating folder'...
-    Operation: string;
-    // Chemin en cause, deja neutralise.
-    Subject: string;
+    Operation: string;      // 'Uploading', 'Listing'...
+    Subject: string;        // deja neutralise
     Detail: string;
   end;
 
@@ -70,28 +52,22 @@ function MakeScpError(AKind: TScpErrorKind;
   const AOperation, ASubject, ADetail: string): TScpError;
 function NoScpError: TScpError;
 
-// Un avertissement n'interrompt pas le lot et ne fait pas echouer l'element.
 function IsWarningOnly(AKind: TScpErrorKind): Boolean;
 function IsFatalToSession(AKind: TScpErrorKind): Boolean;
-// Reessayer peut-il aboutir sans rien changer? Sert a PROPOSER Retry.
+// Decide si on PROPOSE Retry.
 function IsWorthRetrying(AKind: TScpErrorKind): Boolean;
 
 function ScpErrorKindLabel(AKind: TScpErrorKind): string;
 function ScpErrorText(const AError: TScpError): string;
 
 type
-  // Ce qu'on faisait quand l'acces a ete refuse: protocole et OS ne rendent
-  // qu'un « permission denied », le contexte dit lequel.
+  // OS et protocole ne disent que « permission denied »; le contexte dit lequel.
   TScpAccessContext = (acRead, acWrite, acDir);
 
 function AccessDeniedKind(AContext: TScpAccessContext): TScpErrorKind;
-// Un refus d'acces ramene a celui de ce contexte; le reste passe tel quel.
 function WithAccessContext(const AError: TScpError;
   AContext: TScpAccessContext): TScpError;
 
-// Depuis un code SSH_FX_*. AContext separe « source illisible », « cible non
-// inscriptible » et « dossier non traversable », que SSH_FX_PERMISSION_DENIED
-// confond.
 function SftpStatusToKind(AFxCode: LongWord;
   AContext: TScpAccessContext): TScpErrorKind;
 function OsErrorToKind(AOsCode: Integer): TScpErrorKind;
@@ -124,7 +100,6 @@ end;
 
 function IsWorthRetrying(AKind: TScpErrorKind): Boolean;
 begin
-  // Un nom invalide ou un lien ignore ne changeront pas d'avis au second essai.
   Result := AKind in [sekConnectionLost, sekTimeout, sekLocked,
     sekTooManyFiles, sekPrematureEof, sekOther];
 end;
@@ -161,8 +136,7 @@ begin
   end;
 end;
 
-// Ce que l'utilisateur peut faire, vide s'il n'y a rien d'utile: un conseil
-// generique dilue ceux qui comptent.
+// Vide plutot que generique: un conseil creux noie ceux qui comptent.
 function KindAdvice(AKind: TScpErrorKind): string;
 begin
   case AKind of
@@ -288,8 +262,7 @@ begin
     FX_NOT_A_DIRECTORY: Result := sekNotADirectory;
     FX_INVALID_FILENAME: Result := sekInvalidName;
     FX_LINK_LOOP: Result := sekSymlinkSkipped;
-    // SSH_FX_FAILURE est le fourre-tout du protocole: disque plein ou rename
-    // refuse y arrivent pareil. Le deviner serait pire que de l'admettre.
+    // Le fourre-tout du protocole: deviner serait pire qu'avouer.
     FX_FAILURE, FX_BAD_MESSAGE: Result := sekOther;
   else
     Result := sekOther;
@@ -324,7 +297,7 @@ begin
     ERROR_TOO_MANY_OPEN_FILES: Result := sekTooManyFiles;
     ERROR_ACCESS_DENIED: Result := sekAccessDeniedWrite;
     ERROR_WRITE_PROTECT: Result := sekReadOnlyTarget;
-    // Un volume retire ou un partage hors ligne, pas un probleme de droits.
+    // volume retire, partage hors ligne
     ERROR_NOT_READY: Result := sekPathGone;
     ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION: Result := sekLocked;
     ERROR_HANDLE_DISK_FULL, ERROR_DISK_FULL,
@@ -337,8 +310,7 @@ begin
   end;
   {$ELSE}
   case AOsCode of
-    // Par les constantes de la plateforme: au-dela de 35, les numeros ne sont
-    // pas les memes sous Linux et sous macOS.
+    // Constantes, pas numeros: au-dela de 35, Linux et macOS divergent.
     ESysEPERM: Result := sekAccessDeniedWrite;
     ESysENOENT: Result := sekNotFound;
     ESysEACCES: Result := sekAccessDeniedWrite;

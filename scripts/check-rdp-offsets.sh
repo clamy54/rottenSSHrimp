@@ -1,14 +1,9 @@
 #!/usr/bin/env bash
 #
-# Confronte les offsets en dur de bindings/freerdp/uFreeRdpApi.pas a ceux que le
-# compilateur calcule contre les VRAIS en-tetes de la machine. Un offset faux en
-# lecture donne un ecran noir; en ecriture, il ecrase la memoire d'autrui avec un
-# pointeur de fonction. La CI attrape la derive avant l'utilisateur.
-#
-# La table a UN offset conditionnel, BITMAP_OFF_HDC: on verifie la branche de la
-# machine (Darwin/arm64 -> 288, */x86_64 -> 296). Ailleurs (arm64 Linux, x86_64
-# macOS) aucune branche Pascal ne correspond: on s'abstient plutot que d'accuser
-# a tort.
+# Offsets en dur de uFreeRdpApi.pas contre les VRAIS en-tetes de la machine.
+# Faux en lecture: ecran noir. En ecriture: un pointeur de fonction chez autrui.
+# Seul BITMAP_OFF_HDC est conditionnel; sans branche Pascal pour la machine, on
+# s'abstient plutot que d'accuser a tort.
 #
 # Usage: scripts/check-rdp-offsets.sh   (0 = concordance, 1 = ecarts detailles)
 set -uo pipefail
@@ -17,9 +12,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 pas="${root}/bindings/freerdp/uFreeRdpApi.pas"
 src="${root}/scripts/gen-rdp-offsets.c"
 
-# Quelle branche de la table verifie-t-on, et donc quelle declaration retenir
-# en cas de doublon (BITMAP_OFF_HDC)? La sonde native rend la valeur de SA
-# plateforme; on la compare a la branche Pascal correspondante.
+# La sonde native ne rend que SA plateforme: on choisit la branche Pascal assortie.
 os="$(uname -s)"
 arch="$(uname -m)"
 case "$os/$arch" in
@@ -49,16 +42,13 @@ trap 'rm -rf "$tmp"' EXIT
 cc="${CC:-cc}"
 
 compile_probe() {
-  # $1 = cflags (mots separes par espace). Rend 0 si la sonde compile.
+  # $1 = cflags
   # shellcheck disable=SC2086
   $cc -w "$src" -o "$tmp/gen" $1 2>"$tmp/cc.log"
 }
 
-# En-tetes: pkg-config d'abord (portable), sinon les emplacements usuels --
-# distributions Linux ET Homebrew macOS. Sur certaines installations Homebrew,
-# les --cflags de pkg-config contiennent des chemins RELATIFS non resolus
-# (.../lib/pkgconfig/../../include/...) qui font echouer le compilateur: d'ou
-# le repli sur des repertoires en dur si le premier essai echoue.
+# pkg-config d'abord, puis chemins en dur: certains Homebrew rendent des cflags
+# RELATIFS non resolus sur lesquels le compilateur s'etrangle.
 cflags_pc=""
 if command -v pkg-config >/dev/null 2>&1; then
   cflags_pc="$(pkg-config --cflags freerdp3 winpr3 2>/dev/null || true)"
@@ -86,18 +76,14 @@ fi
 
 "$tmp/gen" | sed 's/[[:space:]]//g' | sort > "$tmp/actual.txt"
 
-# Constantes Pascal: « NOM = VALEUR; » du bloc const, lignes commentees exclues.
-# sed portable (BRE, sans \+): mawk/busybox des conteneurs ignorent le match()
-# a trois arguments de GNU awk. L'ORDRE du fichier est conserve: BITMAP_OFF_HDC
-# y apparait deux fois, {$IFDEF DARWIN} PUIS {$ELSE}, d'ou le head/tail choisi
-# selon la branche verifiee (pick_declared).
+# sed BRE sans \+: mawk/busybox ignorent le match() a trois arguments de gawk.
+# L'ORDRE compte: BITMAP_OFF_HDC sort deux fois, DARWIN puis ELSE.
 grep -v '^[[:space:]]*//' "$pas" \
   | sed -n 's/^[[:space:]]*\([A-Z][A-Z0-9_]*\)[[:space:]]*=[[:space:]]*\([0-9][0-9]*\)[[:space:]]*;.*/\1=\2;/p' \
   > "$tmp/declared.txt"
 
 pick_declared() {
-  # $1 = nom. Retient la declaration de la BRANCHE verifiee: la premiere sous
-  # Darwin ({$IFDEF DARWIN}), la derniere sinon ({$ELSE}).
+  # $1 = nom. Darwin: la premiere declaration; sinon la derniere.
   if [ "$branch" = "darwin" ]; then
     grep "^$1=" "$tmp/declared.txt" | head -1
   else

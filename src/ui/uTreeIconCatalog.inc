@@ -1,6 +1,5 @@
-// GENERE par scripts/gen-icons.lpr -- NE PAS EDITER.
-// Identifiants d'icones (= noms de fichiers). Stables:
-// stockes dans nodes.icon_id.
+// GENERE par scripts/gen-icons.lpr: NE PAS EDITER.
+// IDs = noms de fichiers, stockes dans nodes.icon_id: stables.
 const
   TREE_FOLDER_IDS: array[0..40] of string = (
     'book',

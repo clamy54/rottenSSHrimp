@@ -1,11 +1,6 @@
-{ Moteur de transfert de l'onglet Scp: enumeration recursive et copie d'un
-  fichier, ecrits contre uScpBackend et donc entierement testables sans reseau.
-
-  Une cible valide n'est JAMAIS remplacee par un transfert incomplet: on ecrit
-  dans un temporaire du dossier de destination, on vide, on ferme, et alors
-  seulement on remplace atomiquement. Les autres garanties -- droits conserves,
-  reprise verifiee par empreinte, liens jamais suivis, confinement sous la
-  racine choisie -- sont documentees la ou chacune est tenue.
+{ Moteur de transfert, ecrit contre uScpBackend: testable sans reseau.
+  Une cible valide n'est JAMAIS remplacee par un transfert incomplet: temporaire
+  a cote, vide, ferme, puis remplacement atomique.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -22,25 +17,22 @@ uses
 const
   // Tampon FIXE, jamais dimensionne d'apres le reseau.
   SCP_COPY_BUFFER = 64 * 1024;
-  // Au-dela de l'annonce du serveur on continue -- un journal qui grossit --
-  // mais pas indefiniment: c'est la borne contre un disque qu'on remplit.
+  // Marge au-dela de la taille annoncee (un journal grossit), pas un blanc-seing
+  // pour remplir le disque.
   SCP_GROWTH_SLACK = Int64(64) * 1024 * 1024;
   SCP_PROGRESS_MS = 100;
-  // Periode de vidage du tampon, qui confirme l'offset de reprise. Trop petit:
-  // le debit s'effondre; trop grand, une coupure fait resservir l'intervalle.
+  // Vidage qui confirme l'offset de reprise. Trop petit: debit a genoux. Trop
+  // grand: une coupure resservira tout l'intervalle.
   SCP_CONFIRM_EVERY = Int64(4) * 1024 * 1024;
-  // Elements en file, tous lots confondus. Les bornes par dossier et par
-  // profondeur n'arretent pas un arbre tres large; au-dela, la selection en
-  // cours est ecartee entiere plutot qu'a moitie.
+  // Tous lots confondus, contre l'arbre tres large. Au-dela, la selection saute
+  // entiere, pas a moitie.
   SCP_MAX_QUEUE_ITEMS = 500000;
 
 type
-  // Empreinte BLAKE2b (libsodium): elle decide si deux contenus sont les memes,
-  // et doit tenir face a une substitution voulue, pas seulement a un accident.
+  // BLAKE2b et non un CRC: doit tenir face a une substitution VOULUE.
   TScpDigest = array[0..31] of Byte;
 
-  // Empreinte en cours. L'etat de libsodium est opaque et aligne sur 64: il vit
-  // dans un bloc a lui, et une lecture intermediaire travaille sur une COPIE.
+  // Etat libsodium opaque, aligne sur 64. Peek travaille sur une COPIE.
   TScpHash = class
   private
     FMem: Pointer;
@@ -51,49 +43,39 @@ type
     destructor Destroy; override;
     procedure Reset;
     procedure Update(const ABuf; ALen: SizeUInt);
-    // Empreinte de ce qui a ete vu jusqu'ici, sans arreter le calcul.
     procedure Peek(out ADigest: TScpDigest);
   end;
 
-  // Decision devant un conflit, sur le thread de travail. Peut bloquer le temps
-  // que l'interface reponde, mais doit rendre la main sur annulation.
+  // Sur le thread de travail. Peut bloquer, mais doit ceder a l'annulation.
   TScpConflictEvent = procedure(const AInfo: TConflictInfo;
     var ADecision: TConflictDecision) of object;
-  // Remplacement atomique impossible. AAllow=False par defaut: sans reponse
-  // explicite, on ne degrade pas la garantie.
+  // AAllow=False par defaut: pas de reponse, pas de garantie degradee.
   TScpNonAtomicEvent = procedure(const ATargetPath: string;
     var AAllow: Boolean) of object;
   TScpProgressEvent = procedure(AItem: TTransferItem) of object;
-  // Pour le resume: liens ignores, attributs non reposes, replis acceptes.
   TScpNoteEvent = procedure(const AText: string) of object;
 
-  // Bilan d'un changement de droits, dit a la fin: sur une erreur au milieu
-  // d'un dossier, ce qui a DEJA change ne doit pas passer pour intact.
+  // Une erreur a mi-dossier ne doit pas faire passer le DEJA change pour intact.
   TScpChmodTally = record
-    Applied: Integer;      // droits effectivement changes
-    Unchanged: Integer;    // deja au mode demande: rien n'a ete envoye
-    Links: Integer;        // liens laisses tels quels
+    Applied: Integer;
+    Unchanged: Integer;    // deja au bon mode: rien envoye
+    Links: Integer;
   end;
 
-  // Un partiel ecrit par CETTE session. Hors de cette liste aucune reprise n'est
-  // proposee: un partiel d'origine inconnue produirait un fichier mixte.
+  // CETTE session seulement: un partiel d'origine inconnue donnerait un fichier mixte.
   TScpPartial = record
     TempPath: string;
     TargetPath: string;
-    // Identite du systeme de fichiers SOURCE: reprendre un partiel de srv-a avec
-    // les octets de srv-b donnerait un fichier valide en apparence, faux dedans.
+    // Partiel de srv-a complete par srv-b: valide en apparence, pourri dedans.
     SourceIdentity: string;
-    // Et celle de la DESTINATION, seule a le nettoyer: un chemin POSIX local peut
-    // exister a l'identique sur le serveur, ou l'homonyme serait supprime.
+    // Seule a le nettoyer: un chemin POSIX local existe peut-etre aussi en face.
     DestIdentity: string;
     SourcePath: string;
     SourceSize: Int64;
     SourceTimeUtc: Int64;
-    // Dernier offset CONFIRME: vide sur le support si possible, acquitte sinon.
+    // Vide sur le support si possible, acquitte sinon.
     Confirmed: Int64;
-    // Empreinte des Confirmed premiers octets ECRITS, relue et comparee a la
-    // reprise: un partiel dont le contenu a change, meme a taille egale, est
-    // refuse.
+    // Des Confirmed premiers octets ECRITS: meme taille, autre contenu = refuse.
     Digest: TScpDigest;
     Active: Boolean;
   end;
@@ -109,20 +91,17 @@ type
     destructor Destroy; override;
     procedure Note(const ATempPath, ATargetPath, ASourceIdentity,
       ADestIdentity, ASourcePath: string; ASourceSize, ASourceTimeUtc: Int64);
-    // ADigest: empreinte des AOffset premiers octets ecrits.
     procedure Confirm(const ATempPath: string; AOffset: Int64;
       const ADigest: TScpDigest);
     procedure Forget(const ATempPath: string);
-    // Publie, mais le nom temporaire n'a pas pu etre retire: il reste a nettoyer
-    // et ne doit plus JAMAIS etre repris -- c'est un second nom du fichier publie.
+    // Publie mais temp non retire: a nettoyer, JAMAIS a reprendre (c'est un
+    // second nom du fichier publie).
     procedure Retire(const ATempPath: string);
     function Lookup(const ATempPath: string; out APartial: TScpPartial): Boolean;
-    // Partiel reutilisable pour cette source exacte sur cette destination. Refuse
-    // au moindre ecart; s'il en reste plusieurs, celui qui a confirme le plus.
+    // Refuse au moindre ecart; a egalite, celui qui a confirme le plus.
     function FindResumable(const ATargetPath, ASourceIdentity, ADestIdentity,
       ASourcePath: string; ASourceSize, ASourceTimeUtc: Int64;
       out APartial: TScpPartial): Boolean;
-    // Temporaires actifs visant cette destination: ceux qu'un depart doit retirer.
     function ActiveForTarget(const ATargetPath,
       ADestIdentity: string): TStringArray;
     function ActiveCount: Integer;
@@ -130,17 +109,14 @@ type
     procedure Clear;
   end;
 
-  // Ce qu'une resolution de conflit a DECIDE, et ce qu'elle a VU: l'etat observe
-  // choisit la maniere de publier, pour ne pas remplacer un fichier apparu depuis.
+  // Ce qui a ete VU choisit la publication: on ne remplace pas un fichier apparu depuis.
   TScpConflictOutcome = record
     ResumeFrom: Int64;
     ResumeTemp: string;
-    // Droits LUS de la cible remplacee: un fichier sans aucun droit en garde
-    // zero. Une cible dont les droits ne se lisent pas n'est pas remplacee.
+    // 0 est un mode legitime. Droits illisibles: pas de remplacement.
     PrevMode: LongWord;
     TargetExisted: Boolean;
-    // La cible est un LIEN: le rename remplace le lien, qui n'a pas de droits a
-    // garder, par un fichier neuf.
+    // Le rename remplace le lien lui-meme, qui n'a aucun droit a garder.
     TargetIsLink: Boolean;
   end;
 
@@ -156,56 +132,45 @@ type
     FHash: TScpHash;
     FLastProgressTick: QWord;
     FConfirmEvery: Int64;
-    // Derniere erreur qui condamne la session, vue ou que ce soit.
     FFatal: TScpError;
     FHasFatal: Boolean;
-    // Selection en cours d'examen. Son annulation arrete le parcours meme
-    // quand aucun des deux systemes de fichiers ne la voit: une duplication
-    // locale n'a que le disque, que « Cancel selected » ne touche pas.
+    // Une duplication locale n'a que le disque, que « Cancel selected » ne touche
+    // pas: l'annulation se lit donc ici.
     FWalkRoot: TTransferItem;
     FMaxQueueItems: Integer;
     FQueueFull: Boolean;
 
     procedure Note(const AText: string);
     procedure NoteFatal(const AErr: TScpError);
-    // Un nouveau temporaire va viser cette destination: les partiels actifs qui la
-    // visaient ne servent plus, et les garder multiplierait les points de reprise.
     procedure DropPartialsFor(ADstFs: TScpFileSystem;
       const ATargetPath: string);
-    // Un partiel qui ne sert plus: retire du disque, et oublie SEULEMENT alors.
+    // Oublie SEULEMENT une fois retire du disque.
     procedure DiscardPartial(ADstFs: TScpFileSystem; const ATempPath: string);
     procedure PublishedTemp(AItem: TTransferItem; const ATempPath: string;
       var AErr: TScpError);
     function NameUsable(ASrcFs, ADstFs: TScpFileSystem; const AName: string;
       out AWhy: string): Boolean;
-    // Un niveau du parcours. AOwner: l'element tikMakeDir du dossier. AKnown:
-    // cibles deja en file, a ne pas remettre, quand on reprend un parcours coupe.
+    // AOwner: le tikMakeDir du dossier. AKnown: deja en file (parcours repris).
     function WalkDir(ASrcFs, ADstFs: TScpFileSystem;
       ADirection: TTransferDirection; const ASrcDir, ADstDir,
       ATargetRoot: string; ADepth, AMaxDepth: Integer; AOwner: TTransferItem;
       AKnown: TStrings; out AErr: TScpError): Boolean;
     procedure MarkScanCut(AOwner: TTransferItem; const AErr: TScpError);
-    // Le parcours doit-il s'arreter AVANT d'aller plus loin? Annulation de la
-    // selection ou du dossier parcouru. La file pleine se juge a l'ajout.
+    // La file pleine, elle, se juge a l'ajout.
     function WalkMustStop(ASrcFs, ADstFs: TScpFileSystem;
       AOwner: TTransferItem; const ADir: string;
       out AErr: TScpError): Boolean;
     function WalkRootStopped(ASrcFs, ADstFs: TScpFileSystem): Boolean;
-    // Annulation ou file pleine pendant un parcours: l'element s'arrete avec
-    // tout ce qui a deja ete mis en file pour lui. True si c'est le cas.
+    // Arrete l'element avec tout ce qu'il a deja mis en file.
     function StopScan(AItem: TTransferItem; const AErr: TScpError): Boolean;
-    // Reprend le parcours d'un dossier dont le listing a ete coupe.
     function RescanDir(ASrcFs, ADstFs: TScpFileSystem; AItem: TTransferItem;
       out AErr: TScpError): Boolean;
-    // Examine une selection (tikScanRoot) et en fait ce qu'elle est.
     function ScanRoot(ASrcFs, ADstFs: TScpFileSystem; AItem: TTransferItem;
       AMaxDepth: Integer; out AErr: TScpError): Boolean;
-    // Pose l'etat qui correspond a l'erreur: annule, interrompu si la session est
-    // perdue, echoue sinon. Une coupure rangee en « echec » interdirait la reprise.
+    // Coupure rangee en « echec » = reprise interdite. D'ou tsInterrupted.
     procedure FailItem(AItem: TTransferItem; const AErr: TScpError);
     procedure ReportProgress(AItem: TTransferItem; AForce: Boolean);
-    // Copie proprement dite, source et cible deja ouvertes. AHash court sur les
-    // octets ECRITS: fraiche pour un fichier neuf, nourrie du prefixe a la reprise.
+    // AHash court sur les octets ECRITS: fraiche, ou nourrie du prefixe a la reprise.
     function CopyStream(ASrcFs: TScpFileSystem; ASrcH: TScpFileHandle;
       ADstFs: TScpFileSystem; ADstH: TScpFileHandle;
       AItem: TTransferItem; AExpected: Int64; AStartOffset: Int64;
@@ -215,29 +180,22 @@ type
       AItem: TTransferItem; const ASrcEntry: TScpEntry;
       var ATargetPath: string; out AOutcome: TScpConflictOutcome;
       out AErr: TScpError): Boolean;
-    // Un dossier n'a pas pu etre cree: tout ce qui devait y aller echoue avec lui,
-    // tout de suite, plutot qu'un par un avec une raison qui egare.
+    // Tout le sous-arbre echoue d'un coup, plutot qu'un par un pour de fausses raisons.
     procedure FailSubtree(ADstFs: TScpFileSystem; AItem: TTransferItem);
-    // Remplace la cible par le temporaire. L'absence de remplacement atomique se
-    // DEMANDE, jamais ne se contourne, et l'annulation est relue apres l'attente.
+    // Le non-atomique se DEMANDE, jamais ne se contourne. Annulation relue apres.
     function CommitTemp(ADstFs: TScpFileSystem; AItem: TTransferItem;
       const ATempPath, ATargetPath: string; ATargetExisted: Boolean;
       out AErr: TScpError): Boolean;
-    // Le partiel est-il encore ce qu'on croit? Fichier ordinaire, pas un lien, au
-    // moins aussi long que l'offset confirme, pas plus que la source. False avec
-    // AErr vide = il ne vaut plus rien (AWhy dit pourquoi); avec AErr = on n'a pas
-    // pu le savoir, et il est a GARDER: une coupure n'est pas une disparition.
+    // False sans AErr: bon a jeter (AWhy). False avec AErr: on ne sait pas, on
+    // GARDE; une coupure n'est pas une disparition.
     function PartialUsable(ADstFs: TScpFileSystem; const ATempPath: string;
       AConfirmed, ASourceSize: Int64; out AWhy: string;
       out AErr: TScpError): Boolean;
-    // Relit le prefixe confirme A TRAVERS la poignee rouverte et compare son
-    // empreinte au registre; laisse AHash nourrie et la poignee a l'offset. False
-    // avec AErr vide = partiel inutilisable, avec AErr = la relecture a echoue.
+    // Relecture A TRAVERS la poignee rouverte. Meme semantique False/AErr.
     function VerifyPartialPrefix(ADstFs: TScpFileSystem;
       ADstH: TScpFileHandle; AItem: TTransferItem;
       const APartial: TScpPartial; AHash: TScpHash;
       out AWhy: string; out AErr: TScpError): Boolean;
-    // Meme question pour la SOURCE, distante comprise.
     function VerifySourcePrefix(ASrcFs: TScpFileSystem;
       ASrcH: TScpFileHandle; AItem: TTransferItem;
       const APartial: TScpPartial; out AWhy: string;
@@ -246,36 +204,28 @@ type
     constructor Create(AQueue: TTransferQueue);
     destructor Destroy; override;
 
-    // Met ASourcePath en file et l'examine tout de suite: un fichier, ou un
-    // dossier et son contenu, dossiers AVANT leur contenu. False seulement si
-    // une coupure a interrompu le parcours; un refus donne un element ignore.
-    // ATargetName renomme la RACINE du lot et elle seule, ce qui permet de
-    // dupliquer sur place. Vide = le nom de la source.
+    // Dossiers AVANT leur contenu. False = coupure; un refus donne un element
+    // ignore. ATargetName renomme la RACINE seule (duplication sur place).
     function EnumerateInto(ASrcFs, ADstFs: TScpFileSystem;
       ADirection: TTransferDirection;
       const ASourcePath, ATargetParent, ATargetRoot: string;
       AMaxDepth: Integer; out AErr: TScpError;
       const ATargetName: string = ''): Boolean;
 
-    // Traite UN element. True s'il s'est termine normalement (Completed ou
-    // Skipped); False s'il a echoue ou ete interrompu, son etat dit lequel.
+    // False: echec ou interruption, l'etat de l'element dit lequel.
     function RunItem(ASrcFs, ADstFs: TScpFileSystem; AItem: TTransferItem;
       const ATargetRoot: string): Boolean;
 
-    // Supprime les temporaires ouverts SUR CE systeme de fichiers quand c'est sans
-    // risque, et rend ceux qu'il a fallu laisser. Les autres ne sont pas touches.
+    // Rend les temporaires qu'il a fallu laisser.
     function CleanupPartials(ADstFs: TScpFileSystem): TStringArray;
 
-    // Rend, et efface, la derniere erreur qui condamne la session: un element
-    // « termine » peut avoir vu la connexion tomber juste apres sa publication.
+    // Un element « termine » a pu voir la connexion tomber juste apres publication.
     function TakeFatal(out AErr: TScpError): Boolean;
 
     property Partials: TScpPartialRegistry read FPartials;
     property ConfirmEvery: Int64 read FConfirmEvery write FConfirmEvery;
     property MaxQueueItems: Integer read FMaxQueueItems write FMaxQueueItems;
-    // La file peut-elle recevoir ACount selections de plus? Une commande est
-    // acceptee entiere ou pas du tout. Le compte ne peut que baisser entre ce
-    // test et les ajouts: seul le fil de transfert ajoute, l'interface retire.
+    // Tout ou rien. Pas de TOCTOU: seul le fil de transfert ajoute, l'UI retire.
     function CanEnqueue(ACount: Integer): Boolean;
     property OnConflict: TScpConflictEvent read FOnConflict write FOnConflict;
     property OnNonAtomic: TScpNonAtomicEvent
@@ -287,11 +237,8 @@ type
 function FreeCopyName(AFs: TScpFileSystem; const ADir, AName: string;
   out AErr: TScpError): string;
 
-// Pose des droits sur APath et, si ARecursive, sur le contenu des dossiers.
-// Les liens restent tels quels: SETSTAT les traverse. Chaque dossier est relu
-// apres son listing et avant ses propres droits, chaque fichier juste avant:
-// cela RESSERRE la fenetre ou un nom devient lien sans la fermer, le protocole
-// n'ayant ni lchmod ni poignee de dossier. Un mode deja bon n'est pas renvoye.
+// Liens ignores: SETSTAT les traverse. Relecture juste avant chaque chmod: la
+// fenetre ou un nom devient lien RETRECIT, sans lchmod elle ne se ferme pas.
 function ScpChmodTree(AFs: TScpFileSystem; const APath: string;
   ABits, AMask: LongWord; ARecursive, ADirX: Boolean; ADepth: Integer;
   var ATally: TScpChmodTally; out AErr: TScpError): Boolean;
@@ -485,7 +432,7 @@ var
 begin
   Result := False;
   APartial := Default(TScpPartial);
-  // Taille ou date inconnue: la concordance est indemontrable, donc refusee.
+  // Taille ou date inconnue: concordance indemontrable, refus.
   if (ASourceSize < 0) or (ASourceTimeUtc = 0) then Exit;
   FLock.Acquire;
   try
@@ -575,32 +522,23 @@ begin
   end;
 end;
 
-// Droits d'un fichier NEUF d'apres sa source: lecture et ecriture seulement.
-// Jamais d'ecriture pour tous, jamais de setuid/setgid/sticky, et jamais les
-// bits d'EXECUTION -- un script telecharge ne devient pas executable ici sans
-// qu'on l'ait demande. Un mode INCONNU (Windows, serveur muet) donne le
-// defaut. Un mode connu et NUL en est un: une source sans aucun droit donne
-// un fichier sans aucun droit.
+// Ni o+w, ni bits speciaux, ni EXECUTION: un script telecharge ne devient pas
+// executable en douce. Mode connu et nul: reste nul.
 function ModeForNewFile(ASourceMode: LongWord; AModeKnown: Boolean): LongWord;
 begin
   if not AModeKnown then Exit(SCP_DEFAULT_FILE_MODE and LongWord(&0664));
   Result := ASourceMode and LongWord(&0664);
 end;
 
-// Droits d'un fichier REMPLACE: ceux qu'il avait, lecture, ecriture et
-// execution comprises -- jusqu'a l'ecriture pour tous, qui etait son choix.
-// Jamais setuid, setgid ni sticky: un contenu nouveau sous un bit eleve est un
-// autre programme qui herite du privilege.
+// Garde ses rwx, o+w compris (son choix). Jamais setuid/setgid/sticky: un contenu
+// nouveau sous un bit eleve, c'est un autre programme qui herite du privilege.
 function ModeForReplacedFile(APrevMode: LongWord): LongWord;
 begin
   Result := APrevMode and LongWord(&0777);
 end;
 
-// Droits d'un dossier NEUF: ceux de sa source, sans ecriture pour tous ni bits
-// speciaux, et toujours rwx pour le proprietaire -- il faut pouvoir y ecrire ce
-// qui suit. Poses A LA CREATION: un dossier prive l'est des qu'il existe, et
-// non apres que son contenu a ete lisible par tous. Mode inconnu: le defaut.
-// Mode connu et nul: 0700, jamais le defaut ouvert.
+// u+rwx toujours: il faut bien y ecrire la suite. Mode connu et nul: 0700,
+// jamais le defaut ouvert.
 function ModeForNewDir(ASourceMode: LongWord; AModeKnown: Boolean): LongWord;
 begin
   if not AModeKnown then Exit(SCP_DEFAULT_DIR_MODE);
@@ -647,10 +585,8 @@ begin
   stale := FPartials.ActiveForTarget(ATargetPath, ADstFs.DisplayName);
   for i := 0 to High(stale) do
   begin
-    // Un second temporaire pour la meme cible laisserait deux « .part », et la
-    // reprise prendrait plus tard celui des deux qu'elle trouve en premier.
-    // Oublie seulement ce qui est parti: un partiel qu'on n'a pas pu retirer
-    // doit rester nettoyable a la fermeture.
+    // Deux « .part » pour une cible: la reprise prendrait le premier venu.
+    // Oublie seulement ce qui est parti, le reste se nettoie a la fermeture.
     if ADstFs.DeleteTemp(stale[i], err) or (err.Kind = sekNotFound) then
       FPartials.Forget(stale[i]);
   end;
@@ -665,9 +601,7 @@ begin
     FPartials.Forget(ATempPath);
 end;
 
-// Le contenu est publie. Un temporaire que le rename n'a pas su retirer reste
-// enregistre pour la fermeture, sans plus jamais servir de reprise, et
-// l'element le dit.
+// Temp non retire par le rename: garde pour la fermeture, plus jamais repris.
 procedure TScpTransferEngine.PublishedTemp(AItem: TTransferItem;
   const ATempPath: string; var AErr: TScpError);
 begin
@@ -704,16 +638,13 @@ var
 begin
   if not Assigned(FOnProgress) then Exit;
   now_ := GetTickCount64;
-  // Sans ce filtre, un fichier rapide noie l'interface et ralentit a cause de
-  // son propre affichage.
+  // Sinon un fichier rapide se ralentit a force de s'afficher.
   if (not AForce) and (now_ - FLastProgressTick < SCP_PROGRESS_MS) then Exit;
   FLastProgressTick := now_;
   FOnProgress(AItem);
 end;
 
-// --- Enumeration ----------------------------------------------------------
-
-// Nom acceptable des DEUX cotes: les deux controles different.
+// Les DEUX cotes: leurs controles different.
 function TScpTransferEngine.NameUsable(ASrcFs, ADstFs: TScpFileSystem;
   const AName: string; out AWhy: string): Boolean;
 var
@@ -728,8 +659,7 @@ begin
     AWhy := NameVerdictText(v, DisplaySafeName(AName));
 end;
 
-// AOwner: l'element tikMakeDir du dossier. Un dossier inenumerable ne
-// disparait pas du bilan, il passe a « ignore » avec sa raison.
+// Un dossier inenumerable ne disparait pas du bilan: « ignore », avec sa raison.
 function TScpTransferEngine.WalkDir(ASrcFs, ADstFs: TScpFileSystem;
   ADirection: TTransferDirection; const ASrcDir, ADstDir, ATargetRoot: string;
   ADepth, AMaxDepth: Integer; AOwner: TTransferItem; AKnown: TStrings;
@@ -744,13 +674,8 @@ var
   seen: TStringList;
   key: string;
 
-  // Un enfant ecarte entre dans la file a l'etat « ignore » avec sa raison: une
-  // note seule laisserait le bilan annoncer un lot complet. Le chemin retenu est
-  // celui du DOSSIER, fabriquer le sien a partir d'un nom refuse n'aurait pas de
-  // sens.
-  // Seul point d'ajout du parcours. Le plafond se juge ICI, juste avant, et
-  // pas avant de lister: un dossier vide tient dans une file pleine. nil = file
-  // pleine, FQueueFull pose; la boucle s'arrete a l'entree suivante.
+  // Seul point d'ajout: le plafond se juge ICI, un dossier vide tient dans une
+  // file pleine. nil = pleine, FQueueFull pose.
   function AddChild(AKind: TTransferItemKind;
     const AChildSrc, AChildDst, AName: string): TTransferItem;
   begin
@@ -764,6 +689,8 @@ var
       DisplaySafeName(AName), AOwner.Batch, AOwner);
   end;
 
+  // En file a l'etat « ignore », sinon le bilan annoncerait un lot complet.
+  // Chemin du DOSSIER: rien a fabriquer a partir d'un nom refuse.
   procedure SkipChild(const AChildSrc, AName: string;
     const AChildErr: TScpError);
   var
@@ -783,7 +710,7 @@ begin
   if WalkMustStop(ASrcFs, ADstFs, AOwner, ASrcDir, AErr) then Exit;
   if ADepth > AMaxDepth then
   begin
-    // Profondeur bornee: sans elle une arborescence fabriquee epuise la pile.
+    // Sinon une arborescence fabriquee epuise la pile.
     err := MakeScpError(sekOther, 'Scanning', DisplaySafeName(ASrcDir),
       Format('maximum depth of %d reached, contents not transferred',
         [AMaxDepth]));
@@ -797,12 +724,10 @@ begin
   end;
   if not ASrcFs.List(ASrcDir, entries, err) then
   begin
-    // Un dossier illisible ne condamne pas le lot: note, saute, sa raison dite.
     Note(ScpErrorText(err));
     if IsFatalToSession(err.Kind) then
     begin
-      // Une COUPURE n'est pas un dossier illisible: elle REMONTE, pour que le
-      // transport declare la session perdue, et le dossier reste A PARCOURIR.
+      // Une COUPURE remonte, et le dossier reste A PARCOURIR.
       MarkScanCut(AOwner, err);
       AErr := err;
       Exit(False);
@@ -816,8 +741,7 @@ begin
   end;
   if Length(entries) > SCP_MAX_DIR_ENTRIES then
   begin
-    // Ecarte AVEC sa raison: le laisser « en attente » le creerait vide et
-    // reussi.
+    // « En attente », il serait cree vide et declare reussi.
     err := MakeScpError(sekOther, 'Scanning', DisplaySafeName(ASrcDir),
       Format('the folder reports more than %d entries, contents not ' +
         'transferred', [SCP_MAX_DIR_ENTRIES]));
@@ -832,15 +756,14 @@ begin
 
   seen := TStringList.Create;
   try
-    // CaseSensitive AVANT Sorted, et True: CollisionKey a deja replie les cles
-    // selon la DESTINATION. Comparer sans la casse par-dessus ferait passer tout
-    // serveur POSIX pour un Windows, et « README » masquerait « readme ».
+    // CaseSensitive AVANT Sorted, et True: CollisionKey a deja replie selon la
+    // destination. Sinon « README » masque « readme » sur un POSIX.
     seen.CaseSensitive := True;
     seen.Sorted := True;
     seen.Duplicates := dupIgnore;
     for i := 0 to High(entries) do
     begin
-      // Avant CHAQUE ajout: une annulation ne laisse entrer personne apres elle.
+      // Avant CHAQUE ajout: personne n'entre apres une annulation.
       if WalkMustStop(ASrcFs, ADstFs, AOwner, ASrcDir, AErr) then Exit;
       if FQueueFull then Break;
       e := entries[i];
@@ -852,8 +775,7 @@ begin
             DisplaySafeName(e.Name), why));
         Continue;
       end;
-      // Deux noms distincts visant un seul fichier ici: le second ecraserait le
-      // premier sans qu'on l'ait demande.
+      // Deux noms, un fichier: le second ecraserait le premier.
       key := ADstFs.CollisionKey(e.Name);
       if seen.IndexOf(key) >= 0 then
       begin
@@ -871,8 +793,7 @@ begin
 
       childSrc := ASrcFs.Join(ASrcDir, e.Name);
       childDst := ADstFs.Join(ADstDir, e.Name);
-      // Reprise d'un parcours coupe: ce qui est deja en file n'y entre pas deux
-      // fois, et un sous-dossier deja en file se reprend par lui-meme.
+      // Parcours repris: un sous-dossier deja en file se reprend par lui-meme.
       if (AKnown <> nil) and (AKnown.IndexOf(childDst) >= 0) then Continue;
       // Apres jointure ET normalisation: un controle sur le nom seul se contourne.
       if not ADstFs.IsUnder(ATargetRoot, childDst) then
@@ -884,8 +805,7 @@ begin
             DisplaySafeName(e.Name), ''));
         Continue;
       end;
-      // Un nom court et une jointure repetee font quand meme un chemin trop long:
-      // on s'arrete ici, avec la raison, plutot qu'au moment d'ecrire.
+      // Des noms courts empiles font quand meme un chemin trop long.
       if (Length(childDst) > SCP_MAX_PATH_BYTES) or
          (Length(childSrc) > SCP_MAX_PATH_BYTES) then
       begin
@@ -900,7 +820,7 @@ begin
 
       if e.TypeUnknown then
       begin
-        // Le serveur n'a pas dit: lire un dossier comme un fichier ne se rattrape pas.
+        // Lire un dossier comme un fichier ne se rattrape pas.
         SkipChild(childSrc, e.Name,
           MakeScpError(sekOther, 'Copying', DisplaySafeName(e.Name),
             'the server did not say whether this is a file or a folder'));
@@ -931,14 +851,12 @@ begin
       end;
       if e.IsDir then
       begin
-        // Le listing l'a vu dossier; lstat le revoit juste avant d'y descendre. Entre
-        // les deux il a pu devenir un lien, dont le contenu partirait dans le lot.
+        // lstat juste avant de descendre: devenu lien, sa cible partirait dans le lot.
         if not ASrcFs.Stat(childSrc, False, e2, err) then
         begin
           if IsFatalToSession(err.Kind) then
           begin
-            // Toute sortie sur coupure marque le dossier parcouru: sinon, deja
-            // en file, il passerait pour parcouru a la reprise.
+            // Sinon, deja en file, il passerait pour parcouru a la reprise.
             MarkScanCut(AOwner, err);
             AErr := err;
             Exit;
@@ -956,7 +874,7 @@ begin
         end;
         // Le lstat a pu attendre le serveur longtemps.
         if WalkMustStop(ASrcFs, ADstFs, AOwner, ASrcDir, AErr) then Exit;
-        // L'ordre d'insertion EST la garantie que les parents precedent les enfants.
+        // L'ordre d'insertion EST la garantie parent avant enfants.
         item := AddChild(tikMakeDir, childSrc, childDst, e.Name);
         if item = nil then Continue;
         item.Depth := ADepth;
@@ -969,16 +887,14 @@ begin
           if (AErr.Kind = sekCanceled) and item.CancelRequested and
              (not WalkRootStopped(ASrcFs, ADstFs)) then
           begin
-            // Seul ce sous-dossier est annule: ce qui est deja en file sous lui
-            // l'est avec lui, et le parcours continue a cote.
+            // Seul ce sous-dossier tombe, avec sa descendance; le reste continue.
             FQueue.CancelItem(item);
             AErr := NoScpError;
             Continue;
           end;
           // Annulation ou file pleine: rien a reprendre, RunItem conclut.
           if (AErr.Kind = sekCanceled) or FQueueFull then Exit;
-          // Coupe dans un sous-dossier: celui-ci non plus n'a pas ete parcouru
-          // jusqu'au bout. Sa reprise sautera ce qui est deja en file.
+          // Coupe plus bas: celui-ci non plus n'est pas parcouru jusqu'au bout.
           MarkScanCut(AOwner, AErr);
           Exit;
         end;
@@ -1005,8 +921,7 @@ begin
   Result := True;
 end;
 
-// Un dossier dont le listing a ete coupe par la session: interrompu AVEC le
-// drapeau qui fera reprendre son parcours, pas ecarte.
+// Interrompu, a reparcourir: pas ecarte.
 procedure TScpTransferEngine.MarkScanCut(AOwner: TTransferItem;
   const AErr: TScpError);
 begin
@@ -1048,15 +963,12 @@ function TScpTransferEngine.StopScan(AItem: TTransferItem;
 begin
   Result := FQueueFull or AItem.CancelRequested or (AErr.Kind = sekCanceled);
   if not Result then Exit;
-  // L'etat de l'element d'abord, puis CancelItem balaie ce qui est deja en
-  // file sous lui, y compris ce qu'un ajout concurrent de la demande aurait
-  // laisse passer. Dans l'autre ordre, il serait « annule » avant d'etre dit
-  // ecarte.
+  // L'etat d'abord, CancelItem ensuite: dans l'autre ordre il serait « annule »
+  // avant d'etre dit ecarte.
   if FQueueFull then
   begin
     FQueueFull := False;
-    // Ecarte, pas en echec: « Retry failed » ne doit pas recreer le dossier
-    // vide et le dire reussi.
+    // Ecarte, pas en echec: « Retry failed » recreerait le dossier vide, et reussi.
     AItem.Error := MakeScpError(sekOther, 'Scanning', AItem.DisplayName,
       Format('the queue would hold more than %d items; nothing of this ' +
         'selection was transferred', [FMaxQueueItems]));
@@ -1081,7 +993,7 @@ var
   subtree: TFPList;
 begin
   Result := False;
-  // lstat encore: le dossier a pu devenir un lien depuis le listing coupe.
+  // lstat encore: devenu lien depuis la coupure?
   if not ASrcFs.Stat(AItem.SourcePath, False, e, AErr) then
   begin
     AItem.Error := AErr;
@@ -1106,8 +1018,7 @@ begin
     known.CaseSensitive := True;
     known.Sorted := True;
     known.Duplicates := dupIgnore;
-    // Les descendants de CE dossier: un autre lot vers le meme endroit n'est
-    // pas « deja en file », il est un autre transfert.
+    // Filiation, pas chemin: un autre lot vers le meme endroit reste un autre transfert.
     subtree := TFPList.Create;
     try
       FQueue.Lock;
@@ -1116,7 +1027,6 @@ begin
         for i := 0 to subtree.Count - 1 do
         begin
           it := TTransferItem(subtree[i]);
-          // Un sous-dossier encore a parcourir se reprendra par lui-meme.
           known.Add(it.TargetPath);
         end;
       finally
@@ -1139,9 +1049,8 @@ begin
   end;
 end;
 
-// Premier nom de copie libre dans ADir; '' si tous sont pris, ou si la question
-// n'a pas pu etre posee (AErr le dit). La reponse vieillit aussitot: c'est la
-// creation exclusive qui rattrape une collision.
+// '' si tout est pris ou si AErr. Reponse perimee aussitot: la creation
+// exclusive rattrape la collision.
 function FreeCopyName(AFs: TScpFileSystem; const ADir, AName: string;
   out AErr: TScpError): string;
 var
@@ -1202,8 +1111,7 @@ begin
   if e.IsDir and ARecursive then
   begin
     if not AFs.List(APath, entries, AErr) then Exit;
-    // Devenu lien entre le lstat et le listing, le dossier aurait fait lister
-    // sa cible.
+    // Devenu lien entre lstat et listing: on aurait liste sa cible.
     if not AFs.Stat(APath, False, again, AErr) then Exit;
     if again.IsLink or (not again.IsDir) then Exit(Changed);
     for i := 0 to High(entries) do
@@ -1225,8 +1133,7 @@ begin
          ADepth + 1, ATally, AErr) then
         Exit;
     end;
-    // Le dossier passe APRES son contenu -- se retirer r ou x d'abord fermerait
-    // la porte sur ce qu'il reste a faire -- et il est relu juste avant.
+    // Dossier APRES son contenu: se retirer r ou x d'abord, c'est s'enfermer dehors.
     if not AFs.Stat(APath, False, e, AErr) then Exit;
     if e.IsLink or (not e.IsDir) then Exit(Changed);
   end;
@@ -1248,11 +1155,7 @@ begin
   Result := True;
 end;
 
-// Une selection encore inconnue: lstat, nom, confinement, puis l'element
-// DEVIENT le fichier ou le dossier qu'il designe -- ou s'ecarte avec sa
-// raison, ce qui le garde au bilan. Une coupure le laisse tel quel, a
-// reprendre: c'est ce qui rend une enumeration coupee reprenable. False =
-// coupure, l'element est deja interrompu.
+// False = coupure: l'element reste tikScanRoot, interrompu, reprenable.
 function TScpTransferEngine.ScanRoot(ASrcFs, ADstFs: TScpFileSystem;
   AItem: TTransferItem; AMaxDepth: Integer; out AErr: TScpError): Boolean;
 var
@@ -1275,11 +1178,8 @@ begin
   // Tant que rien n'est verifie, la cible de l'element est son DOSSIER.
   parent := AItem.TargetPath;
 
-  // lstat: c'est le lien lui-meme qu'on veut voir, pas ce qu'il designe.
   if not ASrcFs.Stat(AItem.SourcePath, False, srcEntry, e) then
   begin
-    // Illisible: l'element reste, avec sa raison. Une coupure l'interrompt, a
-    // reprendre a la reconnexion; un autre refus le laisse en echec.
     AItem.Error := e;
     if IsFatalToSession(e.Kind) then
     begin
@@ -1305,8 +1205,7 @@ begin
   targetName := srcName;
   if AItem.ForcedName <> '' then
   begin
-    // Le nom impose passe par les regles de la DESTINATION comme un autre: il
-    // vient d'un calcul, pas d'une garantie.
+    // Nom calcule, pas garanti: controle comme un autre.
     v := ADstFs.CheckName(AItem.ForcedName);
     if v <> nvOk then
     begin
@@ -1319,8 +1218,7 @@ begin
   end
   else if AItem.Direction in [tdDuplicateLocal, tdDuplicateRemote] then
   begin
-    // Le nom libre est cherche ICI, par le fil qui copie: choisi plus tot, il
-    // serait perime avant l'ecriture.
+    // Cherche ICI: choisi plus tot, il serait perime avant l'ecriture.
     targetName := FreeCopyName(ADstFs, parent, srcName, e);
     if targetName = '' then
     begin
@@ -1363,7 +1261,6 @@ begin
     FQueue.Rekind(AItem, tikMakeDir, DisplaySafeName(targetName));
     AItem.SourceMode := srcEntry.Mode;
     AItem.SourceModeKnown := srcEntry.ModeKnown;
-    // Coupe en route: le dossier est deja interrompu, a reparcourir.
     FWalkRoot := AItem;
     FQueueFull := False;
     try
@@ -1397,8 +1294,6 @@ begin
   if StopScan(it, AErr) then Result := True;
 end;
 
-// --- Conflits -------------------------------------------------------------
-
 function TScpTransferEngine.ResolveConflict(ASrcFs, ADstFs: TScpFileSystem;
   AItem: TTransferItem; const ASrcEntry: TScpEntry;
   var ATargetPath: string; out AOutcome: TScpConflictOutcome;
@@ -1420,8 +1315,7 @@ begin
   if not ADstFs.Exists(ATargetPath, found, AErr) then Exit;
   if not found then
   begin
-    // Pas de conflit, mais un fichier NEUF interrompu est le cas ordinaire d'une
-    // reprise: l'ignorer ferait tout recommencer a chaque coupure.
+    // Pas de conflit, mais c'est LE cas ordinaire de reprise d'un fichier neuf.
     if FPartials.FindResumable(ATargetPath, ASrcFs.DisplayName,
        ADstFs.DisplayName, AItem.SourcePath, ASrcEntry.Size,
        ASrcEntry.MTimeUtc, partial) then
@@ -1439,8 +1333,7 @@ begin
     Exit(True);
   end;
 
-  // La cible existe: decrire les DEUX cotes, sinon le choix est aveugle. lstat
-  // d'abord, un lien ici sera REMPLACE par le rename et non suivi.
+  // lstat: un lien ici sera REMPLACE par le rename, pas suivi.
   AOutcome.TargetExisted := True;
   info := Default(TConflictInfo);
   info.SourcePath := AItem.SourcePath;
@@ -1450,14 +1343,11 @@ begin
   info.TargetSize := -1;
   if not ADstFs.Stat(ATargetPath, False, dstEntry, statErr) then
   begin
-    // Quelque chose est la sans qu'on puisse dire quoi. La remplacer sans le
-    // savoir pourrait elargir un 0000, ecraser un dossier ou masquer une coupure.
+    // Quelque chose d'innommable: pourrait etre un 0000, un dossier, une coupure.
     AErr := statErr;
     Exit;
   end;
-  // Sans type, rien n'est « un fichier ordinaire »: sous SFTP le type vient
-  // des permissions, et un serveur qui les tait laisserait croire a un fichier
-  // ce qui est peut-etre un dossier.
+  // SFTP tire le type des permissions: un serveur qui les tait cache peut-etre un dossier.
   if dstEntry.TypeUnknown then
   begin
     AErr := MakeScpError(sekOther, 'Copying', DisplaySafeName(ATargetPath),
@@ -1467,7 +1357,6 @@ begin
   end;
   if dstEntry.IsDir then
   begin
-    // Ecraser un dossier par un fichier n'est pas un conflit ordinaire.
     AErr := MakeScpError(sekAlreadyExists, 'Copying',
       DisplaySafeName(ATargetPath),
       'the destination is a folder, not a file');
@@ -1475,8 +1364,7 @@ begin
   end;
   if (not dstEntry.IsLink) and (not dstEntry.ModeKnown) then
   begin
-    // « Un fichier remplace garde ses droits »: des droits qu'on ne lit pas ne
-    // se gardent pas. Refuse AVANT la question, la cible reste intacte.
+    // Des droits illisibles ne se gardent pas. Refus AVANT la question.
     AErr := MakeScpError(sekAttrRefused, 'Copying',
       DisplaySafeName(ATargetPath), 'the permissions of the existing file ' +
       'could not be read, so they could not be kept; it was left untouched');
@@ -1495,7 +1383,7 @@ begin
   begin
     info.TargetSize := dstEntry.Size;
     info.TargetTimeUtc := dstEntry.MTimeUtc;
-    // Mode LU: zero veut dire « aucun droit » et doit le rester.
+    // Zero = « aucun droit », et le reste.
     AOutcome.PrevMode := dstEntry.Mode and LongWord(&07777);
   end;
 
@@ -1512,8 +1400,7 @@ begin
       'source (server, path, size and timestamp must all agree).';
 
   decision.Action := FQueue.ConflictPolicy(AItem.Batch);
-  // « Resume » pour tout le lot ne vaut que la ou un partiel concorde: ailleurs
-  // on REDEMANDE, plutot que de sauter en silence.
+  // « Resume » pour tout le lot: sans partiel concordant on REDEMANDE, on ne saute pas.
   if (decision.Action = cnResume) and (not info.ResumeAllowed) then
     decision.Action := cnAsk;
   decision.ApplyToAll := decision.Action <> cnAsk;
@@ -1521,7 +1408,7 @@ begin
   begin
     if not Assigned(FOnConflict) then
     begin
-      // Sans interlocuteur, on ne devine pas: la cible reste intacte.
+      // Personne a qui demander: on ne devine pas.
       AErr := MakeScpError(sekAlreadyExists, 'Copying',
         DisplaySafeName(ATargetPath), '');
       Exit;
@@ -1562,7 +1449,7 @@ begin
             ATargetPath := candidate;
             AItem.TargetPath := candidate;
             AOutcome.ResumeTemp := '';
-            // Le nom retenu n'existait pas: la publication doit le creer sans ecraser.
+            // Nom neuf: publier en creant, jamais en ecrasant.
             AOutcome.TargetExisted := False;
             AOutcome.TargetIsLink := False;
             AOutcome.PrevMode := 0;
@@ -1586,14 +1473,12 @@ begin
           DisplaySafeName(ATargetPath), '');
       end;
   else
-    // cnAsk rendu tel quel: l'interface n'a pas tranche, on n'ecrit rien.
+    // cnAsk rendu tel quel: pas de reponse, pas d'ecriture.
     AItem.Error := MakeScpError(sekAlreadyExists, 'Copying',
       DisplaySafeName(ATargetPath), 'no decision was made');
     FQueue.SetState(AItem, tsSkipped);
   end;
 end;
-
-// --- Copie ----------------------------------------------------------------
 
 function TScpTransferEngine.CopyStream(ASrcFs: TScpFileSystem;
   ASrcH: TScpFileHandle; ADstFs: TScpFileSystem; ADstH: TScpFileHandle;
@@ -1615,8 +1500,7 @@ begin
 
   while True do
   begin
-    // Sans ce test, « Cancel selected » ne serait qu'un changement d'etiquette et
-    // la copie irait jusqu'a remplacer la cible.
+    // Sinon « Cancel selected » n'est qu'une etiquette et la copie publie quand meme.
     if ASrcFs.Canceled or ADstFs.Canceled or AItem.CancelRequested then
     begin
       AErr := MakeScpError(sekCanceled, 'Copying', AItem.DisplayName, '');
@@ -1660,9 +1544,8 @@ begin
     end;
 
     AItem.DoneBytes := total;
-    // Un offset n'est CONFIRME qu'une fois vide sur le support: reprendre sur des
-    // octets restes en tampon, c'est reprendre apres un trou. L'empreinte est
-    // prise sur une COPIE du contexte, finaliser le courant l'arreterait.
+    // CONFIRME = vide sur le support. Reprendre sur du tampon, c'est reprendre
+    // apres un trou.
     if (ATempPath <> '') and (sinceConfirm >= FConfirmEvery) then
     begin
       if not ADstFs.Flush(ADstH, AErr) then Exit;
@@ -1681,8 +1564,7 @@ begin
     end;
   end;
 
-  // Fin de flux avant la taille annoncee: source tronquee ou remplacee depuis
-  // le listing. Ne pas remplacer la cible.
+  // Source tronquee ou remplacee depuis le listing: la cible ne bouge pas.
   if (AExpected >= 0) and (total < AExpected) then
   begin
     AErr := MakeScpError(sekPrematureEof, 'Copying', AItem.DisplayName,
@@ -1691,7 +1573,7 @@ begin
   end;
 
   AItem.DoneBytes := total;
-  // La taille annoncee peut etre fausse: ce qui a ete ecrit compte.
+  // La taille annoncee peut mentir; l'ecrit, non.
   if (AItem.TotalBytes < 0) or (total > AItem.TotalBytes) then
     AItem.TotalBytes := total;
   ReportProgress(AItem, True);
@@ -1708,12 +1590,10 @@ begin
   Result := False;
   AWhy := '';
   AErr := NoScpError;
-  // lstat: c'est le chemin qu'on juge. Un lien pose a la place du partiel ferait
-  // ecrire la suite ailleurs.
+  // lstat: un lien a la place du partiel ferait ecrire la suite ailleurs.
   if not ADstFs.Stat(ATempPath, False, e, err) then
   begin
-    // « Absent » est une reponse, tout le reste est une panne: prendre une coupure
-    // pour une disparition laisserait le partiel orphelin sur le disque.
+    // « Absent » est une reponse; le reste est une panne, pas une disparition.
     if err.Kind = sekNotFound then
       AWhy := 'it is no longer there'
     else
@@ -1730,15 +1610,13 @@ begin
     AWhy := 'it is no longer a regular file';
     Exit;
   end;
-  // Plus court que le confirme: tronque depuis. Rouvrir l'etendrait de zeros
-  // jusqu'a l'offset, pour un fichier de bonne taille au contenu faux.
+  // Tronque depuis: rouvrir comblerait de zeros jusqu'a l'offset.
   if (e.Size >= 0) and (e.Size < AConfirmed) then
   begin
     AWhy := 'it is shorter than the confirmed offset';
     Exit;
   end;
-  // Plus long que la SOURCE: rien ne recouvrira l'excedent, et une destination
-  // qui ne sait pas tronquer (SFTP v3) publierait cette queue.
+  // Plus long que la SOURCE: SFTP v3 ne sait pas tronquer, la queue serait publiee.
   if (e.Size >= 0) and (ASourceSize >= 0) and (e.Size > ASourceSize) then
   begin
     AWhy := 'it is longer than the source';
@@ -1759,8 +1637,7 @@ begin
   AWhy := '';
   AErr := NoScpError;
   AHash.Reset;
-  // Par la poignee qui va ecrire, pas par le chemin: entre un lstat et une
-  // ouverture le chemin peut changer de fichier.
+  // Par la poignee qui va ecrire: entre lstat et open, le chemin a pu changer de fichier.
   if not ADstFs.Seek(ADstH, 0, AErr) then Exit;
   left := APartial.Confirmed;
   while left > 0 do
@@ -1785,7 +1662,6 @@ begin
   AHash.Peek(digest);
   if not ScpDigestMatch(digest, APartial.Digest) then
   begin
-    // Meme taille, autre contenu: un fichier de bonne longueur et faux dedans.
     AWhy := 'its content no longer matches what was written';
     Exit;
   end;
@@ -1830,8 +1706,7 @@ begin
     ctx.Peek(digest);
     if not ScpDigestMatch(digest, APartial.Digest) then
     begin
-      // Meme taille, meme date, autre contenu: poursuivre collerait un ancien debut
-      // a une nouvelle fin.
+      // Meme taille, meme date, autre contenu: on collerait un vieux debut a une fin neuve.
       AWhy := 'the source has changed since the transfer was interrupted';
       Exit;
     end;
@@ -1861,12 +1736,10 @@ begin
     FPartials.Forget(ATempPath);
     Exit;
   end;
-  // Un refus de DROIT n'est pas une absence de fonctionnalite: un repli ne
-  // detruirait la cible que pour buter sur le meme refus.
+  // Refus de DROIT: le repli detruirait la cible pour buter sur le meme refus.
   if AErr.Kind <> sekUnsupported then Exit;
 
-  // Posee POUR CE FICHIER, jamais pour le lot: le repli supprime la cible avant
-  // de renommer, et retenir la reponse detruirait -- ou bloquerait -- en silence.
+  // Demande POUR CE FICHIER, jamais pour le lot: le repli supprime la cible.
   allow := False;
   if Assigned(FOnNonAtomic) then
     FOnNonAtomic(ATargetPath, allow);
@@ -1878,8 +1751,7 @@ begin
       'was declined; the existing file was left untouched');
     Exit(False);
   end;
-  // La question a pu rester posee longtemps: une annulation arrivee entre-temps
-  // compte encore, la cible n'ayant pas ete touchee.
+  // La question a pu trainer: une annulation arrivee entre-temps compte encore.
   if AItem.CancelRequested then
   begin
     AErr := MakeScpError(sekCanceled, 'Replacing',
@@ -1887,8 +1759,7 @@ begin
     Exit(False);
   end;
 
-  // Repli assume: supprimer puis renommer. Seule fenetre ou la cible n'existe
-  // plus, et elle n'est ouverte qu'apres un accord explicite.
+  // Seule fenetre sans cible, ouverte sur accord explicite.
   Note(Format('Replaced %s without an atomic rename, as confirmed.',
     [DisplaySafeName(ATargetPath)]));
   if not ADstFs.DeleteFile(ATargetPath, AErr) then Exit(False);
@@ -1904,8 +1775,7 @@ begin
   if AErr.Kind = sekCanceled then
     FQueue.SetState(AItem, tsCanceled)
   else if IsFatalToSession(AErr.Kind) then
-    // Connexion perdue: l'element n'a pas echoue, il est INTERROMPU. Cet etat
-    // laisse la reprise possible et dit au transport que la session est finie.
+    // INTERROMPU, pas echoue: la reprise reste possible.
     FQueue.SetState(AItem, tsInterrupted)
   else
     FQueue.SetState(AItem, tsFailed);
@@ -1928,8 +1798,7 @@ begin
       if not it.IsRunnable then Continue;
       it.Error := MakeScpError(AItem.Error.Kind, 'Copying', it.DisplayName,
         Format('its folder "%s" could not be created', [AItem.DisplayName]));
-      // La cause du dossier est celle de ses enfants: en « echec », seul le dossier
-      // repartirait et son contenu resterait a quai.
+      // Meme etat que le dossier, sinon lui repart et son contenu reste a quai.
       if IsFatalToSession(AItem.Error.Kind) then
         FQueue.SetState(it, tsInterrupted)
       else
@@ -1981,20 +1850,16 @@ begin
     Exit;
   end;
 
-  // Une selection pas encore examinee: elle devient ici fichier ou dossier,
-  // ou s'ecarte avec sa raison. Une coupure la laisse a reprendre telle quelle.
   if AItem.Kind = tikScanRoot then
   begin
-    // « Scanning »: une annulation pendant l'examen DEMANDE l'arret, et c'est
-    // le parcours qui s'arrete, au lieu que la ligne passe a « annule » sous
-    // un parcours qui continue d'ajouter des enfants.
+    // En « Scanning », annuler DEMANDE l'arret; sinon la ligne passe a « annule »
+    // pendant que le parcours continue d'ajouter des enfants.
     if not FQueue.SetState(AItem, tsEnumerating) then Exit;
     scanned := ScanRoot(ASrcFs, ADstFs, AItem, SCP_MAX_DEPTH, err);
     if StopScan(AItem, err) then Exit;
     if not scanned then
     begin
-      // Filet: une coupure ne laisse jamais la selection en « Scanning »,
-      // ni reprise ni conclue.
+      // Filet: jamais de selection coincee en « Scanning ».
       if AItem.State = tsEnumerating then
         MarkScanCut(AItem, err);
       NoteFatal(err);
@@ -2005,8 +1870,7 @@ begin
   end;
 
   targetPath := AItem.TargetPath;
-  // A chaque element, pas seulement a l'enumeration: un dossier a pu devenir
-  // un lien entre les deux.
+  // A chaque element: un dossier a pu devenir lien depuis l'enumeration.
   if not ADstFs.IsUnder(ATargetRoot, targetPath) then
   begin
     AItem.Error := MakeScpError(sekOutsideRoot, 'Copying',
@@ -2025,7 +1889,7 @@ begin
 
   if AItem.Kind = tikMakeDir then
   begin
-    // Refus = l'interface l'a annule entre-temps: l'etat est deja pose.
+    // Refus = annule entre-temps, l'etat est deja pose.
     if not FQueue.SetState(AItem, tsTransferring) then Exit;
     if not ADstFs.Exists(targetPath, found, err) then
     begin
@@ -2035,12 +1899,11 @@ begin
     end;
     if found then
     begin
-      // Un dossier present n'est pas un conflit. lstat et pas stat: un LIEN ici
-      // conduirait le contenu ailleurs, et le controle lexical ne le voit pas.
+      // lstat: un LIEN ici emmenerait le contenu ailleurs, invisible au controle
+      // lexical.
       if not ADstFs.Stat(targetPath, False, dstEntry, err) then
       begin
-        // Quelque chose est la sans qu'on sache quoi: le declarer pret enverrait tout
-        // son contenu vers un endroit que personne n'a verifie.
+        // Inconnu: pas question d'y deverser un sous-arbre.
         FailItem(AItem, err);
         FailSubtree(ADstFs, AItem);
         Exit;
@@ -2066,9 +1929,7 @@ begin
     end
     else
     begin
-      // La source est relue ICI: son parcours a pu etre long. Disparue, elle
-      // serait creee vide; passee en 0700, trop ouverte; devenue lien, elle
-      // n'est plus ce qu'on a parcouru.
+      // Relue ICI, le parcours a pu etre long: disparue, passee en 0700, devenue lien.
       if not ASrcFs.Stat(AItem.SourcePath, False, srcEntry, err) then
       begin
         if err.Kind = sekNotFound then
@@ -2087,8 +1948,6 @@ begin
       end;
       AItem.SourceMode := srcEntry.Mode;
       AItem.SourceModeKnown := srcEntry.ModeKnown;
-      // Copie sur place: le dossier nait avec la protection de sa source, la
-      // ou les modes ne la portent pas.
       if ASrcFs = ADstFs then
         madeDir := ADstFs.MakeDirFromSource(AItem.SourcePath, targetPath,
           ModeForNewDir(AItem.SourceMode, AItem.SourceModeKnown), err)
@@ -2102,8 +1961,6 @@ begin
         Exit;
       end;
     end;
-    // Listing coupe par la session: le dossier existe, son contenu reste a
-    // mettre en file. Ce qui y est deja n'y entre pas deux fois.
     if AItem.ScanPending then
     begin
       AItem.ScanPending := False;
@@ -2120,7 +1977,7 @@ begin
     Exit(True);
   end;
 
-  // lstat encore: la source a pu devenir un lien depuis l'enumeration.
+  // lstat encore: devenue lien depuis l'enumeration?
   if not ASrcFs.Stat(AItem.SourcePath, False, srcEntry, err) then
   begin
     if err.Kind = sekNotFound then
@@ -2166,28 +2023,22 @@ begin
   resumeFrom := outcome.ResumeFrom;
   resumeTemp := outcome.ResumeTemp;
   prevMode := outcome.PrevMode;
-  // L'etat VU pendant la decision, pas un second Exists: un fichier apparu entre
-  // les deux serait remplace sans que personne l'ait vu. Une cible vue absente
-  // se publie par un rename qui REFUSE d'ecraser.
+  // L'etat VU, pas un second Exists: un fichier apparu entre-temps serait ecrase
+  // sans temoin. Vue absente, la cible se publie par un rename qui REFUSE d'ecraser.
   targetExisted := outcome.TargetExisted;
-  // Un lien remplace laisse place a un fichier NEUF: rien a garder de lui.
   replacesFile := targetExisted and (not outcome.TargetIsLink);
 
-  // Refus = annule par l'interface pendant qu'on preparait: rien n'est ecrit.
   if not FQueue.SetState(AItem, tsTransferring) then Exit;
   parentDir := ADstFs.Parent(targetPath);
-  // Le mode d'un fichier NEUF est donne A LA CREATION du temporaire, ce qui
-  // laisse l'umask le restreindre; un chmod apres coup passerait outre. Si un
-  // fichier EXISTE, le temporaire nait en 0600 et recoit les droits de la cible
-  // juste avant la publication.
+  // Mode pose A LA CREATION, sous l'umask; un chmod apres coup passerait outre.
+  // Remplacement: 0600, puis les droits de la cible juste avant publication.
   newMode := ModeForNewFile(srcEntry.Mode, srcEntry.ModeKnown);
   tempMode := newMode;
   if replacesFile then tempMode := LongWord(&0600);
   try
     if not ASrcFs.OpenRead(AItem.SourcePath, srcH, err) then
     begin
-      // Listee mais refusee a l'ouverture: une cause a part, que « dossier
-      // illisible » ferait chercher au mauvais endroit.
+      // Listee mais refusee: « dossier illisible » ferait chercher au mauvais endroit.
       if err.Kind = sekAccessDeniedDir then
         err.Kind := sekAccessDeniedRead;
       FailItem(AItem, err);
@@ -2197,21 +2048,19 @@ begin
     if (resumeFrom > 0) and (resumeTemp <> '') then
     begin
       tempPath := resumeTemp;
-      // Le registre dit ce que le partiel ETAIT, le disque ce qu'il est: tronque,
-      // devenu lien ou autre chose, on repart de zero.
+      // Le registre dit ce que le partiel ETAIT, le disque ce qu'il EST.
       if not PartialUsable(ADstFs, tempPath, resumeFrom, srcEntry.Size, why,
          err) then
       begin
         if err.Kind <> sekNone then
         begin
-          // Partiel non jugeable: il reste enregistre et l'element s'arrete la.
+          // Non jugeable: on le garde, l'element s'arrete la.
           FailItem(AItem, err);
           Exit;
         end;
         Note(Format('The partial file for %s cannot be resumed (%s); ' +
           'starting over.', [AItem.DisplayName, why]));
-        // Le nom est le notre et ce qu'il contient ne sert plus. Un lien se retire
-        // lui-meme, jamais ce qu'il designe.
+        // Un lien se retire lui-meme, jamais ce qu'il designe.
         DiscardPartial(ADstFs, tempPath);
         tempPath := '';
         resumeFrom := 0;
@@ -2220,21 +2069,19 @@ begin
       begin
         if IsFatalToSession(err.Kind) then
         begin
-          // Session tombee: le partiel est intact, en creer un autre n'a pas de sens.
+          // Session tombee: le partiel est intact, on ne recommence pas.
           FailItem(AItem, err);
           Exit;
         end;
         Note(Format('The partial file for %s could not be reopened (%s); ' +
           'starting over.', [AItem.DisplayName, ScpErrorText(err)]));
-        // Un « .part » qu'on ne rouvre pas ne sert plus, et se decouvre bien tard.
         DiscardPartial(ADstFs, tempPath);
         tempPath := '';
         resumeFrom := 0;
       end
       else
       begin
-        // Le fichier rouvert est-il celui qu'on a ecrit? Un lstat repond sur un
-        // chemin; relire le prefixe par cette poignee repond sur le FICHIER.
+        // lstat juge un chemin; relire par la poignee juge le FICHIER.
         if not FPartials.Lookup(tempPath, partial) then
           partial.Confirmed := -1;
         if (partial.Confirmed <> resumeFrom) or
@@ -2257,10 +2104,8 @@ begin
         end
         else
         begin
-          // Reste la SOURCE: meme chemin, meme taille, meme date a la seconde ne disent
-          // pas « meme contenu ». Son prefixe est relu et compare, distante comprise:
-          // cela coute alors le telechargement que la reprise economisait, mais un
-          // ancien debut colle a une nouvelle fin serait un fichier faux dit reussi.
+          // Meme taille et meme date ne font pas le meme contenu. Relire la source
+          // distante coute ce que la reprise economisait: tant pis, c'est le prix.
           why := '';
           if not VerifySourcePrefix(ASrcFs, srcH, AItem, partial, why, err)
           then
@@ -2293,11 +2138,8 @@ begin
     end;
     if tempPath = '' then
     begin
-      // Nouveau depart: les partiels qui visaient cette cible ne seront jamais
-      // repris et ne doivent pas rester.
       DropPartialsFor(ADstFs, targetPath);
-      // Temporaire DANS le dossier de destination: ailleurs le rename traverserait
-      // un systeme de fichiers et cesserait d'etre atomique.
+      // DANS le dossier cible: ailleurs, le rename changerait de FS et d'atomicite.
       if not ADstFs.CreateTemp(parentDir, tempMode, tempPath, dstH, err) then
       begin
         if err.Kind = sekAccessDeniedRead then
@@ -2310,10 +2152,8 @@ begin
         srcEntry.MTimeUtc);
       resumeFrom := 0;
       FHash.Reset;
-      // Copie sur place: la protection de la source, la ou les modes ne la
-      // portent pas, est posee avant le premier octet. « Pas de remplacement »
-      // et non « cible absente »: un LIEN remplace laisse un fichier neuf, qui
-      // sans cela heriterait du dossier -- plus ouvert que la source, peut-etre.
+      // « Pas de remplacement », pas « cible absente »: un LIEN remplace laisse un
+      // fichier neuf qui, sinon, heriterait du dossier.
       if (ASrcFs = ADstFs) and (not replacesFile) and
          (not ADstFs.CopyProtectionFrom(AItem.SourcePath, tempPath, err)) then
       begin
@@ -2328,8 +2168,7 @@ begin
     okCopy := CopyStream(ASrcFs, srcH, ADstFs, dstH, AItem, srcEntry.Size,
       resumeFrom, tempPath, FHash, err);
 
-    // Vider AVANT de conclure: un disque plein ne se revele souvent qu'ici, et
-    // conclure avant remplacerait une cible valide par un fichier tronque.
+    // Vider AVANT de conclure: un disque plein ne se revele souvent qu'ici.
     if okCopy then
       okCopy := ADstFs.Flush(dstH, err);
     if okCopy then
@@ -2338,11 +2177,8 @@ begin
       FPartials.Confirm(tempPath, AItem.DoneBytes, digest);
     end;
 
-    // Droits et date par la POIGNEE, avant de la fermer: ferme, le temporaire
-    // n'est plus designe que par son nom, et un tiers qui ecrit dans le dossier
-    // peut y glisser autre chose entre deux appels. Le rename les conserve.
-    // Un fichier REMPLACE garde ses droits: un 0600 devenu 0644 est une fuite.
-    // S'ils ne peuvent pas etre reposes, la cible n'est pas remplacee.
+    // Par la POIGNEE, avant fermeture. Un 0600 devenu 0644 est une fuite: droits
+    // non reposables = cible non remplacee.
     if okCopy and replacesFile then
     begin
       if not ADstFs.SetMode(dstH, ModeForReplacedFile(prevMode), attrErr) then
@@ -2367,8 +2203,7 @@ begin
           'existing file was not carried over to the new content.',
           [AItem.DisplayName]));
     end;
-    // Un refus ordinaire de la date est un avertissement; une coupure
-    // interrompt, le partiel etant confirme jusqu'au bout.
+    // Date refusee: avertissement. Coupure: interruption, partiel complet.
     if okCopy and (srcEntry.MTimeUtc > 0) then
       if not ADstFs.SetMTime(dstH, srcEntry.MTimeUtc, attrErr) then
       begin
@@ -2382,9 +2217,7 @@ begin
             'Setting the timestamp of', AItem.DisplayName, attrErr.Detail)));
       end;
 
-    // Copie sur place: les attributs de la source en DERNIER, par la poignee.
-    // Un refus arrete avant la publication, comme pour la protection. Meme
-    // regle qu'elle: tout ce qui ne REMPLACE pas un fichier est une creation.
+    // Attributs de la source en DERNIER, par la poignee. Refus = pas de publication.
     if okCopy and (ASrcFs = ADstFs) and (not replacesFile) and
        (not ADstFs.CopyAttributesFrom(srcH, dstH, attrErr)) then
     begin
@@ -2395,9 +2228,8 @@ begin
       Exit;
     end;
 
-    // La fermeture est ou un serveur avoue un quota depasse, et ou une coupure
-    // se revele: elle compte meme apres un echec, sinon l'element passe en
-    // « echec » et l'onglet se croit connecte.
+    // C'est a la fermeture qu'un serveur avoue son quota ou sa coupure. Elle
+    // compte meme apres un echec, sinon l'onglet se croit encore connecte.
     ADstFs.Close(dstH, closeErr);
     dstH := nil;
     if (closeErr.Kind <> sekNone) and (okCopy or
@@ -2409,9 +2241,7 @@ begin
     end;
     ASrcFs.Close(srcH, closeErr);
     srcH := nil;
-    // Le contenu est complet: un refus a la fermeture de la source ne change
-    // rien. Une COUPURE, elle, interrompt l'element; la reprise n'aura qu'a
-    // publier.
+    // Contenu complet: seule une COUPURE compte ici, et la reprise n'aura qu'a publier.
     if IsFatalToSession(closeErr.Kind) and (not IsFatalToSession(err.Kind))
     then
     begin
@@ -2421,14 +2251,11 @@ begin
 
     if not okCopy then
     begin
-      // Perte de connexion: interrompu, pas echoue, et le partiel reste enregistre.
       FailItem(AItem, err);
       Exit;
     end;
 
-    // Derniere chance de s'arreter AVANT de toucher la cible; CommitTemp relit la
-    // demande une fois de plus si une question a ete posee. Passe ces controles la
-    // publication va au bout: un element publie est termine.
+    // Derniere chance AVANT la cible. Passe ce point, publie = termine.
     if AItem.CancelRequested then
     begin
       AItem.Error := MakeScpError(sekCanceled, 'Copying', AItem.DisplayName,
@@ -2437,10 +2264,8 @@ begin
       Exit;
     end;
 
-    // Le temporaire va etre designe par son NOM une derniere fois, pour le
-    // rename: on revoit ce que ce nom designe. Un lien, un dossier ou une autre
-    // taille sont refuses; un autre fichier ordinaire de meme taille passerait,
-    // et c'est la limite d'un rename par chemin.
+    // Le rename passe par le NOM. Un fichier substitue de meme taille passerait:
+    // c'est la limite d'un rename par chemin.
     if not ADstFs.Stat(tempPath, False, dstEntry, err) then
     begin
       FailItem(AItem, err);
@@ -2462,7 +2287,6 @@ begin
     end;
     tempPath := '';
 
-    // A partir d'ici le contenu EST arrive.
     if AItem.Warning <> '' then
       Note(AItem.Warning);
 
@@ -2470,8 +2294,7 @@ begin
     ReportProgress(AItem, True);
     Result := True;
   finally
-    // Ces fermetures suivent un echec deja pose; une coupure qu'elles revelent
-    // compte quand meme, pour que le transport declare la session perdue.
+    // Echec deja pose, mais une coupure revelee ici doit encore remonter.
     if dstH <> nil then
     begin
       ADstFs.Close(dstH, closeErr);
@@ -2482,7 +2305,7 @@ begin
       ASrcFs.Close(srcH, closeErr);
       NoteFatal(closeErr);
     end;
-    // Le temporaire reste ENREGISTRE: le supprimer ici interdirait la reprise.
+    // Le temporaire reste ENREGISTRE, sinon adieu la reprise.
   end;
 end;
 
@@ -2508,8 +2331,6 @@ begin
       FPartials.Forget(p.TempPath)
     else
     begin
-      // Impossible de le retirer: le dire. Un partiel taise est pire qu'un partiel
-      // signale.
       SetLength(Result, n + 1);
       Result[n] := p.TempPath;
       Inc(n);

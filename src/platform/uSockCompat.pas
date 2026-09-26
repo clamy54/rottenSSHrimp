@@ -1,6 +1,5 @@
-{ Compat sockets multiplateforme: ce que l'unite Sockets de FPC laisse a la
-  plateforme. Piege: l'echec d'un connect non bloquant se lit en writefds +
-  SO_ERROR sous Unix, en EXCEPTFDS sous Windows.
+{ Piege: l'echec d'un connect non bloquant se lit en writefds + SO_ERROR sous
+  Unix, en EXCEPTFDS sous Windows.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -33,17 +32,14 @@ function SockLastError: cint;
 function SockErrIsInProgress(ACode: cint): Boolean;
 function SockErrIsWouldBlock(ACode: cint): Boolean;
 function SockErrIsIntr(ACode: cint): Boolean;
-// Echecs de bind a distinguer pour l'utilisateur: port deja pris, ou refuse
-// (sous Windows, les plages reservees par Hyper-V/WSL repondent ACCES).
 function SockErrIsAddrInUse(ACode: cint): Boolean;
+// Windows: les plages reservees par Hyper-V/WSL repondent ACCES, pas INUSE.
 function SockErrIsAccess(ACode: cint): Boolean;
-// bind sur une adresse que le poste n'a pas (::1 avec l'IPv6 coupe): pas une
-// erreur comme les autres, c'est « vivre sans IPv6 ».
+// ::1 avec l'IPv6 coupe: pas une panne, juste la vie sans IPv6.
 function SockErrIsAddrNotAvail(ACode: cint): Boolean;
 
-// select() ne sait pas surveiller n'importe quel descripteur: sous Unix, un
-// numero >= FD_SETSIZE deborderait le fd_set. Sous Windows c'est le NOMBRE
-// qui est borne (64), a l'appelant de compter.
+// Unix: fd >= FD_SETSIZE deborde le fd_set. Windows: c'est le NOMBRE qui est
+// borne (64), a l'appelant de compter.
 function SockFitsInSet(AFd: cint): Boolean;
 
 function SockGetPendingError(AFd: cint): cint;
@@ -56,16 +52,11 @@ function SockDup(AFd: cint): cint;
 
 procedure SockClose(AFd: cint);
 
-// Detecte le pair MORT SANS FIN/RST: sinon select() attend un zombie sans fin.
+// Pair mort sans FIN ni RST: sans ca, select() veille un cadavre pour toujours.
 procedure SockEnableKeepalive(AFd: cint; AIdleS, AIntervalS: Integer);
 
-// Coupe l'algorithme de Nagle. Tout ce qui passe ici est interactif (SSH,
-// tunnels, VNC): une frappe, un deplacement de souris, un acquittement d'image
-// sont de petits paquets qui doivent partir TOUT DE SUITE. Avec Nagle, un
-// petit envoi attend l'acquittement du precedent, et l'acquittement differe
-// de l'autre bout peut le retenir 200 ms: sur un flux RDP tunnele, ou chaque
-// image donne lieu a un acquittement, c'est une session qui avance par
-// a-coups. OpenSSH le fait sur sa propre socket; libssh2 laisse faire.
+// Nagle + ACK differe = 200 ms par petit paquet; un RDP tunnele avance a
+// a-coups. OpenSSH coupe Nagle, libssh2 non.
 procedure SockSetNoDelay(AFd: cint);
 
 implementation

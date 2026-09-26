@@ -4,8 +4,7 @@ program rottensshrimp;
 
 uses
   {$IFDEF UNIX}cthreads, BaseUnix,{$ENDIF}
-  uDllHarden,   // en tete du uses: son initialization durcit la recherche de
-                // DLL AVANT l'init des unites LCL (qui font des LoadLibrary)
+  uDllHarden,   // EN PREMIER: durcit la recherche de DLL avant les LoadLibrary de la LCL
   SysUtils, {$IF defined(LINUX) or defined(DARWIN)}Classes, Graphics,{$IFEND} Interfaces, Forms,
   uFrmMain, uTheme, uThemeLoad, uFontEmbed, uVersion, uPreferences, uLog,
   uAppPaths;
@@ -13,8 +12,7 @@ uses
 {$R *.res}
 
 {$IF defined(LINUX) or defined(DARWIN)}
-// gtk2 corrompt le MAINICON au-dela de 16x16, macOS y retombe en basse
-// resolution: le meme dessin en PNG 256 passe intact. Windows ne s'en soucie pas.
+// gtk2 corrompt le MAINICON au-dela de 16x16, macOS le degrade: PNG 256 a la place.
 procedure LoadHiResAppIcon;
 var
   rs: TResourceStream;
@@ -34,22 +32,21 @@ begin
       rs.Free;
     end;
   except
-    // ressource absente ou illisible: l'icone liee fera l'affaire
+    // l'icone liee fera l'affaire
   end;
 end;
 {$ENDIF}
 
 begin
   {$IFDEF UNIX}
-  // ecrire vers un pair qui a ferme leverait SIGPIPE, qui TUE le process par
-  // defaut: ignore, les send() rendent EPIPE et c'est gere localement
+  // SIGPIPE tue le process par defaut; ignore, send() rend EPIPE et on gere.
   FpSignal(SigPipe, SignalHandler(SIG_IGN));
   {$ENDIF}
   Application.Title := RSSH_APP_NAME;
   Application.Scaled := True;
   Application.Initialize;
   EmbeddedFontManager.RegisterFonts;
-  ApplyDefaultFonts; // avant la fenetre: les controles lisent les valeurs a la creation
+  ApplyDefaultFonts; // avant la fenetre: lu a la creation des controles
   LoadPreferences;
   InitThemes(PrefThemeName);
   LogInfo('application demarree, version ' + RSSH_VERSION);
@@ -60,7 +57,6 @@ begin
   frmMain.Show;
   Application.Run;
   LogInfo('application arretee');
-  // un arret normal ne doit pas laisser d'orphelin a proposer au prochain demarrage
   ReleaseInstanceRecovery;
   LogShutdown;
 end.

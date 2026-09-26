@@ -2,9 +2,8 @@ unit uSecureBytes;
 
 {$mode objfpc}{$H+}
 
-// Tampon memoire pour secrets: alloue par sodium_malloc (pages
-// gardees, effacees a la liberation), verrouille avec sodium_mlock quand
-// l'OS le permet. Ne jamais copier le contenu dans une string ordinaire.
+// Secrets en sodium_malloc + mlock. JAMAIS copier le contenu dans une string:
+// elle finirait en clair dans le tas, puis dans le swap.
 
 interface
 
@@ -19,13 +18,13 @@ type
     FLocked: Boolean;
   public
     constructor Create(ALength: NativeUInt);
-    // copie AData puis c'est a l'appelant d'effacer sa source
+    // Copie; effacer la source reste le probleme de l'appelant.
     constructor CreateFrom(const AData; ALength: NativeUInt);
     destructor Destroy; override;
     procedure Clear;
     function Data: PByte;
     function Len: NativeUInt;
-    // comparaison a temps constant
+    // temps constant
     function Equals(AOther: TSecureBytes): Boolean; reintroduce;
   end;
 
@@ -40,7 +39,7 @@ begin
   SodiumEnsureLoaded;
   FLength := ALength;
   if ALength = 0 then
-    ALength := 1;  // sodium_malloc(0) est valide mais restons simples
+    ALength := 1;
   FData := sodium_malloc(ALength);
   if FData = nil then
     raise EOutOfMemory.Create('sodium_malloc failed');
@@ -59,7 +58,6 @@ destructor TSecureBytes.Destroy;
 begin
   if FData <> nil then
   begin
-    // sodium_free efface la region; munlock d'abord si verrouillee
     if FLocked then
       sodium_munlock(FData, FLength);
     sodium_free(FData);

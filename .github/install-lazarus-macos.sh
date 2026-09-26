@@ -1,29 +1,16 @@
 #!/usr/bin/env bash
-# Installe Lazarus 4.8 aarch64 sur un runner macOS. Partage par ci.yml et
-# release.yml.
-#
-# Pas setup-lazarus: sur macOS il ne pose que la variante x86_64 (l'app
-# sortirait en Intel/Rosetta) et s'arrete a 4.4. On installe la distribution
-# aarch64 officielle 4.8, celle qui sert en local.
-#
-# SourceForge bride le debit des runners GitHub au point de faire expirer le
-# job: on sert d'abord le miroir clamy54/lazarus-mirror (memes fichiers), et
-# SourceForge n'est plus que le secours. Le cache d'actions du workflow evite
-# meme ce premier telechargement d'un run au suivant.
-#
-# Chaque fichier est confronte a son empreinte AVANT d'etre installe, qu'il
-# vienne du miroir, de SourceForge ou du cache: un miroir, un cache ou un
-# telechargement tronque ne doivent pas pouvoir fabriquer le compilateur qui
-# fabrique les binaires publies. Le telechargement va dans un fichier
-# temporaire, renomme une fois verifie: le cache ne contient jamais un
-# fichier a moitie ecrit.
+# Lazarus 4.8 aarch64, runner macOS (ci.yml, release.yml).
+# Pas setup-lazarus: x86_64 seulement (app sous Rosetta) et bloque a 4.4.
+# SourceForge bride les runners jusqu'au timeout: miroir d'abord.
+# Empreinte verifiee AVANT installation, d'ou qu'il vienne: le compilateur
+# des binaires publies ne sort pas d'un cache douteux. Temp puis mv.
 set -euo pipefail
 
 mirror="https://github.com/clamy54/lazarus-mirror/releases/download/lazarus-4.8-aarch64"
 sf="https://sourceforge.net/projects/lazarus/files/Lazarus%20macOS%20aarch64/Lazarus%204.8"
 dl="$HOME/laz-dl"; mkdir -p "$dl"
 
-# $1 fichier, $2 empreinte attendue: 0 si elle correspond
+# $1 fichier, $2 SHA-256 attendu
 verify() {
   local got
   got="$(shasum -a 256 "$1" | cut -d' ' -f1)"
@@ -66,8 +53,7 @@ sudo hdiutil detach /Volumes/fpc-*
 
 unzip -q "$dl/lazarus-darwin-aarch64-4.8.zip" -d "$HOME/laz"
 
-# la config portable du zip pointe /Developer/lazarus, inaccessible (racine
-# scellee SSV): on la fait pointer sur l'emplacement reel
+# le zip pointe /Developer/lazarus, hors d'atteinte sur une racine scellee (SSV)
 cfg="$HOME/laz/lazarus/config/environmentoptions.xml"
 [ -f "$cfg" ] || { echo "config du zip introuvable" >&2; ls "$HOME/laz" "$HOME/laz/lazarus" >&2; exit 1; }
 sed -i '' "s|/Developer/lazarus|$HOME/laz/lazarus|g" "$cfg"

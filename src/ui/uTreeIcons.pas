@@ -2,10 +2,8 @@ unit uTreeIcons;
 
 {$mode objfpc}{$H+}
 
-// Catalogue d'icones d'arborescence, PNG embarques en RCDATA
-// (TREE_<ID>_<VARIANT>_<TAILLE>). ONDARK/ONLIGHT nomment le FOND, l'inverse des
-// repertoires sources "-dark"/"-light": les confondre inverse tout le jeu.
-// Les IDs sont stockes dans nodes.icon_id: ne jamais renommer sans alias.
+// RCDATA TREE_<ID>_<VARIANT>_<TAILLE>. ONDARK/ONLIGHT nomment le FOND, a
+// l'inverse des dossiers "-dark"/"-light". IDs en base: renommer = alias.
 
 interface
 

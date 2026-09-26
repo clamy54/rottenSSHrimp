@@ -1,11 +1,6 @@
-{ Transport SFTP de l'onglet Scp. Un thread par onglet, proprietaire exclusif
-  de la socket, du LIBSSH2_SESSION, de la session SFTP et de TOUTES les
-  poignees distantes. Aucun pointeur libssh2 ne sort d'ici, aucune LCL n'y
-  entre, aucun secret n'apparait dans un message.
-
-  Tout appel libssh2 est NON BLOQUANT: la boucle d'attente respecte la
-  direction que libssh2 reclame, une echeance, et l'annulation. Une operation
-  qu'on ne peut pas interrompre est une interface qui gele.
+{ SFTP de l'onglet Scp: un thread, seul maitre de la socket, des sessions et
+  de TOUTES les poignees. Rien de libssh2 ne sort, rien de la LCL n'entre.
+  Tout est NON BLOQUANT: ce qu'on ne peut interrompre gele l'UI.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -23,23 +18,20 @@ uses
 type
   TSftpTransport = class;
 
-  // Backend distant, valide QUE sur le thread de transport: ses methodes
-  // touchent des pointeurs libssh2 qui n'appartiennent qu'a lui.
+  // Thread de transport SEULEMENT.
   TSftpFileSystem = class(TScpFileSystem)
   private
     FOwner: TSftpTransport;
     FNoFsyncSaid: Boolean;
     FIdentity: string;
-    // Erreur exploitable du dernier echec: le code SSH_FX_* si libssh2 signale
-    // une erreur de protocole SFTP, le sien sinon.
+    // SSH_FX_* si erreur de protocole SFTP, code libssh2 sinon
     function LastError(const AOp, ASubject: string;
       ARc: Integer; AContext: TScpAccessContext): TScpError;
     function WaitAgain(var ADeadline: QWord): Boolean;
-    // La fermeture d'une poignee ignore « Cancel selected »: interrompue, elle
-    // laisserait la poignee ouverte sur le serveur jusqu'a la deconnexion.
+    // Ignore « Cancel selected »: interrompue, la poignee resterait ouverte
+    // cote serveur jusqu'a la deconnexion.
     function WaitToClose(var ADeadline: QWord): Boolean;
-    // Un READDIR sans permissions ne dit pas ce qu'est l'entree: lstat redemande.
-    // Muet lui aussi, le type reste inconnu et le moteur refusera l'entree.
+    // READDIR sans permissions: lstat. Muet aussi, le moteur refusera l'entree.
     function RefineUnknownType(const ADir: string; var AEntry: TScpEntry;
       out AErr: TScpError): Boolean;
     function SameFileAsPath(AHandle: TScpFileHandle; const AOp, AWhat: string;
@@ -108,7 +100,7 @@ type
     sckRemoteHome,
     sckRemoteMkdir,
     sckRemoteRename,
-    sckRemoteDelete,      // fichier ou dossier, recursif si dossier
+    sckRemoteDelete,      // recursif si dossier
     sckRemoteChmod,
     sckEnqueueUpload,
     sckEnqueueDownload,
@@ -118,8 +110,7 @@ type
     sckCleanupPartials,
     sckFreeSpace);
 
-  // Commande posee par l'interface. Le thread en devient proprietaire et la
-  // libere; l'interface ne la relit jamais.
+  // Le thread la possede et la libere; l'UI ne la relit jamais.
   TSftpCommand = class
   public
     Kind: TSftpCommandKind;
@@ -129,26 +120,21 @@ type
     Sources: TStringArray;
     TargetDir: string;
     TargetRoot: string;
-    OnRemote: Boolean;    // duplication: de quel cote elle se fait
-    Serial: Int64;   // rapproche une reponse de sa demande
-    // Lot attribue A LA DEMANDE, sur le thread UI: c'est lui que porteront les
-    // elements, quel que soit le moment ou ils entrent en file.
+    OnRemote: Boolean;    // duplication: de quel cote
+    Serial: Int64;
+    // attribue A LA DEMANDE, sur le thread UI, pas a l'entree en file
     Batch: Integer;
-    // Droits demandes: ModeBits porte la valeur, ModeMask les bits DECIDES.
-    // Sur une selection aux droits differents, une case laissee indeterminee
-    // sort du masque et chaque fichier garde le bit qu'il avait.
+    // ModeMask: les bits DECIDES. Case indeterminee: chaque fichier garde le sien.
     ModeBits: LongWord;
     ModeMask: LongWord;
     Recursive: Boolean;
     DirX: Boolean;
   end;
 
-  // ASerial: le numero de la demande servie. Sans lui, aller en A, en B, puis
-  // revenir en A ferait prendre la premiere reponse A pour la troisieme.
+  // ASerial: sinon A, B, A prendrait la premiere reponse A pour la derniere.
   TSftpListEvent = procedure(const APath: string; ASerial: Int64;
     const AEntries: TScpEntryArray; const AError: TScpError) of object;
-  // Le home porte aussi un numero: en retard, il ne doit pas defaire une
-  // navigation plus recente.
+  // un home en retard ne doit pas defaire une navigation plus recente
   TSftpPathEvent = procedure(const APath: string; ASerial: Int64;
     const AError: TScpError) of object;
   TSftpSimpleEvent = procedure(const AError: TScpError) of object;
@@ -164,10 +150,9 @@ type
     FStates: TSessionStateMachine;
     FSftp: PLIBSSH2_SFTP;
     FRemote: TSftpFileSystem;
-    FLocal: TScpFileSystem;      // possede par l'onglet, pas par nous
+    FLocal: TScpFileSystem;      // a l'onglet
     FQueue: TTransferQueue;      // idem
-    // Prete par l'onglet, qui survit a une reconnexion avec son registre de
-    // partiels, ou cree ici si personne ne l'a fourni.
+    // prete par l'onglet (survit a la reconnexion avec ses partiels), sinon a nous
     FEngine: TScpTransferEngine;
     FOwnsEngine: Boolean;
 
@@ -176,9 +161,8 @@ type
     FCmdEvent: TEvent;
     FSerial: Int64;
 
-    // Resultats publies vers l'interface, dans l'ordre: un Queue(@PublishNext)
-    // par resultat. Un champ partage ferait lire au premier rappel le resultat du
-    // second, et au second une liste vide.
+    // Un Queue(@PublishNext) par resultat, dans l'ordre. Un champ partage
+    // livrerait le second au premier rappel, et du vide au second.
     FPubLock: TCriticalSection;
     FPub: TFPList;
 
@@ -196,15 +180,12 @@ type
     FErrLock: TCriticalSection;
     FErrorMsg: string;
     FConnIdentity: string;
-    // L'element TENU par DoRunQueue le temps de son traitement: ce que les
-    // boucles d'attente consultent pour honorer « Cancel selected ».
+    // TENU par DoRunQueue: les attentes y lisent « Cancel selected »
     FCurrentItem: TTransferItem;
-    // La commande en cours, pour savoir si elle a deja repondu quand une
-    // exception la sort du chemin normal.
+    // a-t-elle repondu avant l'exception ?
     FCurrentCmd: TSftpCommand;
 
-    // Decisions qui appartiennent a l'utilisateur: la question part sur le thread
-    // UI, et seul Shutdown reveille l'attente sans repondre.
+    // Seul Shutdown reveille ces attentes sans reponse de l'utilisateur.
     FConflictEvent: TEvent;
     FConflictInfo: TConflictInfo;
     FConflictDecision: TConflictDecision;
@@ -231,14 +212,12 @@ type
     procedure FailIfFatal(const AErr: TScpError);
     function RemoveTree(const APath: string; ADepth: Integer;
       out AErr: TScpError): Boolean;
-    // Octets libres sous APath, thread de transport uniquement. Extension absente:
-    // -1 SANS erreur. Coupure ou echeance: -1 AVEC l'erreur, qui tue la session.
+    // -1 sans erreur: extension absente. -1 AVEC erreur: la session y passe.
     function RemoteFreeBytes(const APath: string;
       out AErr: TScpError): Int64;
     function IsPaused: Boolean;
     function CurrentItemCanceled: Boolean;
-    // Une exception a sorti la commande avant sa reponse: sans elle, l'interface
-    // resterait sur « Reading... ».
+    // sinon l'UI reste sur « Reading... » pour l'eternite
     procedure AnswerAfterException(ACmd: TSftpCommand;
       const AMessage: string);
     procedure Cleanup;
@@ -256,36 +235,31 @@ type
     function ErrHandshakeRefused: string; override;
     procedure Execute; override;
   public
-    // Prend possession de AParams. ALocal, AQueue et AEngine restent a l'appelant
-    // et doivent survivre a ce thread. AEngine a nil: le transport cree le sien.
+    // Possede AParams. ALocal, AQueue, AEngine doivent survivre au thread.
     constructor Create(AParams: TSshConnectParams; ALocal: TScpFileSystem;
       AQueue: TTransferQueue; AEngine: TScpTransferEngine = nil);
     destructor Destroy; override;
 
-    // --- appelables depuis le thread UI ---
-    // Rend le numero de la demande: l'appelant ignore ce qui ne le porte pas.
+    // thread UI
     function RequestList(const APath: string): Int64;
     function RequestHome: Int64;
     procedure RequestMkdir(const APath: string);
     procedure RequestRename(const AFrom, ATo: string);
     procedure RequestDelete(const APath: string);
-    // Droits de APaths. ARecursive descend dans les dossiers, ADirX ajoute x
-    // aux dossiers la ou r est acquis.
+    // ADirX: x sur les dossiers la ou r est acquis
     procedure RequestChmod(const APaths: TStringArray;
       ABits, AMask: LongWord; ARecursive, ADirX: Boolean);
     procedure RequestUpload(const ASources: TStringArray;
       const ARemoteDir, ARemoteRoot: string);
     procedure RequestDownload(const ASources: TStringArray;
       const ALocalDir, ALocalRoot: string);
-    // Duplique dans ADir. Le nom libre est cherche par le thread qui copie: le
-    // calculer ici donnerait une reponse perimee avant l'ecriture.
+    // Nom libre cherche par le thread qui copie: ici, il serait perime.
     procedure RequestDuplicate(const ASources: TStringArray;
       const ADir: string; AOnRemote: Boolean);
     procedure RequestRunQueue;
     procedure RequestRetryFailed;
     procedure RequestCleanupPartials;
-    // Espace libre distant, rendu par OnFreeSpace. -1 sans statvfs@openssh.com:
-    // l'appelant s'abstient plutot que de supposer de la place.
+    // -1 sans statvfs@openssh.com: ne rien supposer
     procedure RequestFreeSpace(const APath: string);
     procedure PauseTransfers;
     procedure ResumeTransfers;
@@ -324,16 +298,14 @@ uses
   Sockets, uSockCompat, uNetResolve, uSodiumApi;
 
 const
-  // Echeance PAR OPERATION: borne un serveur muet sans empecher un gros
-  // transfert d'avancer, chaque appel la reprenant a zero.
+  // PAR APPEL: borne un serveur muet, pas un gros transfert
   SFTP_OP_TIMEOUT_MS = 60 * 1000;
   SFTP_POLL_MS = 20;
   CONNECT_POLL_MS = 200;
   SHUTDOWN_GRACE_MS = 3000;
-  // Tampons de readdir, bornes FIXES: jamais une taille venue du serveur.
+  // FIXES: jamais une taille venue du serveur
   SFTP_NAME_MAX = 1024;
   SFTP_LONGENTRY_MAX = 2048;
-  // Parcours recursif par chemin: suppression comme droits.
   SFTP_MAX_TREE_DEPTH = 64;
   TEMP_PREFIX = '.rssh-';
   TEMP_SUFFIX = '.part';
@@ -402,12 +374,9 @@ end;
 
 function TSftpFileSystem.WaitAgain(var ADeadline: QWord): Boolean;
 begin
-  // « Cancel selected » compris: sinon une operation qui bloque attend toute
-  // l'echeance avant que l'annulation soit vue.
+  // « Cancel selected » compris, sinon vu a l'echeance seulement
   if Canceled then Exit(False);
   if GetTickCount64 >= ADeadline then Exit(False);
-  // La DIRECTION vient de libssh2: attendre en lecture quand il veut ecrire,
-  // c'est attendre pour rien.
   FOwner.WaitIo(SFTP_POLL_MS);
   Result := not Canceled;
 end;
@@ -433,7 +402,7 @@ begin
   len := 0;
   rc := libssh2_session_last_error(FOwner.FSession, @msg, @len, 0);
   if (msg <> nil) and (len > 0) then
-    // Chaine NON FIABLE: elle part dans l'interface, donc elle est neutralisee.
+    // venue du serveur, destinee a l'UI: neutralisee
     detail := DisplaySafeName(string(AnsiString(msg)));
   if ARc = LIBSSH2_ERROR_SFTP_PROTOCOL then
   begin
@@ -447,7 +416,7 @@ begin
     LIBSSH2_ERROR_EAGAIN, LIBSSH2_ERROR_TIMEOUT, LIBSSH2_ERROR_SOCKET_TIMEOUT:
       Result := MakeScpError(sekTimeout, AOp, DisplaySafeName(ASubject),
         detail);
-    // Tout ce qui laisse la session inutilisable: socket, canal, chiffrement.
+    // session inutilisable
     LIBSSH2_ERROR_SOCKET_DISCONNECT, LIBSSH2_ERROR_SOCKET_SEND,
     LIBSSH2_ERROR_SOCKET_RECV, LIBSSH2_ERROR_BAD_SOCKET,
     LIBSSH2_ERROR_CHANNEL_CLOSED, LIBSSH2_ERROR_CHANNEL_EOF_SENT,
@@ -458,8 +427,7 @@ begin
     Result := MakeScpError(sekOther, AOp, DisplaySafeName(ASubject),
       Format('%s (libssh2 %d)', [detail, ARc]));
   end;
-  // Une annulation n'efface pas une coupure: retrograder une socket morte en
-  // « annule » laisserait l'onglet se croire connecte.
+  // Une coupure reste une coupure: « annule », l'onglet se croirait connecte.
   if Canceled and (not IsFatalToSession(Result.Kind)) then
     Result.Kind := sekCanceled;
   if rc = 0 then ;
@@ -499,8 +467,7 @@ begin
   Result := True;
 end;
 
-// Attributs SFTP -> entree. Un champ n'est lu que si son bit de presence est
-// pose: le lire sans, c'est inventer une taille ou une date.
+// Pas de bit de presence, pas de lecture: sinon on invente taille et date.
 procedure AttrsToEntry(const AAttrs: LIBSSH2_SFTP_ATTRIBUTES;
   var AEntry: TScpEntry);
 begin
@@ -513,8 +480,7 @@ begin
   AEntry.ModeKnown := (AAttrs.flags and LIBSSH2_SFTP_ATTR_PERMISSIONS) <> 0;
   if AEntry.ModeKnown then
     AEntry.Mode := LongWord(AAttrs.permissions);
-  // Sans permissions, pas de type: IsDir, IsLink et IsSpecial seront tous faux,
-  // et « tous faux » n'est pas « fichier ordinaire ».
+  // « tous faux » n'est pas « fichier ordinaire »
   AEntry.TypeUnknown := not AEntry.ModeKnown;
   if (AAttrs.flags and LIBSSH2_SFTP_ATTR_ACMODTIME) <> 0 then
     AEntry.MTimeUtc := Int64(AAttrs.mtime);
@@ -525,8 +491,7 @@ begin
   AEntry.ReadOnly := (AEntry.Mode <> 0) and ((AEntry.Mode and &0200) = 0);
 end;
 
-// « longentry » est un `ls -l` fabrique par le SERVEUR: on n'en tire que
-// proprietaire et groupe, jamais une taille ou un mode.
+// longentry = `ls -l` du SERVEUR: proprietaire et groupe, jamais taille ni mode.
 procedure ParseLongEntryOwner(const ALong: string;
   var AEntry: TScpEntry);
 var
@@ -554,19 +519,14 @@ begin
   if n >= 4 then AEntry.Group := DisplaySafeName(parts[3]);
 end;
 
-// La cible d'un lien telle que le longentry la montre (format « ls -l »:
-// ... nom -> cible). ZERO aller-retour: interroger le serveur lien par lien
-// (readlink puis stat) coutait trois echanges PAR entree, et un /usr/lib en
-// compte des centaines -- le listing prenait des minutes. Chaine vide si le
-// serveur n'envoie pas ce format: l'affichage de la cible est cosmetique,
-// il ne vaut pas de rendre chaque listing proportionnel a la latence.
+// « nom -> cible » du longentry, ZERO aller-retour: trois echanges par lien,
+// c'etait des minutes pour /usr/lib. Format absent: vide, c'est cosmetique.
 function LinkTargetFromLongEntry(const ALong, AName: string): string;
 var
   i: Integer;
 begin
   Result := '';
-  // Le nom suivi de la fleche: un « root » proprietaire est suivi du groupe,
-  // pas d'une fleche, donc la premiere occurrence est bien le nom du lien.
+  // proprietaire et groupe ne sont jamais suivis de « -> »
   i := Pos(AName + ' -> ', ALong);
   if i = 0 then Exit;
   Result := DisplaySafeName(Copy(ALong, i + Length(AName) + 4, MaxInt));
@@ -607,10 +567,8 @@ begin
   begin
     AErr := LastError('Listing', APath,
       libssh2_session_last_errno(FOwner.FSession), acDir);
-    // Le listing n'etablit plus la cible des liens: entrer dans un lien vers
-    // un fichier echoue ICI. Or ENOTDIR n'a pas de code en SFTP v3 -- OpenSSH
-    // repond « no such file ». Un stat du chemin remet le vrai motif; il ne
-    // coute qu'un echange, et seulement sur ce chemin d'echec.
+    // Lien vers un fichier: pas d'ENOTDIR en SFTP v3, OpenSSH dit « no such
+    // file ». Un stat, sur l'echec seulement, retablit le vrai motif.
     if AErr.Kind in [sekNotFound, sekOther] then
     begin
       if Stat(APath, True, statEntry, statErr) then
@@ -619,20 +577,17 @@ begin
           AErr := MakeScpError(sekNotADirectory, 'Listing',
             DisplaySafeName(APath), 'the path leads to a file, not a folder');
       end
-      // La session peut tomber PENDANT ce stat: taire sa coupure rendrait un
-      // simple « not found » et l'onglet resterait connecte sur un cable mort.
+      // coupure PENDANT le stat: sinon connecte a un cable mort
       else if IsFatalToSession(statErr.Kind) then
         AErr := statErr;
     end;
     Exit(False);
   end;
-  // Aucune sortie avant la fermeture: une coupure qu'elle revele doit pouvoir
-  // l'emporter sur l'erreur qui a arrete le listing.
+  // Pas d'Exit avant la fermeture: la coupure qu'elle revele prime.
   try
     while True do
     begin
-      // Canceled, « Cancel selected » compris, a CHAQUE entree: libssh2 rend
-      // sans EAGAIN ce qu'il a deja recu, et WaitAgain ne voit alors rien.
+      // a CHAQUE entree: le deja-recu arrive sans EAGAIN, WaitAgain n'y voit rien
       if Canceled then
       begin
         listErr := MakeScpError(sekCanceled, 'Listing',
@@ -646,7 +601,7 @@ begin
           @longBuf[0], SFTP_LONGENTRY_MAX, @attrs);
         if rc <> LIBSSH2_ERROR_EAGAIN then Break;
       until not WaitAgain(deadline);
-      if rc = 0 then Break;          // fin du repertoire
+      if rc = 0 then Break;
       if rc < 0 then
       begin
         listErr := LastError('Listing', APath, rc, acDir);
@@ -654,11 +609,10 @@ begin
       end;
       if rc > SFTP_NAME_MAX then rc := SFTP_NAME_MAX;
       SetString(name, PAnsiChar(@nameBuf[0]), rc);
-      // '.' et '..' ne doivent jamais devenir transferables ni supprimables.
+      // '..' supprimable: non merci
       if (name = '.') or (name = '..') or (name = '') then Continue;
       if n >= SCP_MAX_DIR_ENTRIES then
       begin
-        // Un serveur qui envoie sans fin: on s'arrete et on le dit.
         listErr := MakeScpError(sekOther, 'Listing', DisplaySafeName(APath),
           Format('the server returned more than %d entries',
             [SCP_MAX_DIR_ENTRIES]));
@@ -674,17 +628,13 @@ begin
         if not RefineUnknownType(APath, AEntries[n], listErr) then Break;
       long := string(AnsiString(PAnsiChar(@longBuf[0])));
       ParseLongEntryOwner(long, AEntries[n]);
-      // La cible vient du longentry deja recu, jamais d'un readlink: voir
-      // LinkTargetFromLongEntry. TargetKnown reste faux -- le double-clic
-      // tentera l'entree et le serveur tranchera.
+      // Jamais de readlink ici. TargetKnown reste faux: le serveur tranchera.
       if AEntries[n].IsLink and (AEntries[n].LinkTarget = '') then
         AEntries[n].LinkTarget := LinkTargetFromLongEntry(long, name);
       Inc(n);
     end;
   finally
     SetLength(AEntries, n);
-    // WaitToClose et pas WaitAgain: une annulation coupait l'attente, et la
-    // poignee restait ouverte sur le serveur jusqu'a la deconnexion.
     deadline := GetTickCount64 + SFTP_OP_TIMEOUT_MS;
     repeat
       closeRc := libssh2_sftp_close_handle(h);
@@ -693,9 +643,7 @@ begin
     if closeRc < 0 then
       closeErr := LastError('Closing', APath, closeRc, acDir);
   end;
-  // Une seule issue, par ordre de gravite: coupure au listing, coupure a la
-  // fermeture, puis ce qui a arrete le listing -- annulation ou refus. Un
-  // refus ordinaire a la fermeture ne change rien a un contenu complet.
+  // Par gravite. Un refus banal a la fermeture ne gache pas un contenu complet.
   if IsFatalToSession(listErr.Kind) then
     AErr := listErr
   else if IsFatalToSession(closeErr.Kind) then
@@ -705,8 +653,7 @@ begin
   Result := AErr.Kind = sekNone;
 end;
 
-// False seulement si le lstat a ete coupe par la session: un refus ordinaire
-// laisse le type inconnu, ce que le moteur sait ecarter.
+// False: coupure seulement. Un refus laisse le type inconnu, le moteur ecarte.
 function TSftpFileSystem.RefineUnknownType(const ADir: string;
   var AEntry: TScpEntry; out AErr: TScpError): Boolean;
 var
@@ -795,8 +742,7 @@ begin
     AFound := True;
     Exit(True);
   end;
-  // « Absent » est une reponse, le reste est une panne: les confondre ferait
-  // ecraser une cible qu'on n'a pas su lire.
+  // « Absent » est une reponse, le reste une panne: sinon on ecrase l'illisible.
   if err.Kind in [sekNotFound, sekNotADirectory] then Exit(True);
   AErr := err;
   Result := False;
@@ -834,8 +780,7 @@ begin
   b := AnsiString(RemoteNormalize(ATo));
   deadline := GetTickCount64 + SFTP_OP_TIMEOUT_MS;
   repeat
-    // Drapeaux a zero: en SFTP v3 ils ne partent pas sur le cable, et promettre
-    // un ecrasement qui n'aura pas lieu serait mentir.
+    // Drapeaux a 0: SFTP v3 ne les transmet pas, inutile de promettre.
     rc := libssh2_sftp_rename_ex(FOwner.FSftp, PAnsiChar(a), Length(a),
       PAnsiChar(b), Length(b), 0);
     if rc <> LIBSSH2_ERROR_EAGAIN then Break;
@@ -853,7 +798,7 @@ var
   a, b: AnsiString;
 begin
   AErr := NoScpError;
-  // posix-rename@openssh.com est le SEUL remplacement atomique en SFTP v3.
+  // posix-rename@openssh.com: SEUL remplacement atomique en SFTP v3
   if not Libssh2HasPosixRename then
   begin
     AErr := MakeScpError(sekUnsupported, 'Replacing', DisplaySafeName(ATo),
@@ -870,9 +815,8 @@ begin
   until not WaitAgain(deadline);
   if rc = 0 then Exit(True);
   AErr := LastError('Replacing', ATo, rc, acWrite);
-  // SSH_FX_OP_UNSUPPORTED est le SEUL cas ou un repli a du sens. SSH_FX_FAILURE
-  // arrive aussi pour un disque plein ou une erreur d'E/S: le ranger ici ferait
-  // supprimer la cible pour un echec qui se reproduirait a l'identique.
+  // Repli sur OP_UNSUPPORTED SEULEMENT. FAILURE, c'est aussi disque plein:
+  // supprimer la cible pour rater pareil ensuite, non.
   Result := False;
 end;
 
@@ -944,8 +888,7 @@ begin
   h := TSftpHandle.Create;
   h.H := hnd;
   h.Path := RemoteNormalize(APath);
-  // SFTP v3 suit un lien a l'ouverture: entre le lstat du moteur et celle-ci,
-  // le chemin a pu changer de fichier. Meme controle qu'a la reprise.
+  // OPEN suit les liens: le chemin a pu changer depuis le lstat du moteur.
   if not SameFileAsPath(h, 'Opening', 'the source', acRead, AErr) then
   begin
     Close(h, closeErr);
@@ -976,10 +919,8 @@ begin
     p := AnsiString(candidate);
     deadline := GetTickCount64 + SFTP_OP_TIMEOUT_MS;
     repeat
-      // EXCL: la creation echoue si le nom existe, lien compris -- c'est ce qui
-      // interdit d'ecrire a travers un lien pose d'avance, le nom imprevisible
-      // interdisant de le poser a temps. Le mode part dans OPEN, ou le serveur
-      // applique son umask; un SETSTAT apres coup ne le ferait pas.
+      // EXCL + nom imprevisible: pas d'ecriture a travers un lien pose d'avance.
+      // Mode dans OPEN: l'umask serveur s'applique, un SETSTAT l'ignorerait.
       hnd := libssh2_sftp_open_ex(FOwner.FSftp, PAnsiChar(p), Length(p),
         LIBSSH2_FXF_WRITE or LIBSSH2_FXF_CREAT or LIBSSH2_FXF_EXCL,
         clong(AMode and LongWord(&0777)), LIBSSH2_SFTP_OPENFILE);
@@ -1010,13 +951,8 @@ begin
   Result := False;
 end;
 
-// lstat du chemin contre fstat de la poignee: meme type, meme taille. Un lien
-// a la place du fichier est refuse; un fichier substitue de meme taille ne
-// l'est pas ici, c'est l'empreinte du prefixe, relue par le moteur, qui le
-// rattrape a la reprise. AWhat nomme ce qu'on ouvrait, pour le message. Taille
-// et type sont tout ce que SFTP v3 donne: pas d'inode, donc un autre fichier
-// ordinaire de meme taille passe ici, et seule l'empreinte du prefixe, a la
-// reprise, le verrait.
+// lstat contre fstat: type et taille, SFTP v3 n'a pas d'inode. Un sosie de
+// meme taille passe ici; l'empreinte du prefixe l'attend a la reprise.
 function TSftpFileSystem.SameFileAsPath(AHandle: TScpFileHandle;
   const AOp, AWhat: string; AContext: TScpAccessContext;
   out AErr: TScpError): Boolean;
@@ -1090,8 +1026,7 @@ begin
   AErr := NoScpError;
   p := AnsiString(RemoteNormalize(APath));
   deadline := GetTickCount64 + SFTP_OP_TIMEOUT_MS;
-  // Lecture ET ecriture: le moteur relit le prefixe par cette poignee avant
-  // d'ecrire, ce qui lie la verification au fichier ouvert et non au chemin.
+  // READ aussi: le prefixe se verifie par la poignee, pas par le chemin.
   repeat
     hnd := libssh2_sftp_open_ex(FOwner.FSftp, PAnsiChar(p), Length(p),
       LIBSSH2_FXF_READ or LIBSSH2_FXF_WRITE, &0600, LIBSSH2_SFTP_OPENFILE);
@@ -1108,20 +1043,15 @@ begin
   h := TSftpHandle.Create;
   h.H := hnd;
   h.Path := RemoteNormalize(APath);
-  // SFTP v3 n'a pas d'ouverture qui refuse un lien: OPENFILE suit ce qu'il
-  // trouve. On relit donc le chemin APRES l'ouverture et on le compare a la
-  // poignee. Un lien pose entre le lstat du moteur et l'ouverture est vu ici;
-  // celui pose entre l'ouverture et ce controle ne l'est pas, et le protocole
-  // ne permet pas de fermer cette fenetre-la. Le moteur relit encore le prefixe
-  // confirme par la poignee, et un contenu different fait repartir de zero.
+  // OPENFILE suit les liens, pas de O_NOFOLLOW en v3. Reste une fenetre entre
+  // l'ouverture et ce controle, que seul le prefixe relu couvre.
   if not SameFileAsPath(h, 'Reopening', 'the partial file', acWrite, AErr)
   then
   begin
     Close(h, closeErr);
     Exit(False);
   end;
-  // SFTP v3 n'a pas de troncature: on se place a l'offset CONFIRME et on ecrit
-  // par-dessus. Les octets au-dela seront recouverts, jamais comptes acquis.
+  // Pas de troncature en v3: on ecrit par-dessus depuis l'offset CONFIRME.
   libssh2_sftp_seek64(hnd, libssh2_uint64_t(AOffset));
   AHandle := h;
   Result := True;
@@ -1147,7 +1077,7 @@ begin
     AErr := LastError('Reading', h.Path, cint(n), acRead);
     Exit(False);
   end;
-  // n < ACount est normal en SFTP: une lecture courte, pas une fin. Seul 0 l'est.
+  // lecture courte normale en SFTP; seul 0 est une fin
   AGot := Integer(n);
   Result := True;
 end;
@@ -1200,11 +1130,8 @@ begin
   until not WaitAgain(deadline);
   if rc = 0 then Exit(True);
   AErr := LastError('Flushing', h.Path, rc, acWrite);
-  // fsync@openssh.com est une extension que beaucoup de serveurs n'ont pas. Son
-  // absence n'est pas un echec -- la fermeture reste le point de verite -- mais
-  // elle change le sens de « confirme »: acquitte par le serveur, pas vide sur
-  // son disque. Le moteur compare le prefixe a la reprise, donc un bout perdu
-  // fait repartir de zero; on le DIT une fois, pour que la garantie soit vraie.
+  // Sans fsync@openssh.com, « confirme » veut dire acquitte, pas sur disque.
+  // Pas un echec, mais on le DIT une fois.
   if AErr.Kind = sekUnsupported then
   begin
     AErr := NoScpError;
@@ -1233,15 +1160,12 @@ begin
   h := TSftpHandle(AHandle);
   if h.H <> nil then
   begin
-    // WaitToClose et pas WaitAgain: une annulation qui coupait cette boucle
-    // laissait la poignee ouverte sur le serveur, et il en a un nombre fini.
     deadline := GetTickCount64 + SFTP_OP_TIMEOUT_MS;
     repeat
       rc := libssh2_sftp_close_handle(h.H);
       if rc <> LIBSSH2_ERROR_EAGAIN then Break;
     until not WaitToClose(deadline);
-    // La fermeture est ou un serveur avoue un quota depasse: la traiter comme une
-    // formalite ferait passer un fichier tronque pour un succes.
+    // C'est au CLOSE que le serveur avoue le quota depasse.
     if rc <> 0 then
     begin
       AErr := LastError('Closing', h.Path, rc, acWrite);
@@ -1252,7 +1176,6 @@ begin
   h.Free;
 end;
 
-// FSETSTAT: par la poignee, le chemin n'intervient plus.
 function TSftpFileSystem.SetTimesByHandle(AHandle: TScpFileHandle;
   AMTimeUtc: Int64; out AErr: TScpError): Boolean;
 var
@@ -1264,8 +1187,7 @@ var
 begin
   AErr := NoScpError;
   h := TSftpHandle(AHandle);
-  // SETSTAT ecrit TOUS les champs annonces: relire d'abord, sinon la date
-  // d'acces part avec une valeur inventee.
+  // ACMODTIME ecrit atime ET mtime: relire atime d'abord.
   FillChar(cur, SizeOf(cur), 0);
   deadline := GetTickCount64 + SFTP_OP_TIMEOUT_MS;
   repeat
@@ -1273,8 +1195,7 @@ begin
     if rc <> LIBSSH2_ERROR_EAGAIN then Break;
   until not WaitAgain(deadline);
 
-  // Sans date d'acces connue on ne pose rien: SETSTAT ne sait pas ecrire mtime
-  // seul, et inventer atime altererait une metadonnee que nul n'a demandee.
+  // atime inconnu: on ne pose rien plutot que de l'inventer
   if (rc <> 0) or ((cur.flags and LIBSSH2_SFTP_ATTR_ACMODTIME) = 0) then
   begin
     if rc <> 0 then
@@ -1299,7 +1220,7 @@ begin
   if not Result then
   begin
     AErr := LastError('Setting the timestamp of', h.Path, rc, acWrite);
-    // Le contenu est arrive: ce refus est un avertissement, pas une perte.
+    // contenu arrive: avertissement, pas perte
     if not IsFatalToSession(AErr.Kind) then AErr.Kind := sekAttrRefused;
   end;
 end;
@@ -1310,8 +1231,7 @@ begin
   Result := SetTimesByHandle(AHandle, AMTimeUtc, AErr);
 end;
 
-// Le mode demande est pose tel quel: c'est le moteur qui tient la politique,
-// la meme des deux cotes.
+// Tel quel: la politique est au moteur.
 function TSftpFileSystem.SetMode(AHandle: TScpFileHandle; AMode: LongWord;
   out AErr: TScpError): Boolean;
 var
@@ -1338,9 +1258,8 @@ begin
   end;
 end;
 
-// SETSTAT SUIT les liens: sur un lien, ces droits partiraient sur sa cible,
-// n'importe ou dans l'arborescence. L'appelant les a ecartes par lstat juste
-// avant; ce n'est pas verifiable ici, le protocole n'ayant pas de lchmod.
+// SETSTAT SUIT les liens et SFTP n'a pas de lchmod: a l'appelant de les
+// ecarter par lstat, sinon les droits atterrissent n'importe ou.
 function TSftpFileSystem.SetModeAt(const APath: string; AMode: LongWord;
   out AErr: TScpError): Boolean;
 var
@@ -1439,7 +1358,7 @@ destructor TSftpTransport.Destroy;
 var
   i: Integer;
 begin
-  inherited Destroy;      // TThread joint le thread AVANT qu'on libere tout
+  inherited Destroy;      // joint le thread AVANT de liberer
   ClearCommands;
   FCmds.Free;
   for i := 0 to FPub.Count - 1 do
@@ -1487,8 +1406,7 @@ end;
 function TSftpTransport.RemoteFreeBytes(const APath: string;
   out AErr: TScpError): Int64;
 const
-  // SSH_FX_OP_UNSUPPORTED seul veut dire « extension absente »; le reste est
-  // une panne.
+  // SSH_FX_OP_UNSUPPORTED: seul « extension absente » legitime
   FX_OP_UNSUPPORTED_ = 8;
 var
   st: TLibssh2SftpStatVfs;
@@ -1508,7 +1426,7 @@ begin
     if Terminated then Exit;
     if GetTickCount64 >= deadline then
     begin
-      // Une echeance n'est pas une absence d'extension: la session ne repond plus.
+      // echeance = session muette, pas extension absente
       AErr := MakeScpError(sekTimeout, 'Reading free space of',
         DisplaySafeName(APath), '');
       Exit;
@@ -1517,8 +1435,6 @@ begin
   until Terminated;
   if rc <> 0 then
   begin
-    // Extension absente: -1 sans erreur, l'appelant s'abstient. Coupure, echeance
-    // ou refus sont des erreurs, et elles sont rendues.
     if (rc = LIBSSH2_ERROR_SFTP_PROTOCOL) and
        (libssh2_sftp_last_error(FSftp) = FX_OP_UNSUPPORTED_) then
       Exit;
@@ -1586,10 +1502,7 @@ begin
   Result := rc > 0;
 end;
 
-// --- File de commandes ----------------------------------------------------
-
-// Rend le numero attribue, lu SOUS le verrou: des l'ajout, le fil de travail
-// peut servir la commande et la liberer, et ACmd.Serial serait un objet mort.
+// Serial lu SOUS le verrou: apres, ACmd peut deja etre servie et liberee.
 function TSftpTransport.PostCommand(ACmd: TSftpCommand): Int64;
 begin
   FCmdLock.Acquire;
@@ -1645,12 +1558,9 @@ begin
   end;
 end;
 
-// --- Publication vers l'interface -----------------------------------------
-
 procedure TSftpTransport.PostResult(AResult: TObject);
 begin
-  // Marque la commande en cours comme servie: une exception survenue apres ne
-  // doit pas poster une seconde reponse.
+  // servie: une exception ulterieure ne repondra pas une seconde fois
   if (FCurrentCmd <> nil) and (AResult is TSftpResult) and
      (TSftpResult(AResult).Kind in [srListed, srHome, srOpDone,
        srFreeSpace]) then
@@ -1713,10 +1623,8 @@ begin
     FOnConnected(Self);
 end;
 
-// --- Relais du moteur (thread de transport) -------------------------------
-
-// Thread UI. La modale vide QueueAsyncCall et peut liberer d'AUTRES onglets,
-// jamais celui-ci: le SetEvent ne frappe pas un mort.
+// Thread UI. La modale vide QueueAsyncCall: elle libere d'AUTRES onglets,
+// jamais celui-ci, le SetEvent ne frappe pas un mort.
 procedure TSftpTransport.AskConflictOnUi;
 begin
   try
@@ -1743,7 +1651,7 @@ end;
 procedure TSftpTransport.EngineConflict(const AInfo: TConflictInfo;
   var ADecision: TConflictDecision);
 begin
-  // Sans interlocuteur on ne decide pas: cnAsk saute l'element, cible intacte.
+  // personne a qui demander: cnAsk saute l'element, cible intacte
   ADecision.Action := cnAsk;
   ADecision.ApplyToAll := False;
   if not Assigned(FOnConflict) then Exit;
@@ -1752,9 +1660,8 @@ begin
   FConflictDecision.ApplyToAll := False;
   FConflictEvent.ResetEvent;
   Queue(@AskConflictOnUi);
-  // SANS echeance: la question et sa reponse partagent un seul jeu de champs.
-  // Cesser d'attendre laissait la modale ouverte, et sa reponse tardive allait
-  // au conflit SUIVANT -- « Replace anyway » compris.
+  // SANS echeance: un seul jeu de champs, et une reponse tardive irait au
+  // conflit SUIVANT, « Replace anyway » compris.
   while (FConflictEvent.WaitFor(200) = wrTimeout) and (not Terminated) do ;
   if Terminated then
   begin
@@ -1773,7 +1680,7 @@ begin
   FNonAtomicAllow := False;
   FNonAtomicEvent.ResetEvent;
   Queue(@AskNonAtomicOnUi);
-  // Meme regle que EngineConflict: pas d'echeance.
+  // pas d'echeance, cf. EngineConflict
   while (FNonAtomicEvent.WaitFor(200) = wrTimeout) and (not Terminated) do ;
   if Terminated then Exit;
   AAllow := FNonAtomicAllow;
@@ -1795,8 +1702,6 @@ begin
   r.Text := AText;
   PostResult(r);
 end;
-
-// --- Commandes ------------------------------------------------------------
 
 function TSftpTransport.RequestList(const APath: string): Int64;
 var
@@ -1856,7 +1761,7 @@ begin
   c := TSftpCommand.Create;
   c.Kind := sckRemoteChmod;
   c.Sources := Copy(APaths, 0, Length(APaths));
-  // Sujet d'un message d'echec inattendu: sans lui il serait vide.
+  // sujet des messages d'echec
   if Length(APaths) > 0 then c.PathA := APaths[0];
   c.ModeBits := ABits;
   c.ModeMask := AMask;
@@ -1945,9 +1850,8 @@ begin
   PostCommand(c);
 end;
 
-// La pause est un etat de la FILE, lu sous son verrou par NextRunnable: un
-// second drapeau ici ouvrait une fenetre entre les deux. L'element en cours
-// finit ou est annule, jamais suspendu.
+// Etat de la FILE, sous son verrou: un second drapeau ici ouvrirait une
+// fenetre. L'element en cours finit ou meurt, jamais suspendu.
 procedure TSftpTransport.PauseTransfers;
 begin
   FQueue.PauseQueue;
@@ -1975,15 +1879,12 @@ begin
   FHostKeyDecision := hkdReject;
   FHostKeyEvent.SetEvent;
   SkCancel;
-  // Reveiller le thread s'il attend une reponse: sans cela, fermer pendant un
-  // dialogue de conflit ferait attendre le joint jusqu'au bout du delai.
+  // sinon le join attend la fin d'un dialogue de conflit
   FConflictEvent.SetEvent;
   FNonAtomicEvent.SetEvent;
   FCmdEvent.SetEvent;
   ShutdownSock;
 end;
-
-// --- Execution ------------------------------------------------------------
 
 function TSftpTransport.OpenSftp: Boolean;
 var
@@ -2003,7 +1904,6 @@ begin
   if FSftp = nil then
   begin
     if not Terminated then
-      // Accepter SSH et refuser le sous-systeme SFTP est une cause distincte.
       Fail('The server accepted the SSH connection but refused the SFTP ' +
         'subsystem. Check that the SFTP server is enabled for this account.');
     Exit;
@@ -2037,16 +1937,13 @@ begin
     AErr := statErr;
     Exit(False);
   end;
-  // Un lien vers un dossier se supprime LUI: y descendre effacerait sa cible.
+  // un lien se supprime LUI, pas sa cible
   if e.IsLink or (not e.IsDir) then
     Exit(FRemote.DeleteFile(APath, AErr));
 
   if not FRemote.List(APath, entries, AErr) then Exit(False);
-  // SFTP v3 n'a rien pour ancrer une suppression a un dossier ouvert: tout passe
-  // par des chemins. Un dossier devenu lien AVANT le listing est vu ici, car le
-  // listing aurait traverse le lien; devenu lien APRES, chaque enfant est
-  // encore relu par lstat, mais par un chemin qui traverse le lien. Cette
-  // fenetre-la, le protocole ne permet pas de la fermer.
+  // Tout passe par des chemins en v3. Devenu lien AVANT le listing: vu ici.
+  // APRES: fenetre que le protocole ne sait pas fermer.
   if not FRemote.Stat(APath, False, e, AErr) then Exit(False);
   if e.IsLink or (not e.IsDir) then
   begin
@@ -2090,13 +1987,11 @@ var
 begin
   while not Terminated do
   begin
-    // TENU jusqu'a ReleaseCurrent: « Clear completed » ne peut pas le liberer
-    // sous nos pieds. nil aussi quand la file est en pause.
+    // TENU jusqu'a ReleaseCurrent, « Clear completed » n'y touche pas. nil en pause.
     item := FQueue.NextRunnable;
     if item = nil then Break;
     FCurrentItem := item;
-    // Le sens de l'element, pose a la mise en file, designe les deux systemes de
-    // fichiers: les deduire du chemin laisserait un nom decider ou on ecrit.
+    // Jamais deduit du chemin: un nom ne decide pas ou l'on ecrit.
     case item.Direction of
       tdUpload: begin srcFs := FLocal; dstFs := FRemote; end;
       tdDownload: begin srcFs := FRemote; dstFs := FLocal; end;
@@ -2104,11 +1999,10 @@ begin
     else
       begin srcFs := FRemote; dstFs := FRemote; end;
     end;
-    // La racine de confinement est posee a la mise en file et ne bouge plus: la
-    // rededuire ici donnerait une garantie differente selon la profondeur.
+    // Fixee a la mise en file: rededuite, elle varierait avec la profondeur.
     root := item.TargetRoot;
     if root = '' then
-      // Hors enumeration: le dossier de la cible est la borne la plus stricte.
+      // hors enumeration: la borne la plus stricte
       root := dstFs.Parent(item.TargetPath);
     interrupted := False;
     errText := '';
@@ -2121,12 +2015,10 @@ begin
           'the transfer ended without a result');
         FQueue.SetState(item, tsFailed);
       end;
-      // Tout ce qu'on veut savoir de l'element se lit ICI, tant qu'il est tenu:
-      // une fois rendu, « Clear completed » peut le liberer des la ligne suivante.
+      // Lire ICI, tant qu'il est tenu: rendu, il peut mourir a la ligne suivante.
       interrupted := item.State = tsInterrupted;
       if interrupted then errText := ScpErrorText(item.Error);
-      // La coupure peut etre survenue APRES la publication: l'element est termine,
-      // la session est morte quand meme, et c'est le moteur qui l'a vu.
+      // Coupure APRES la publication: element termine, session morte quand meme.
       if FEngine.TakeFatal(fatalErr) and (not interrupted) then
       begin
         interrupted := True;
@@ -2139,16 +2031,14 @@ begin
     item := nil;
     if Assigned(FOnQueueChanged) then
       Queue(@PublishQueueChanged);
-    // Connexion tombee EN PLEIN fichier: continuer a servir des commandes sur une
-    // socket fermee laisserait l'onglet « connected », Reconnect eteint.
+    // Sinon l'onglet reste « connected » a un cadavre, Reconnect grise.
     if interrupted then
     begin
       if not Terminated then
         Fail(errText);
       Break;
     end;
-    // Entre deux elements: une commande d'interface ne coupe pas un fichier, mais
-    // n'attend pas la fin du lot. La boucle REVIENT ici des qu'elle est servie.
+    // Une commande UI passe entre deux fichiers, pas apres tout le lot.
     if HasPendingCommand then Break;
   end;
   if Assigned(FOnQueueChanged) then
@@ -2187,7 +2077,7 @@ begin
       begin
         if not FRemote.HomeDir(path, err) then
         begin
-          // Home en echec. La racine n'est un repli que si elle est LISIBLE.
+          // repli sur / seulement s'il est LISIBLE
           if FRemote.List('/', entries, err) then
             path := '/'
           else
@@ -2239,8 +2129,7 @@ begin
           EngineNote(Format('%d symbolic link(s) kept as they are: ' +
             'permissions set through a link would land on its target.',
             [tally.Links]));
-        // Un arret au milieu d'un dossier laisse le debut modifie: le dire,
-        // plutot que de laisser croire que rien n'a bouge.
+        // arret en route: le debut a deja change, le dire
         if (err.Kind <> sekNone) and (tally.Applied > 0) then
           EngineNote(Format('Permissions were already changed on %d ' +
             'item(s) before the error.', [tally.Applied]))
@@ -2255,10 +2144,7 @@ begin
       end;
     sckEnqueueUpload, sckEnqueueDownload, sckEnqueueDuplicate:
       begin
-        // Chaque selection entre en file telle quelle, a EXAMINER: c'est le
-        // moteur qui la lit, la nomme et la parcourt, en son tour. Une coupure
-        // pendant l'une d'elles laisse les suivantes en file, reprises avec le
-        // reste a la reconnexion.
+        // En file telle quelle, a EXAMINER: le moteur la parcourt a son tour.
         case ACmd.Kind of
           sckEnqueueUpload: begin dstFs := FRemote; dir := tdUpload; end;
           sckEnqueueDownload: begin dstFs := FLocal; dir := tdDownload; end;
@@ -2274,8 +2160,7 @@ begin
             dir := tdDuplicateLocal;
           end;
         end;
-        // Le plafond vaut aussi pour les selections elles-memes: sans ce test,
-        // une file en pause recevrait commande sur commande. Entiere ou rien.
+        // Plafond des la selection, sinon une file en pause enfle. Tout ou rien.
         if not FEngine.CanEnqueue(Length(ACmd.Sources)) then
         begin
           EngineNote(Format('Nothing was queued: the queue would hold more ' +
@@ -2285,8 +2170,7 @@ begin
         end;
         for i := 0 to High(ACmd.Sources) do
         begin
-          // Nom de la SOURCE, par ses regles: la destination prendrait un chemin
-          // Windows entier pour un seul nom.
+          // regles de la SOURCE: sinon un chemin Windows entier devient un nom
           if dir = tdUpload then
             name := FLocal.BaseName(ACmd.Sources[i])
           else if dir = tdDownload then
@@ -2333,8 +2217,7 @@ begin
   end;
 end;
 
-// Erreur qui condamne la session sur une operation ordinaire: l'onglet passe
-// en echec, il n'affiche pas un bandeau sous un etat « connected ».
+// Pas de bandeau d'erreur sous un « connected » menteur.
 procedure TSftpTransport.FailIfFatal(const AErr: TScpError);
 begin
   if Terminated then Exit;
@@ -2380,30 +2263,26 @@ begin
     cmd := TakeCommand;
     if cmd = nil then
     begin
-      // Rien a servir: si une commande a interrompu la file, c'est ici qu'elle
-      // reprend. Sans ce retour, un listing pendant un lot laissait la suite a quai.
+      // la file interrompue par une commande reprend ici, sinon elle reste a quai
       if (not IsPaused) and FQueue.HasRunnable then
       begin
         DoRunQueue;
         Continue;
       end;
-      // Configurer le keepalive ne l'envoie pas: c'est cet appel qui emet la sonde.
-      // Sans lui, une session sans trafic est jetee par le premier NAT venu, reglage
-      // en place ou non. Pendant un transfert les donnees suffisent; ici, a vide, non.
+      // keepalive_config n'envoie RIEN: sans cet appel, le premier NAT venu
+      // jette la session inactive.
       if FParams.KeepaliveS > 0 then
       begin
         secondsToNext := 0;
         rc := libssh2_keepalive_send(FSession, @secondsToNext);
-        // Seul EAGAIN se differe: une sonde qui ne part pas est exactement le signe
-        // de connexion perdue qu'elle cherchait.
+        // Seul EAGAIN se differe: une sonde qui ne part pas a trouve ce qu'elle cherchait.
         if (rc < 0) and (rc <> LIBSSH2_ERROR_EAGAIN) then
         begin
           Fail('Connection lost (keepalive): ' + LastErrorText);
           Exit;
         end;
       end;
-      // Attente REVEILLABLE et bornee: le reveil periodique fait revoir Terminated
-      // meme si l'evenement s'est perdu.
+      // bornee: Terminated se revoit meme si l'evenement s'est perdu
       FCmdEvent.WaitFor(200);
       Continue;
     end;
@@ -2415,11 +2294,9 @@ begin
         on E: Exception do
         begin
           EngineNote('SFTP: ' + E.Message);
-          // Une exception a pu laisser un element tenu: personne d'autre ne le
-          // relachera, et il resterait « en cours » sans meme etre reessayable.
+          // element tenu: personne d'autre ne le relachera
           FQueue.FailCurrent(MakeScpError(sekOther, 'Transferring', '',
             E.Message));
-          // Et sans reponse, le panneau qui attend resterait occupe pour toujours.
           AnswerAfterException(cmd, E.Message);
         end;
       end;
@@ -2436,8 +2313,7 @@ var
 begin
   if FSftp <> nil then
   begin
-    // Bloquant a la fermeture: mieux vaut un court delai que des poignees
-    // laissees ouvertes cote serveur.
+    // bloquant: un court delai plutot que des poignees orphelines cote serveur
     libssh2_session_set_blocking(FSession, 1);
     libssh2_session_set_timeout(FSession, SHUTDOWN_GRACE_MS);
     libssh2_sftp_shutdown(FSftp);
@@ -2479,8 +2355,7 @@ var
       hostStr := FParams.Host;
       portStr := IntToStr(FParams.Port);
     end;
-    // getaddrinfo n'est pas interruptible et l'onglet JOINT ce thread: sans
-    // resolution annulable, fermer gelerait l'interface le temps du timeout DNS.
+    // ANNULABLE: l'onglet JOINT ce thread, getaddrinfo gelerait l'UI.
     if not ResolveCancellable(AnsiString(hostStr), AnsiString(portStr),
          @IsAborted, res, resErr) then
     begin
@@ -2548,8 +2423,7 @@ begin
       if not ResolveAndConnect then Exit;
       if Terminated then Exit;
       if not Handshake then Exit;
-      // La cle verifiee est celle de la CIBLE, meme derriere un bastion: c'est
-      // FParams.Host qui la nomme.
+      // cle de la CIBLE (FParams.Host), meme derriere un bastion
       if not VerifyHostKey then Exit;
 
       SetState(rssAuthenticating);
@@ -2576,7 +2450,7 @@ begin
       Cleanup;
     except
       on E: Exception do
-        ;   // deja en fermeture: rien de plus a tenter
+        ;   // deja en train de mourir
     end;
     FStates.TryTransitionTo(rssDisconnecting);
     FStates.TryTransitionTo(rssDisconnected);

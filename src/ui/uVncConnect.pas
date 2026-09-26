@@ -2,9 +2,6 @@ unit uVncConnect;
 
 {$mode objfpc}{$H+}
 
-// Ouverture d'une session VNC. Meme forme que uSshConnect et uRdpConnect:
-// revalider le document, resoudre le credential, creer l'onglet.
-
 interface
 
 uses
@@ -65,7 +62,7 @@ begin
       Exit;
     end;
 
-    // le document est une entree non fiable: revalider avant d'ouvrir la socket
+    // document = entree non fiable: revalider avant la socket
     host := node.Hostname;
     if not ValidateHostname(host, vErr) then
     begin
@@ -81,8 +78,7 @@ begin
     cfg := Default(TVncConfig);
     cfg.Host := host;
     cfg.Port := node.Port;
-    // ClipboardTextEnabled est un reglage de SECURITE: le profil a le dernier
-    // mot, aucune constante ne doit le rallumer derriere le dos de l'utilisateur
+    // Presse-papiers = reglage de SECURITE: le profil seul decide, pas une constante
     AModel.GetVncProfile(AConnUuid, pfShared, pfViewOnly, pfClip,
       pfCompress, pfQuality);
     cfg.Shared := pfShared;
@@ -91,12 +87,11 @@ begin
     cfg.QualityLevel := pfQuality;
     cfg.ViewOnly := pfViewOnly;
     cfg.ViewActualSize := AModel.GetVncActualSize(AConnUuid);
-    // reconnexion auto = le transport GARDE le mot de passe pour rejouer
-    // l'authentification (efface a sa destruction)
+    // reconnexion auto: le transport GARDE le mot de passe jusqu'a sa destruction
     AModel.GetVncReconnect(AConnUuid, cfg.AutoReconnect,
       cfg.MaxReconnectAttempts);
 
-    // VNC n'a pas de nom d'utilisateur: on ne demande QUE le mot de passe.
+    // VNC: pas de nom d'utilisateur, le mot de passe SEUL.
     if node.InheritCredential then
       credUuid := AModel.ResolveFolderCredential(node.ParentUuid,
         node.Protocol, srcFolder)
@@ -150,7 +145,7 @@ begin
       Exit;
     end;
 
-    // charger ICI et pas dans le thread: un echec doit sortir en message clair
+    // ICI, pas dans le thread: un echec doit sortir en message clair
     try
       VncEnsureLoaded;
     except
@@ -161,8 +156,7 @@ begin
       end;
     end;
 
-    // le tunnel SSH est la seule chose qui chiffre une session VNC: RFB, lui,
-    // ne chiffre rien
+    // RFB ne chiffre rien: le tunnel SSH est le seul rempart
     jumpUuid := AModel.ResolveJumpVia(AConnUuid);
     if jumpUuid <> '' then
     begin

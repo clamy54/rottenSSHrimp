@@ -2,9 +2,8 @@ unit uLibVncApi;
 
 {$mode objfpc}{$H+}
 
-// Binding dynamique libvncclient 0.9.x, charge par chemins absolus. Acces par
-// OFFSET: la disposition de rfbClient depend des options de compilation. Pieges:
-// rfbBool est un int8_t; rfbInitClient LIBERE le client quand il echoue.
+// libvncclient 0.9.x par OFFSET: rfbClient change avec les options de build.
+// Pieges: rfbBool = int8_t; rfbInitClient LIBERE le client quand il echoue.
 
 interface
 
@@ -17,12 +16,9 @@ type
   PVncClient = Pointer;
 
 const
-  // Offsets rfbClient (scripts/gen-vnc-offsets.c), trois jeux: SOCKET et
-  // pthread_mutex_t n'ont pas la meme taille selon l'OS. Ils supposent TOUS la
-  // config epinglee de build-libvnc.sh: zlib ET JPEG actifs, TLS/SASL absents.
-  // Sans JPEG, clientData recule de 32 octets et sizeof de 40 -- assez pour
-  // passer le controle de taille et echouer sur la disposition.
-  // scripts/check-vnc-offsets.sh confronte cette table a la lib construite.
+  // gen-vnc-offsets.c; un jeu par OS (SOCKET, pthread_mutex_t). Config de
+  // build-libvnc.sh OBLIGATOIRE: zlib+JPEG, sans TLS/SASL. Sans JPEG tout
+  // recule et passe quand meme le controle de taille. check-vnc-offsets.sh.
 {$IFDEF WINDOWS}
   VNC_OFF_FRAMEBUFFER          = 0;
   VNC_OFF_WIDTH                = 8;
@@ -150,7 +146,7 @@ const
   VNC_WAIT_ERROR = -1;
 
 type
-  // Rappels appeles depuis le thread de session, jamais l'UI. cdecl obligatoire.
+  // Appeles sur le thread de session, JAMAIS l'UI. cdecl obligatoire.
   TVncGotFrameBufferUpdate = procedure(AClient: PVncClient;
     x, y, w, h: cint); cdecl;
   TVncFinishedFbUpdate = procedure(AClient: PVncClient); cdecl;

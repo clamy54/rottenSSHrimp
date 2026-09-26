@@ -2,8 +2,7 @@ unit uContainerCmd;
 
 {$mode objfpc}{$H+}
 
-// Composition de la commande distante d'un conteneur. Unite
-// PURE, donc testable: c'est ici que se joue la defense contre l'injection.
+// Unite PURE: toute la defense contre l'injection shell se joue ici.
 
 interface
 
@@ -17,8 +16,7 @@ const
 
 function ShQuote(const S: string): string;
 
-// Echecs classes par CODE de sortie: 90 moteur, 91 conteneur, 92 shell.
-// AContainerName DOIT etre deja valide (ValidateContainerName).
+// AContainerName DOIT sortir de ValidateContainerName.
 function BuildContainerCommand(AEngine: TContainerEngine;
   const AContainerName: string; AShell: TContainerShell): string;
 

@@ -2,9 +2,7 @@ unit uSqliteDb;
 
 {$mode objfpc}{$H+}
 
-// Wrappers RAII SQLite + durcissement.
-// Un .rsh est une entree non fiable: Harden doit etre appele avant
-// toute requete sur une base venant de l'exterieur.
+// Un .rsh est une entree HOSTILE: Harden avant toute requete sur une base venue d'ailleurs.
 
 interface
 
@@ -22,7 +20,7 @@ type
 
   TSqliteDb = class;
 
-  // appele dans Commit avant le COMMIT SQL, meme transaction; jamais Commit/Rollback
+  // dans la transaction, juste avant le COMMIT; ne jamais y appeler Commit/Rollback
   TDbBeforeCommit = procedure of object;
 
   TSqliteStmt = class
@@ -62,7 +60,7 @@ type
     procedure Harden;
 
     function Prepare(const ASql: string): TSqliteStmt;
-    // execute une suite d'instructions constantes du binaire (DDL, PRAGMA)
+    // pas de liaison de parametres: toute valeur passe par QuotedStr ou ne passe pas
     procedure ExecScript(const ASql: string);
     function ExecScalarInt(const ASql: string): Int64;
     function ExecScalarText(const ASql: string): string;
@@ -71,7 +69,7 @@ type
     procedure Commit;
     procedure Rollback;
     property BeforeCommit: TDbBeforeCommit read FBeforeCommit write FBeforeCommit;
-    // vrai = ecriture refusee: sans crypto, le MAC ne se re-scelle plus
+    // sans crypto, le MAC ne se re-scelle plus: ecriture refusee
     property MutationsBlocked: Boolean read FMutationsBlocked
       write FMutationsBlocked;
 
@@ -283,7 +281,7 @@ begin
   sqlite3_limit(FDb, SQLITE_LIMIT_FUNCTION_ARG, 8);
   sqlite3_limit(FDb, SQLITE_LIMIT_LIKE_PATTERN_LENGTH, 128);
   sqlite3_limit(FDb, SQLITE_LIMIT_VARIABLE_NUMBER, 64);
-  // ON DELETE CASCADE compte comme recursion de trigger: profondeur d'arbre (64) + marge
+  // ON DELETE CASCADE compte en recursion de trigger: arbre (64) + marge
   sqlite3_limit(FDb, SQLITE_LIMIT_TRIGGER_DEPTH, 128);
   sqlite3_busy_timeout(FDb, 5000);
 end;
@@ -351,8 +349,7 @@ begin
   end;
 end;
 
-// Imbrication: niveau externe = vraie transaction, internes = SAVEPOINT; le
-// scellage BeforeCommit ne part qu'au commit externe.
+// Externe = vraie transaction, internes = SAVEPOINT; BeforeCommit au seul commit externe.
 procedure TSqliteDb.BeginImmediate;
 begin
   if FMutationsBlocked then
@@ -368,8 +365,8 @@ procedure TSqliteDb.Commit;
 begin
   if FTxDepth <= 0 then
     Exit;
-  // decrementer APRES succes seulement: sinon le Rollback de l'appelant verrait
-  // zero, ne ferait rien, et la transaction SQLite restante empoisonnerait la base
+  // Decrementer APRES succes: sinon le Rollback de l'appelant voit zero et
+  // laisse une transaction ouverte empoisonner la base.
   if FTxDepth = 1 then
   begin
     try
@@ -466,8 +463,8 @@ begin
   bk := sqlite3_backup_init(ADest.FDb, 'main', FDb, 'main');
   if bk = nil then
   begin
-    // extended_errcode peut valoir 0: Check ne leverait pas, bk = nil filerait a
-    // backup_step -- deref nul sans SQLITE_ENABLE_API_ARMOR. On leve TOUJOURS.
+    // errcode peut valoir 0 et Check ne pas lever; bk = nil dans backup_step,
+    // c'est le deref nul. On leve TOUJOURS.
     ADest.Check(sqlite3_extended_errcode(ADest.FDb), 'backup_init');
     raise ESqliteDbError.CreateRc(0, 'SQLite [backup_init]: initialisation ' +
       'de la copie refusee');

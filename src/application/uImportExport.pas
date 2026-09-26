@@ -2,9 +2,8 @@ unit uImportExport;
 
 {$mode objfpc}{$H+}
 
-// Import et export, sans dependance LCL (donc testable en console). Aucun
-// secret ne sort JAMAIS: les formats sont incapables d'en transporter, les
-// credentials partent par reference. L'import traite ses entrees comme hostiles.
+// Sans LCL, donc testable. Aucun secret ne sort JAMAIS: credentials par reference.
+// L'import traite ses entrees comme hostiles.
 
 interface
 
@@ -50,12 +49,8 @@ const
   // Refusee avant le parseur: ne protege que sa pile, pas l'arbre du modele.
   MAX_JSON_DEPTH = 256;
   JSON_FORMAT_NAME = 'rottensshrimp-export';
-  // v2: id par noeud, description, timeout_s, inherit_credential, jump_via,
-  // rdp_gateway, container, pod. v3: jump_inherit et folder_jump. Les
-  // fichiers v1 et v2 se relisent tels quels; la version monte parce qu'un
-  // import v2 qui ignorerait jump_inherit rendrait l'hote DIRECT, ce qui
-  // n'est pas la meme chose que ce qui a ete exporte. v4: local_forwards
-  // (tunnels -L); un import v3 les perdrait sans le dire.
+  // v3: jump_inherit (un lecteur v2 rendrait l'hote DIRECT). v4: local_forwards
+  // (un lecteur v3 les perdrait sans rien dire). Les anciennes se relisent.
   JSON_FORMAT_VERSION = 4;
 
 function NewImportReport: TImportReport;
@@ -101,14 +96,8 @@ begin
     refs.Free;
 end;
 
-// Ce qui lie une connexion a une autre (bastion, hote d'un conteneur ou d'un
-// pod) est exporte par l'uuid du noeud vise: l'import le retrouve par la cle
-// « id » de ce noeud, s'il fait partie du meme export.
-// ARoot: le noeud est la racine de l'export. Un hote qui herite d'un
-// bastion pose sur un dossier HORS de l'export perdrait ce bastion sans un
-// mot: a la racine on exporte donc ce qui s'applique reellement, et l'import
-// dira si cette cible manque. Plus bas dans l'arbre, le dossier exporte qui
-// porte le reglage (ou la racine, epinglee dans NodeToJson) suffit.
+// Liens par uuid du noeud vise, retrouve a l'import par sa cle « id ». ARoot: un
+// bastion herite d'un dossier HORS export est fige ici, sinon il se perd en route.
 procedure AddConnectionLinks(AModel: TRshModel; ANode: TRshNode;
   AObj: TJSONObject; ARoot: Boolean);
 var
@@ -150,10 +139,7 @@ begin
           AObj.Add('jump_via', jump)
         else if AModel.GetJumpInherit(ANode.Uuid) then
         begin
-          // A la racine: ce qu'un dossier a tranche pour lui, bastion (cible
-          // exportee, l'import dira si elle manque) ou « direct » explicite
-          // (rien: l'hote arrive en direct). Personne n'a tranche: il
-          // continue d'heriter, du dossier d'accueil cette fois.
+          // Personne n'a tranche: il heritera du dossier d'accueil.
           if ARoot and AModel.FindFolderJump(ANode.ParentUuid, jump) then
           begin
             if jump <> '' then
@@ -238,12 +224,8 @@ begin
     if n.Kind = nkGroup then
     begin
       AddFolderCredentialRefs(AModel, n.Uuid, Result);
-      // bastion du dossier: '' = « direct » explicite, absent = on remonte.
-      // A la racine de l'export, un dossier sans reglage propre epingle ce
-      // qu'un ancetre a tranche, bastion OU « direct » explicite, sinon les
-      // hotes qui heritent changent de chemin en silence a l'import. Si
-      // personne n'a rien dit, on n'epingle rien: heriter du dossier
-      // d'accueil est alors exactement ce qui etait exporte.
+      // '' = « direct » explicite, absent = on remonte. A la racine, on epingle
+      // ce qu'un ancetre a tranche, sinon les hotes changent de chemin en silence.
       if AModel.GetFolderJump(n.Uuid, folderJump) or
          ((ADepth = 0) and AModel.FindFolderJump(n.Uuid, folderJump)) then
         Result.Add('folder_jump', folderJump);
@@ -460,8 +442,7 @@ begin
   Result := TryStrToInt(portStr, APort);
 end;
 
-// LocalForward [adresse:]port hote:port. Un socket Unix n'a pas d'equivalent
-// ici: ecarte, avec le motif.
+// LocalForward [adresse:]port hote:port. Socket Unix: ecarte, avec le motif.
 function ParseLocalForward(const AValue: string; out AFwd: TRshLocalForward;
   out AWhy: string): Boolean;
 var
@@ -499,8 +480,7 @@ begin
     Exit;
   end;
   AFwd.Enabled := True;
-  // l'ecoute se fait toujours sur la boucle locale: une adresse reseau
-  // exposerait le tunnel au voisinage, on ne la reprend pas
+  // boucle locale TOUJOURS: le tunnel n'est pas offert au voisinage
   if (bindAddr <> '') and (bindAddr <> 'localhost') and
      (bindAddr <> '127.0.0.1') and (bindAddr <> '::1') then
     AWhy := Format('listens on this computer only, not on %s', [bindAddr]);
@@ -577,8 +557,7 @@ begin
             raise EImportExportError.CreateFmt(
               'File too large: more than %d entries.',
               [MAX_IMPORT_ENTRIES]);
-          // « Host * » n'est pas un hote; reinitialiser, sinon un HostName pose
-          // sous le motif deborde sur l'hote reel suivant.
+          // « Host * » n'est pas un hote: son HostName deborderait sur le suivant.
           if (Pos('*', value) > 0) or (Pos('?', value) > 0) then
           begin
             rep.Messages.Add(Format('pattern "%s" ignored', [value]));
@@ -602,12 +581,9 @@ begin
         end
         else if (key = 'localforward') and (curHost <> '') then
         begin
-          // espaces multiples entre les deux moities: un seul suffit au decoupage
           while Pos('  ', value) > 0 do
             value := StringReplace(value, '  ', ' ', [rfReplaceAll]);
-          // Chaque ligne se juge SEULE: la fautive (invalide, port deja pris)
-          // est ecartee avec un mot, les autres tunnels de l'hote survivent.
-          // Sinon SetLocalForwards rejetterait la liste entiere plus bas.
+          // Chaque ligne se juge SEULE, sinon SetLocalForwards rejette tout le lot.
           if not ParseLocalForward(value, fwd, why) then
             rep.Messages.Add(Format('"%s": LocalForward %s skipped: %s',
               [curHost, value, why]))
@@ -676,9 +652,6 @@ type
     IsFolder, Inherit: Boolean;
   end;
 
-  // Etat d'un import: la table id d'export -> uuid cree, les conteneurs/pods
-  // en attente de leur hote SSH (cree peut-etre plus loin dans l'arbre) et
-  // les bastions a relier une fois tout le monde en place.
   TImportCtx = class
   public
     IdMap: TStringList;            // 'ancien id=nouvel uuid'
@@ -712,9 +685,9 @@ var
   oldId: string;
 begin
   oldId := ANode.Get('id', '');
-  // '=' separerait mal une cle qui en contient: on ne garde que des ids sains
+  // '=' casserait le couple nom=valeur du TStringList
   if (oldId = '') or (Pos('=', oldId) > 0) then Exit;
-  if IdMap.IndexOfName(oldId) >= 0 then Exit;  // premier arrive, ids dupliques ignores
+  if IdMap.IndexOfName(oldId) >= 0 then Exit;  // doublon: premier arrive gagne
   IdMap.Add(oldId + '=' + ANewUuid);
 end;
 
@@ -741,10 +714,7 @@ begin
   end;
 end;
 
-// Tunnels d'un export v4. CHAQUE entree se juge seule: mal formee, invalide
-// ou en conflit de port, elle est ecartee avec un mot et les AUTRES passent.
-// Valider la liste en bloc ferait perdre les tunnels sains de l'hote pour une
-// seule ligne editee a la main. Le modele revalide l'ensemble par surete.
+// CHAQUE entree se juge seule: une ligne editee a la main ne coule pas les autres.
 procedure ImportLocalForwards(AModel: TRshModel; const AUuid, AName: string;
   AArr: TJSONArray; var AReport: TImportReport);
 var
@@ -811,8 +781,7 @@ begin
   end;
 end;
 
-// Le reste de la connexion, une fois creee: delai, passerelle RDP, bastion
-// (differe: sa cible n'existe peut-etre pas encore).
+// Bastion differe: sa cible n'existe peut-etre pas encore.
 procedure ApplyConnectionExtras(AModel: TRshModel; ACtx: TImportCtx;
   const AUuid, AName, AHost: string; APort: Integer; AInherit: Boolean;
   ANode: TJSONObject; var AReport: TImportReport);
@@ -980,8 +949,7 @@ begin
   end;
 end;
 
-// Conteneurs et pods, une fois tous les hotes SSH crees. Un hote absent de
-// l'export (ou lui-meme ecarte) laisse le noeud de cote, avec le motif.
+// Hote absent ou ecarte: le noeud reste de cote, avec le motif.
 procedure ImportDeferred(AModel: TRshModel; ACtx: TImportCtx;
   var AReport: TImportReport);
 var
@@ -1039,8 +1007,7 @@ begin
   end;
 end;
 
-// Bastions en dernier: la cible doit exister ET etre une connexion SSH sans
-// bastion elle-meme, ce que le modele verifie.
+// En dernier: la cible doit exister. Le modele refuse les bastions en cascade.
 procedure ImportJumps(AModel: TRshModel; ACtx: TImportCtx;
   var AReport: TImportReport);
 var
@@ -1418,7 +1385,7 @@ begin
     entries := 0;
     lineNo := 1;
 
-    // BeginBatch DANS le try: dehors, une levee sautait le RollbackBatch.
+    // BeginBatch DANS le try, sinon une levee saute le RollbackBatch.
     try
       AModel.BeginBatch;
       while ReadCsvRecord(text, cursor, delim, fields, oversized,
@@ -1504,9 +1471,7 @@ begin
           Continue;
         end;
 
-        // « Connect via » et credentials herites du dossier d'accueil: un CSV
-        // ne dit rien du chemin ni des secrets, et c'est le dossier qui sait
-        // par ou l'on joint ces machines. A la racine il n'y a rien a heriter.
+        // Un CSV ne sait rien du chemin ni des secrets: le dossier d'accueil, si.
         if TryCreateConnection(AModel, AParentUuid, name, proto, ip, port, rep,
           newUuid, AParentUuid <> '') then
         begin

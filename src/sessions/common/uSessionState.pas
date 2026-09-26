@@ -2,9 +2,7 @@ unit uSessionState;
 
 {$mode objfpc}{$H+}
 
-// Machine a etats de session distante, partagee SSH/RDP: transitions
-// invalides interdites. Ecrite par le thread de session, lue par l'UI, d'ou le
-// verrou.
+// Etat de session SSH/RDP. Ecrit par le thread de session, lu par l'UI: verrou.
 
 interface
 
@@ -34,9 +32,8 @@ type
     destructor Destroy; override;
 
     function CanTransition(ANext: TRemoteSessionState): Boolean;
-    // leve ESessionStateError si la transition est refusee
     procedure TransitionTo(ANext: TRemoteSessionState);
-    // pour les chemins d'arret, ou deux demandes de fermeture se courent apres
+    // chemins d'arret: deux fermetures peuvent se courir apres
     function TryTransitionTo(ANext: TRemoteSessionState): Boolean;
 
     property State: TRemoteSessionState read GetState;
@@ -65,8 +62,7 @@ end;
 
 function IsTransitionAllowed(AFrom, ATo: TRemoteSessionState): Boolean;
 begin
-  // Tout ce qui n'est pas ici est refuse: pas de retour arriere, pas de
-  // resurrection d'un terminal -- une reconnexion cree une session.
+  // Pas de resurrection: une reconnexion cree une nouvelle session.
   case AFrom of
     rssCreated:
       Result := ATo in [rssConnecting, rssDisconnecting, rssFailed];
@@ -86,8 +82,6 @@ begin
     Result := False;
   end;
 end;
-
-{ TSessionStateMachine }
 
 constructor TSessionStateMachine.Create;
 begin

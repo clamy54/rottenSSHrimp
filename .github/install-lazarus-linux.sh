@@ -1,26 +1,16 @@
 #!/usr/bin/env bash
-# Installe Lazarus 4.8 + FPC 3.2.2 sur un runner Linux amd64. Partage par
-# ci.yml et release.yml.
-#
-# Plus setup-lazarus: il s'arrete a 4.4 et tire tout de SourceForge, qui bride
-# les runners GitHub au point de faire expirer le job -- six fois en une
-# apres-midi. Les .deb officiels viennent donc du miroir clamy54/lazarus-mirror
-# (memes fichiers), SourceForge n'est plus que le secours. Le cache d'actions
-# du workflow evite meme ce premier telechargement d'un run au suivant.
-#
-# Chaque fichier est confronte a son empreinte AVANT d'etre installe, qu'il
-# vienne du miroir, de SourceForge ou du cache: un miroir, un cache ou un
-# telechargement tronque ne doivent pas pouvoir fabriquer le compilateur qui
-# fabrique les binaires publies. Le telechargement va dans un fichier
-# temporaire, renomme une fois verifie: le cache ne contient jamais un
-# fichier a moitie ecrit.
+# Lazarus 4.8 + FPC 3.2.2, runner Linux amd64 (ci.yml, release.yml).
+# Pas setup-lazarus: bloque a 4.4, et SourceForge bride les runners jusqu'au
+# timeout. Miroir d'abord, SourceForge en secours.
+# Empreinte verifiee AVANT installation, d'ou qu'il vienne: le compilateur
+# des binaires publies ne sort pas d'un cache douteux. Temp puis mv.
 set -euo pipefail
 
 mirror="https://github.com/clamy54/lazarus-mirror/releases/download/lazarus-4.8-linux-amd64"
 sf="https://sourceforge.net/projects/lazarus/files/Lazarus%20Linux%20amd64%20DEB/Lazarus%204.8"
 dl="$HOME/laz-dl"; mkdir -p "$dl"
 
-# $1 fichier, $2 empreinte attendue: 0 si elle correspond
+# $1 fichier, $2 SHA-256 attendu
 verify() {
   local got
   got="$(sha256sum "$1" | cut -d' ' -f1)"

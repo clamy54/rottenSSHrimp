@@ -2,9 +2,8 @@ unit uRshEnvelope;
 
 {$mode objfpc}{$H+}
 
-// Enveloppe .rsh v2 : en-tete fixe en clair de 72 octets
-// (magic, versions, sel/parametres KDF, nonce) servant d'AAD, puis AEAD
-// XChaCha20-Poly1305 sur la base SQLite complete. Cle = sous-cle de la KEK.
+// Enveloppe .rsh v2: en-tete clair de 72 octets (magic, versions, sel/KDF,
+// nonce) en AAD, puis XChaCha20-Poly1305 sur la base SQLite. Cle: sous-cle de la KEK.
 
 interface
 
@@ -14,12 +13,12 @@ uses
 const
   ENVELOPE_MAGIC: array[0..7] of AnsiChar = 'RSSHDOC2';
   ENVELOPE_HEADER_BYTES = 72;
-  // plus petite base SQLite valide = une page de 512 octets
+  // 16 = tag Poly1305; 512 = plus petite base SQLite valide
   ENVELOPE_MIN_BYTES = ENVELOPE_HEADER_BYTES + 16 + 512;
 
 function EnvelopeMagicMatches(const ABytes: TBytes): Boolean;
 
-// magic, versions, bornes KDF sur le seul en-tete, sans rien deriver
+// Verifie l'en-tete seul, sans rien deriver.
 function EnvelopeParseHeader(const ABytes: TBytes; out ASalt: TBytes;
   out AOps, AMem: Int64; out ATech: string): Boolean;
 
@@ -27,11 +26,11 @@ function EnvelopeParseHeader(const ABytes: TBytes; out ASalt: TBytes;
 function EnvelopeSeal(const APayload: TBytes; AEnvKey: TSecureBytes;
   const ASalt: TBytes; AOps, AMem: Int64): TBytes;
 
-// False = mdp faux, fichier altere ou tronque -- indistinguables
+// False: mdp faux, fichier altere ou tronque. Indiscernables, EXPRES.
 function EnvelopeOpen(const ABytes: TBytes; AEnvKey: TSecureBytes;
   out APayload: TBytes): Boolean;
 
-// pour les tests: une passe Argon2id complete par appel
+// Tests seulement: un Argon2id complet par appel.
 function EnvelopeSealWithPassword(const APayload: TBytes;
   const APassword: RawByteString; AOps, AMem: Int64): TBytes;
 function EnvelopeOpenWithPassword(const ABytes: TBytes;
@@ -155,7 +154,7 @@ begin
   Move(nonce[0], Result[48], AEAD_NONCE_BYTES);
 
   clen := 0;
-  // AAD = l'en-tete complet: versions et parametres KDF sont authentifies.
+  // AAD = en-tete complet: versions et parametres KDF authentifies
   if crypto_aead_xchacha20poly1305_ietf_encrypt(
       @Result[ENVELOPE_HEADER_BYTES], @clen,
       @APayload[0], Length(APayload),

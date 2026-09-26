@@ -2,9 +2,8 @@ unit uSessionTabBase;
 
 {$mode objfpc}{$H+}
 
-// Classe de base des onglets de session (SSH, RDP, VNC, Broadcast SSH).
-// Prefixe Tab et pas Session: les descendants exposent deja SessionState en
-// PROPRIETE, qu'on ne redeclare pas en virtuelle heritee sans tout casser.
+// Prefixe Tab et pas Session: SessionState est deja une PROPRIETE chez les
+// descendants, la redeclarer en virtuelle casserait tout.
 
 interface
 

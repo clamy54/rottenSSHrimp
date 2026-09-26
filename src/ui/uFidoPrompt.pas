@@ -2,14 +2,8 @@ unit uFidoPrompt;
 
 {$mode objfpc}{$H+}
 
-// Interface des cles de securite: l'avis « touchez votre cle » pendant une
-// session, et l'enrolement d'une nouvelle cle depuis le gestionnaire
-// d'identifiants.
-//
-// L'avis est NON MODAL a dessein: il apparait au milieu d'une connexion, et
-// une modale bloquerait la boucle de messages dont les autres onglets ont
-// besoin. L'enrolement, lui, est un acte volontaire: la fenetre d'attente y
-// est modale, avec un bouton qui annule vraiment (fido_dev_cancel).
+// L'avis « touchez » est NON MODAL: une modale en pleine connexion gelerait
+// les autres onglets. L'enrolement, lui, est modal et annulable (fido_dev_cancel).
 
 interface
 
@@ -18,8 +12,7 @@ uses
   uSecureBytes, uSshFido, uSshSkKeyGen;
 
 type
-  // Petite fenetre sans bouton systeme, posee au-dessus sans voler le focus:
-  // l'utilisateur touche sa cle, il ne tape pas dedans.
+  // au-dessus sans voler le focus: on touche la cle, on ne tape pas dedans
   TFidoTouchNotice = class
   private
     FForm: TForm;
@@ -30,15 +23,12 @@ type
     constructor Create(const AText: string; AOnCancel: TNotifyEvent);
     destructor Destroy; override;
     procedure SetText(const AText: string);
-    // Retire la fenetre sans la detruire: appelable depuis son propre bouton.
+    // sans detruire: appelable depuis son propre bouton
     procedure Hide;
   end;
 
-  // Plomberie commune a TOUS les sites qui lancent un transport (onglet,
-  // cluster, rebond, copy-id): l'avis « touchez » et l'invite PIN. Sans elle,
-  // une cle a PIN echoue partout ailleurs que dans l'onglet simple, sans un mot.
-  // Annuler ferme l'avis et: appelle AOnCancel s'il y en a un, et leve
-  // Cancelled pour les boucles d'attente qui n'ont pas d'objet a arreter.
+  // A brancher sur TOUT site qui lance un transport, sinon une cle a PIN y
+  // echoue sans un mot. Cancelled: pour les boucles sans objet a arreter.
   TFidoSessionPrompts = class
   private
     FNotice: TFidoTouchNotice;
@@ -54,12 +44,9 @@ type
     property Cancelled: Boolean read FCancelled;
   end;
 
-// PIN d'une cle de securite. False = l'utilisateur renonce.
 function AskFidoPin(const APrompt: string; out APin: TSecureBytes): Boolean;
 
-// Enrole une cle sur le token et rend de quoi creer l'identifiant. False avec
-// AErr vide = annulation. Le geste se fait dans un thread: sans cela la fenetre
-// d'attente ne se peindrait pas et le bouton Annuler serait inerte.
+// False avec AErr vide = annulation.
 function EnrollFidoKeyWithDialog(AOwner: TCustomForm;
   const AUserName: string; ARequireUv: Boolean;
   out APrivatePem: TSecureBytes; out APublicLine, AAlgName, AErr: string): Boolean;
@@ -68,8 +55,6 @@ implementation
 
 uses
   SyncObjs, uTheme, uAuthPrompt, uSshKeyGen, uSodiumApi, Dialogs;
-
-{ TFidoTouchNotice }
 
 constructor TFidoTouchNotice.Create(const AText: string; AOnCancel: TNotifyEvent);
 var
@@ -102,8 +87,7 @@ begin
   btn.OnClick := @CancelClick;
 
   ApplyUiFont(FForm);
-  // Show et pas ShowModal: la session continue de vivre derriere, et l'onglet
-  // doit rester utilisable. ShowOnTop volerait le focus au terminal.
+  // pas ShowOnTop: il volerait le focus au terminal
   FForm.Visible := True;
 end;
 
@@ -134,8 +118,6 @@ begin
   Result := AskSecret(APrompt, APin);
 end;
 
-{ TFidoSessionPrompts }
-
 constructor TFidoSessionPrompts.Create(AOnCancel: TNotifyEvent);
 begin
   inherited Create;
@@ -151,9 +133,7 @@ end;
 procedure TFidoSessionPrompts.NoticeCancel(Sender: TObject);
 begin
   FCancelled := True;
-  // On est dans le OnClick du bouton de cette fenetre: la detruire ici, c'est
-  // liberer l'objet dont le gestionnaire est encore sur la pile. On la cache;
-  // l'avis « inactif » du transport, ou le destructeur, la libere plus tard.
+  // On est dans son OnClick: la liberer ici scierait la branche. On cache.
   if FNotice <> nil then
     FNotice.Hide;
   if Assigned(FOnCancel) then
@@ -182,11 +162,8 @@ begin
     FCancelled := True;
 end;
 
-{ Enrolement }
-
 type
-  // L'enrolement bloque jusqu'au geste: il tourne a cote pendant que la
-  // fenetre d'attente se repeint et repond au bouton Annuler.
+  // bloque jusqu'au geste: en thread, sinon la fenetre ne se repeint plus
   TEnrollThread = class(TThread)
   private
     FOp: TFidoOperation;
@@ -195,9 +172,8 @@ type
     FResult: TFidoEnrollment;
     FOk: Boolean;
     FErr: string;
-    // Le PIN est demande par le thread UI: la fenetre est a lui. L'echange
-    // passe par un evenement (barriere memoire comprise), pas par des champs
-    // sondes en boucle: sur ARM64 une publication partielle se verrait.
+    // PIN demande par le thread UI, echange par evenement: des champs sondes
+    // en boucle se publient a moitie sur ARM64.
     FPinWanted: LongInt;      // 0/1, Interlocked
     FPinPrompt: string;
     FPin: TSecureBytes;
@@ -227,10 +203,8 @@ end;
 
 destructor TEnrollThread.Destroy;
 begin
-  // Le worker peut encore tourner si l'appelant est sorti sur une exception
-  // avant son WaitFor: le reveiller s'il attend un PIN, lui retirer le token
-  // s'il attend un geste, le rejoindre, et seulement ensuite liberer ce qu'il
-  // lit. L'ordre inverse lui faisait attendre un evenement deja detruit.
+  // Worker peut-etre vivant (exception avant WaitFor): reveiller, annuler,
+  // rejoindre, et SEULEMENT ensuite liberer ce qu'il lit.
   Terminate;
   FPinCancelled := True;
   if FPinDone <> nil then
@@ -247,11 +221,8 @@ end;
 function TEnrollThread.PinHook(const AReason: string;
   out APin: TSecureBytes): Boolean;
 begin
-  // On publie la demande et on attend que le thread UI la serve; pas de
-  // Synchronize, la boucle d'attente de l'appelant fait deja tourner les
-  // messages et un Synchronize s'y emboiterait mal. Les champs sont ecrits
-  // AVANT le drapeau Interlocked, et relus APRES l'evenement: les deux posent
-  // la barriere qui manquait.
+  // Pas de Synchronize: la boucle de l'appelant pompe deja, il s'y emboiterait.
+  // Champs ecrits AVANT le drapeau Interlocked, relus APRES l'evenement.
   APin := nil;
   FPinPrompt := AReason;
   FPin := nil;
@@ -350,9 +321,8 @@ begin
 
     if th.FOk then
     begin
-      // Windows laisse choisir entre la cle de securite et Windows Hello. Le
-      // second range la cle dans le TPM du poste: elle marche ici, et nulle
-      // part ailleurs. Le document, lui, est fait pour voyager.
+      // Windows Hello range la cle dans le TPM: elle ne quittera jamais ce
+      // poste, le document si.
       if th.FResult.PlatformBound then
         if MessageDlg('Security key',
           'This key was created inside Windows Hello (this computer), not on ' +
@@ -364,7 +334,7 @@ begin
           'Choose No to start over and pick "Security key" in the Windows ' +
           'dialog.', mtWarning, [mbYes, mbNo], 0) <> mrYes then
         begin
-          AErr := '';    // l'utilisateur recommence: pas une erreur
+          AErr := '';
           Exit;
         end;
       SodiumEnsureLoaded;
@@ -380,12 +350,11 @@ begin
       Result := True;
     end
     else if cancel.Cancelled or (th.FErr = 'cancelled') then
-      AErr := ''    // annulation: pas un echec a signaler
+      AErr := ''
     else
       AErr := th.FErr;
   finally
-    // Le key handle a ete recopie dans le PEM (memoire sure); la copie de
-    // travail du thread ne doit pas lui survivre dans le tas.
+    // recopie dans le PEM (memoire sure): la copie du tas ne lui survit pas
     WipeBytes(th.FResult.KeyHandle);
     th.Free;
     notice.Free;

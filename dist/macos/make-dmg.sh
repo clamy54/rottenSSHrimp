@@ -1,23 +1,13 @@
 #!/usr/bin/env bash
-# Cree un .dmg de RottenSSHrimp : une fenetre contenant RottenSSHrimp.app et un
-# raccourci vers /Applications, cote a cote (glisser-deposer pour installer).
-#
-# Prerequis : avoir construit le bundle avec scripts/make-app.sh --release.
-# C'est LUI le pipeline macOS (build + bundle + dylibs rapatriees + shim + .icns
-# + Info.plist + SBOM + signature ad-hoc) ; on ne le duplique pas ici, on
-# empaquette son resultat.
-#
-# Usage : ./make-dmg.sh [version]
+# Empaquette le bundle de scripts/make-app.sh --release (le vrai pipeline macOS).
+# Usage: ./make-dmg.sh [version]
 #   RSSH_SIGN_IDENTITY="Developer ID Application: Nom (TEAMID)" pour signer.
 #
-# Notarisation (optionnelle, pour une vraie distribution) : il faut d'abord une
-# signature Developer ID -- l'ad-hoc de make-app.sh ne suffit pas -- puis :
+# Notarisation: Developer ID obligatoire (l'ad-hoc ne suffit pas), puis
 #   xcrun notarytool submit RottenSSHrimp-<ver>.dmg --keychain-profile <profil> --wait
 #   xcrun stapler staple RottenSSHrimp-<ver>.dmg
-# Profil cree par notarytool store-credentials, jamais ces secrets en clair.
-# Sans ca, Gatekeeper bloque le premier lancement : ouvrir l'app une fois puis
-# l'autoriser dans Reglages Systeme > Confidentialite et securite. C'est normal
-# sur de l'ad-hoc.
+# Profil via notarytool store-credentials, JAMAIS de secrets en clair. Sans
+# notarisation, Gatekeeper bloque le premier lancement: normal en ad-hoc.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
@@ -38,17 +28,13 @@ mkdir -p "$stage"
 cp -R "$app" "$stage/"
 ln -s /Applications "$stage/Applications"
 
-# Les licences voyagent avec le .dmg : le bundle embarque des bibliotheques
-# tierces, donc il les DISTRIBUE. Regroupees dans un dossier pour ne pas
-# encombrer la fenetre d'installation.
+# libs tierces embarquees = DISTRIBUEES: leurs licences voyagent avec
 mkdir -p "$stage/Licenses"
 cp "$root/LICENSE" "$stage/Licenses/LICENSE.txt"
 cp -R "$root/LICENSES/." "$stage/Licenses/"
 
-# Source correspondante GPL de la libvncclient embarquee (GPL-2.0-or-later, et
-# nous la modifions : trois patchs de securite). Le tarball epingle LUI-MEME,
-# verifie avant embarquement : expedier un tarball corrompu serait pire que de
-# l'omettre.
+# Source GPL de libvncclient (patchee). Tarball verifie: expedier un tarball
+# corrompu serait pire que de l'omettre.
 vdir="$root/third_party/libvnc"
 srcdir="$stage/Licenses/source/libvnc"
 mkdir -p "$srcdir"
@@ -69,15 +55,11 @@ cp "$src_tar" "$vdir/SHA256SUMS" "$vdir/README.md" "$srcdir/"
 cp -R "$vdir/patches" "$srcdir/patches"
 cp "$root/scripts/build-libvnc.sh" "$root/scripts/gen-vnc-offsets.c" "$srcdir/"
 
-# Image lecture/ecriture d'abord : la mise en page (positions des icones, taille
-# de la fenetre) vit dans le .DS_Store du volume, donc il faut pouvoir ECRIRE
-# dedans. La compression vient apres.
+# UDRW d'abord: la mise en page vit dans le .DS_Store, il faut y ECRIRE.
 rw="$here/build/rw.dmg"
 rm -f "$rw"
 mb=$(( $(du -sm "$stage" | cut -f1) + 60 ))
-# « hdiutil: create failed - Resource busy » : diskimages-helper tient encore
-# le fichier quelques instants apres une operation precedente, surtout sur les
-# runners CI. Ce n'est pas une erreur de notre part, on reessaie un peu.
+# « Resource busy »: diskimages-helper traine sur le fichier, surtout en CI.
 created=0
 for attempt in 1 2 3 4 5; do
 	if hdiutil create -volname "$vol" -srcfolder "$stage" -ov -format UDRW \
@@ -97,10 +79,8 @@ mnt="$(printf '%s\n' "$att" | grep -o '/Volumes/.*$' | head -1)"
 [ -n "$dev" ] && [ -d "$mnt" ] || { echo "montage du dmg rate" >&2; exit 1; }
 trap 'hdiutil detach "$dev" -force >/dev/null 2>&1 || true' EXIT
 
-# Mise en page via le Finder. BEST EFFORT : le piloter demande une autorisation
-# d'automatisation (TCC) qui peut manquer (CI, machine verrouillee) -> on borne
-# l'attente et on livre sans layout plutot que de bloquer le build. Le dmg reste
-# parfaitement fonctionnel, les icones sont juste mal placees.
+# BEST EFFORT: piloter le Finder exige une autorisation TCC qui peut manquer.
+# Attente bornee; au pire, des icones mal rangees plutot qu'un build bloque.
 layout() {
 	osascript <<-APPLESCRIPT
 	tell application "Finder"
@@ -145,7 +125,7 @@ trap - EXIT
 
 dmg="$here/build/RottenSSHrimp-${ver}.dmg"
 rm -f "$dmg"
-# meme humeur possible du cote de la conversion, juste apres le detach
+# meme humeur a la conversion, juste apres le detach
 converted=0
 for attempt in 1 2 3 4 5; do
 	if hdiutil convert "$rw" -format UDZO -imagekey zlib-level=9 -ov \
@@ -161,7 +141,7 @@ done
 rm -f "$rw"
 rm -rf "$stage"
 
-# Le DMG lui-meme se signe : Gatekeeper verifie le conteneur avant l'app.
+# le conteneur aussi: Gatekeeper le verifie avant l'app
 identity="${RSSH_SIGN_IDENTITY:-}"
 if [ -n "$identity" ]; then
 	codesign --force --timestamp --sign "$identity" "$dmg"

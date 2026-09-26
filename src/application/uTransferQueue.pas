@@ -1,9 +1,6 @@
-{ File de transferts de l'onglet Scp: modele et machine a etats, PURS. Ni LCL,
-  ni reseau, ni disque, ce qui permet de tester ici les cas qu'un serveur reel
-  ne produit qu'au mauvais moment.
-
-  La file est PARTAGEE entre le fil qui transfere et celui qui affiche: tout
-  parcours et toute modification passent par le verrou, chaines comprises.
+{ File de transferts: PURE (ni LCL, ni reseau, ni disque), donc testable.
+  PARTAGEE entre le fil de copie et l'affichage: tout passe par le verrou,
+  chaines comprises.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -19,16 +16,12 @@ uses
 type
   TTransferQueue = class;
 
-  // Le sens designe aussi les deux systemes de fichiers, et rien d'autre ne les
-  // choisit. Une duplication a le meme des deux cotes, d'ou DEUX valeurs:
-  // « ni envoi ni reception » ne dirait pas lequel.
+  // Le sens choisit SEUL les deux systemes de fichiers: d'ou deux duplications.
   TTransferDirection = (tdUpload, tdDownload,
     tdDuplicateLocal, tdDuplicateRemote);
 
-  // tikMakeDir precede ses enfants: c'est l'ordre d'insertion qui le garantit.
-  // tikScanRoot: une selection pas encore examinee; le moteur en fait un
-  // fichier ou un dossier quand il la traite, et une coupure la laisse telle
-  // quelle, a reprendre.
+  // tikMakeDir precede ses enfants par l'ordre d'insertion. tikScanRoot: selection
+  // pas encore examinee, une coupure la laisse telle quelle.
   TTransferItemKind = (tikFile, tikMakeDir, tikScanRoot);
 
   TTransferState = (
@@ -36,7 +29,7 @@ type
     tsEnumerating,
     tsTransferring,
     tsPaused,
-    tsInterrupted,   // connexion perdue en cours: reprise possible
+    tsInterrupted,   // connexion perdue: reprise possible
     tsRetrying,
     tsSkipped,
     tsFailed,
@@ -46,7 +39,7 @@ type
   TTransferStates = set of TTransferState;
 
   TConflictAction = (
-    cnAsk,          // aucune decision prise: il faut demander
+    cnAsk,
     cnOverwrite,
     cnSkip,
     cnKeepBoth,
@@ -58,7 +51,6 @@ type
     ApplyToAll: Boolean;
   end;
 
-  // La cible existante au moment du conflit: sert au dialogue et a la reprise.
   TConflictInfo = record
     SourcePath: string;
     TargetPath: string;
@@ -66,8 +58,7 @@ type
     TargetSize: Int64;
     SourceTimeUtc: Int64;   // secondes Unix, 0 = inconnu
     TargetTimeUtc: Int64;
-    // Un partiel ecrit par nous, aux metadonnees concordantes? Seul cas ou
-    // Resume est offert.
+    // Seulement pour un partiel A NOUS, metadonnees concordantes.
     ResumeAllowed: Boolean;
     ResumeOffset: Int64;
     ResumeRefusedWhy: string;
@@ -88,28 +79,22 @@ type
     FWarning: string;
     FSourceTimeUtc: Int64;
     FSourceMode: LongWord;
-    // 0 est un mode reel: sans ce drapeau, un dossier 0000 serait pris pour
-    // un dossier dont on ne sait rien, et cree ouvert.
+    // Sinon un dossier 0000 passe pour inconnu, et nait grand ouvert.
     FSourceModeKnown: Boolean;
     FAttempts: Integer;
     FDepth: Integer;
-    // Dossier de destination CHOISI par l'utilisateur, hors duquel rien ne sera
-    // ecrit. Pose une fois a la mise en file: le rededuire a l'execution donnerait
-    // une garantie differente selon la profondeur.
+    // Rien ne s'ecrit hors de lui. Fige a la mise en file, pas rededuit en route.
     FTargetRoot: string;
     FOwner: TTransferQueue;
-    // Annulation posee par l'interface, lue a chaque tour de la boucle de copie.
     FCancelRequested: Boolean;
-    // Lot d'origine: « Apply to all » ne vaut que pour lui.
+    // « Apply to all » ne vaut que pour ce lot.
     FBatch: Integer;
-    // Dossier dont le contenu reste a enumerer: le listing a ete coupe par la
-    // session, et une reconnexion doit le reprendre au lieu de l'oublier.
+    // Listing coupe: la reconnexion le reprend au lieu de l'oublier.
     FScanPending: Boolean;
-    // Nom impose a la racine d'un lot (duplication); vide = celui de la source.
+    // Racine d'un lot de duplication; vide = nom de la source.
     FForcedName: string;
-    // Dossier qui a mis cet element en file, 0 pour une selection. C'est lui,
-    // et non le chemin cible, qui dit ce qui descend de quoi: deux lots vers
-    // un meme dossier, ou un nom distant contenant « \ », ne se melangent pas.
+    // 0 = selection. La filiation, pas le chemin cible: deux lots vers le meme
+    // dossier, ou un nom distant contenant « \ », ne se melangent pas.
     FParentId: Int64;
     procedure SetTargetPath(const AValue: string);
     procedure SetError(const AValue: TScpError);
@@ -150,8 +135,8 @@ type
     property ParentId: Int64 read FParentId;
   end;
 
-  // Debit lisse: une moyenne sur la duree ment apres une pause, une mesure
-  // instantanee saute a chaque paquet. Moyenne exponentielle, donc.
+  // Moyenne exponentielle: la moyenne globale ment apres une pause, l'instantane
+  // saute a chaque paquet.
   TRateMeter = class
   private
     FRate: Double;           // octets par seconde
@@ -183,18 +168,16 @@ type
   TTransferQueue = class
   private
     FItems: TFPList;
-    // Int64: jamais remis a zero, il ne doit jamais faire le tour non plus.
+    // Int64: jamais remis a zero, jamais de tour de compteur.
     FNextId: Int64;
     FPaused: Boolean;
     FNextIndex: Integer;
-    // Les decisions « pour tout le lot » portent le numero du lot qui les a
-    // prises: un lot pose pendant qu'un autre pose une question n'en herite pas.
     FBatch: Integer;
     FConflictPolicy: TConflictAction;   // cnAsk = pas de decision globale
+    // Un lot pose pendant la question d'un autre n'herite pas de sa reponse.
     FPolicyBatch: Integer;
     FLock: TCriticalSection;
-    // Element rendu par NextRunnable et pas encore rendu par ReleaseCurrent:
-    // le fil de transfert le tient, personne ne le libere.
+    // Tenu par le fil de copie entre NextRunnable et ReleaseCurrent: intouchable.
     FCurrent: TTransferItem;
     function GetItem(AIndex: Integer): TTransferItem;
     function GetCount: Integer;
@@ -203,41 +186,30 @@ type
     constructor Create;
     destructor Destroy; override;
 
-    // Verrou de la file, recursif: Count et Items ne sont coherents entre eux que
-    // sous lui, et l'affichage le prend le temps de son parcours.
+    // Recursif. Count et Items ne sont coherents entre eux que sous lui.
     procedure Lock;
     procedure Unlock;
 
-    // ABatch: le lot de l'element; 0 = le lot courant, pour un appelant qui n'en
-    // tient pas. Le fil de transfert passe celui de sa commande.
-    // AParent: le dossier dont le parcours ajoute cet element; nil pour une
-    // selection.
+    // ABatch 0 = lot courant. AParent nil = selection.
     function Add(ADirection: TTransferDirection; AKind: TTransferItemKind;
       const ASourcePath, ATargetPath, ADisplayName: string;
       ABatch: Integer = 0; AParent: TTransferItem = nil): TTransferItem;
-    // Descendants de AItem par filiation, dans l'ordre de la file; verrou tenu
-    // par l'appelant.
     procedure CollectDescendantsLocked(AItem: TTransferItem; AInto: TFPList);
-    // Une selection examinee devient ce qu'elle est: fichier ou dossier.
     procedure Rekind(AItem: TTransferItem; AKind: TTransferItemKind;
       const ADisplayName: string);
     procedure Clear;
-    // Retire les elements finis: le curseur est recalcule, sinon un « Clear
-    // completed » ferait sauter un element. L'element TENU reste, meme fini.
+    // L'element TENU reste, meme fini.
     procedure ClearFinished;
     function FindById(AId: Int64): TTransferItem;
 
-    // Seul point de mutation. False = transition refusee: un callback en retard
-    // ne ressuscite pas un element fini.
+    // Seul point de mutation. False: un callback en retard ne ressuscite pas un mort.
     function SetState(AItem: TTransferItem; ANext: TTransferState): Boolean;
     class function IsLegalTransition(AFrom, ATo: TTransferState): Boolean;
 
-    // Prochain element a traiter, nil s'il n'y a rien a faire maintenant. Ce
-    // qu'il rend est TENU jusqu'a ReleaseCurrent.
+    // Ce qu'il rend est TENU jusqu'a ReleaseCurrent.
     function NextRunnable: TTransferItem;
     procedure ReleaseCurrent;
-    // Filet: l'element tenu est declare en echec et relache. Quand le fil sort
-    // par une exception, personne d'autre ne le ferait.
+    // Filet du fil sorti par exception: personne d'autre ne relacherait l'element.
     procedure FailCurrent(const AErr: TScpError);
     function HasRunnable: Boolean;
     procedure RewindCursor;
@@ -246,18 +218,15 @@ type
     procedure ResumeQueue;
     function IsPaused: Boolean;
 
-    // Annule ce qui n'est pas fini. Idempotent. Un element en cours recoit une
-    // DEMANDE; c'est le fil qui le traite qui conclut.
+    // Idempotent. Un element en cours recoit une DEMANDE: son fil conclut.
     procedure CancelAll;
     procedure CancelItem(AItem: TTransferItem);
     function RetryItem(AItem: TTransferItem): Boolean;
     function RetryAllFailed: Integer;
-    // Les INTERROMPUS seuls: une reconnexion les relance, un echec attend un
-    // geste.
+    // Les INTERROMPUS seuls: un echec attend un geste humain.
     function RetryInterrupted: Integer;
 
-    // Nouveau lot, dont le numero est RENDU: c'est la commande qui le porte
-    // jusqu'a la mise en file, pas un compteur lu plus tard par un autre fil.
+    // Numero RENDU et porte par la commande, pas relu plus tard par un autre fil.
     function BeginBatch: Integer;
     procedure SetConflictPolicy(ABatch: Integer; AAction: TConflictAction);
     function ConflictPolicy(ABatch: Integer): TConflictAction;
@@ -283,8 +252,7 @@ const
   TERMINAL_STATES: TTransferStates = [tsSkipped, tsCompleted, tsCanceled];
 
 var
-  // Separateur FIXE, jamais celui de la locale: « 1,5 Mio » ici et « 1.5 MiB »
-  // ailleurs ne serait ni comparable ni copiable dans un rapport.
+  // Separateur FIXE, pas celui de la locale: un rapport doit se comparer.
   GNumFmt: TFormatSettings;
 
 function TransferStateName(AState: TTransferState): string;
@@ -374,8 +342,7 @@ begin
   Result := FState in [tsPending, tsRetrying];
 end;
 
-// Ecrit sous le verrou de la file par l'interface, lu par le fil de copie: le
-// lire sous le meme verrou, sinon rien ne dit quand il le verra.
+// Sous verrou, sinon rien ne dit quand le fil de copie le verra.
 function TTransferItem.CancelRequested: Boolean;
 begin
   if FOwner <> nil then FOwner.Lock;
@@ -386,8 +353,6 @@ begin
   end;
 end;
 
-// Les compteurs sont ecrits par le fil de copie et lus par l'affichage sous
-// le verrou de la file: les ecrire sous lui aussi.
 procedure TTransferItem.SetTotalBytes(AValue: Int64);
 begin
   if FOwner <> nil then FOwner.Lock;
@@ -453,15 +418,13 @@ begin
   if FState in [tsCompleted] then Exit(100);
   if FTotalBytes <= 0 then
   begin
-    // Taille inconnue: 0 tant que rien n'est parti. Inventer un pourcentage ici,
-    // c'est afficher 99 % pendant une heure.
+    // Taille inconnue: pas de pourcentage invente, pas de 99 % pendant une heure.
     if FDoneBytes > 0 then Exit(-1);
     Exit(0);
   end;
   if FDoneBytes >= FTotalBytes then Exit(100);
   if FDoneBytes <= 0 then Exit(0);
-  // Multiplier d'abord deborde au-dela de 92 Pio, diviser d'abord perd toute
-  // precision: diviser le TOTAL par 100 tient les deux.
+  // *100 deborde au-dela de 92 Pio: on divise alors le TOTAL par 100.
   if FTotalBytes > High(Int64) div 100 then
     Result := Integer(FDoneBytes div (FTotalBytes div 100))
   else
@@ -488,8 +451,7 @@ end;
 
 procedure TRateMeter.Sample(ATickMs: QWord; ATotalBytes: Int64);
 const
-  // Poids de la nouvelle mesure: plus haut = nerveux, plus bas = lent a voir
-  // une chute de debit.
+  // Plus haut = nerveux, plus bas = aveugle a une chute de debit.
   ALPHA = 0.25;
 var
   dtMs: QWord;
@@ -503,11 +465,10 @@ begin
     FLastBytes := ATotalBytes;
     Exit;
   end;
-  if ATickMs <= FLastTick then Exit;      // horloge non avancee: rien a dire
+  if ATickMs <= FLastTick then Exit;
   dtMs := ATickMs - FLastTick;
-  if dtMs < 200 then Exit;                // trop court: le bruit domine
+  if dtMs < 200 then Exit;                // en dessous, le bruit domine
   dBytes := ATotalBytes - FLastBytes;
-  // Un compteur qui recule repart a zero plutot que de donner un debit negatif.
   if dBytes < 0 then dBytes := 0;
   inst := (dBytes * 1000.0) / Double(dtMs);
   if FRate <= 0 then
@@ -525,7 +486,6 @@ end;
 
 function TRateMeter.EtaSeconds(ARemainingBytes: Int64): Int64;
 begin
-  // Les deux facons de mentir: diviser par zero, ou dater un reste inconnu.
   if (ARemainingBytes < 0) or (FRate < 1) then Exit(-1);
   if ARemainingBytes = 0 then Exit(0);
   Result := Round(ARemainingBytes / FRate);
@@ -568,7 +528,6 @@ begin
   Result := TTransferItem(FItems[AIndex]);
 end;
 
-// Sous verrou: l'affichage le lit pendant que le fil de transfert ajoute.
 function TTransferQueue.GetCount: Integer;
 begin
   Lock;
@@ -639,19 +598,16 @@ begin
     for i := FItems.Count - 1 downto 0 do
     begin
       it := TTransferItem(FItems[i]);
-      // L'element TENU peut etre fini de son point de vue et encore lu de l'autre:
-      // il attend le prochain nettoyage.
+      // Fini pour la file, encore lu par le fil de copie.
       if it = FCurrent then Continue;
-      // Les echecs RESTENT: leur raison se lit, et « Retry failed » les reprend.
-      // Annuler un echec le rend terminal, donc effacable.
+      // Les echecs RESTENT (raison lisible, « Retry failed »). Annule, c'est fini.
       if it.IsTerminal then
       begin
         it.Free;
         FItems.Delete(i);
       end;
     end;
-    // Le curseur designait l'ancienne liste: le garder ferait sauter des
-    // elements encore a traiter.
+    // Curseur de l'ancienne liste: le garder sauterait des elements.
     RewindCursor;
   finally
     Unlock;
@@ -676,17 +632,15 @@ end;
 class function TTransferQueue.IsLegalTransition(AFrom,
   ATo: TTransferState): Boolean;
 begin
-  if AFrom = ATo then Exit(True);          // idempotence: pas une erreur
+  if AFrom = ATo then Exit(True);
   if AFrom in TERMINAL_STATES then Exit(False);
   case AFrom of
     tsPending:
-      // tsInterrupted depuis l'attente: le contenu d'un dossier coupe a la creation
-      // est interrompu AVEC lui.
+      // Interrompu en attente: le contenu d'un dossier coupe a la creation.
       Result := ATo in [tsEnumerating, tsTransferring, tsPaused, tsSkipped,
         tsFailed, tsCanceled, tsInterrupted];
     tsEnumerating:
-      // Une selection examinee devient fichier ou dossier et se copie dans la
-      // foulee, sans repasser par l'attente.
+      // Selection examinee: copiee dans la foulee, sans repasser par l'attente.
       Result := ATo in [tsTransferring, tsCompleted, tsFailed, tsSkipped,
         tsCanceled, tsInterrupted];
     tsTransferring:
@@ -701,8 +655,7 @@ begin
       Result := ATo in [tsTransferring, tsEnumerating, tsFailed, tsSkipped,
         tsCanceled, tsInterrupted];
     tsFailed:
-      // Un echec n'est pas terminal, mais il repasse par tsRetrying avant
-      // tsTransferring pour que l'interface voie le changement.
+      // Via tsRetrying, pour que l'interface voie le changement.
       Result := ATo in [tsRetrying, tsPending, tsSkipped, tsCanceled];
   else
     Result := False;
@@ -805,8 +758,6 @@ end;
 
 procedure TTransferQueue.PauseQueue;
 begin
-  // Sous verrou: le fil de transfert lit ce drapeau entre deux elements
-  // pendant que l'interface l'ecrit.
   Lock;
   try
     FPaused := True;
@@ -836,9 +787,7 @@ begin
   end;
 end;
 
-// Sous verrou. Un element que personne ne traite passe a tsCanceled; un
-// element en cours recoit la demande et garde son etat, car seul le fil qui
-// ecrit peut dire « je me suis arrete ».
+// En cours: seul le fil qui ecrit peut dire « je me suis arrete ».
 procedure TTransferQueue.CancelLocked(AItem: TTransferItem);
 begin
   if AItem.IsTerminal then Exit;
@@ -860,11 +809,8 @@ begin
   end;
 end;
 
-// Un parent precede toujours ses enfants, et les identifiants croissent avec
-// la position: un seul passage suffit. Les identifiants du sous-arbre sont
-// retenus dans l'ordre ou on les rencontre, donc tries: une recherche
-// dichotomique, et une memoire a la mesure de la file -- pas de l'ecart des
-// identifiants, qui grandit a chaque « Clear completed ».
+// Parent avant enfants, ids croissants: une passe, ids tries, dichotomie. Pas de
+// table indexee par id: l'ecart grandit a chaque « Clear completed ».
 procedure TTransferQueue.CollectDescendantsLocked(AItem: TTransferItem;
   AInto: TFPList);
 var
@@ -904,9 +850,7 @@ begin
   end;
 end;
 
-// Annuler un DOSSIER annule ce qui devait y aller: sans cela sa ligne passe a
-// « annule » et ses fichiers partent quand meme. Ses descendants, pas ce qui
-// vise le meme dossier depuis un autre lot.
+// Un DOSSIER annule emporte ses descendants, pas un autre lot vers le meme lieu.
 procedure TTransferQueue.CancelItem(AItem: TTransferItem);
 var
   i: Integer;
@@ -915,7 +859,7 @@ begin
   if AItem = nil then Exit;
   Lock;
   try
-    CancelLocked(AItem);      // idempotent, silencieux
+    CancelLocked(AItem);
     subtree := TFPList.Create;
     try
       CollectDescendantsLocked(AItem, subtree);
@@ -989,7 +933,6 @@ begin
   end;
 end;
 
-// Sous verrou, tous: poses par le fil de transfert, effaces par l'interface.
 procedure TTransferQueue.SetConflictPolicy(ABatch: Integer;
   AAction: TConflictAction);
 begin
@@ -1051,8 +994,7 @@ begin
         if it.TotalBytes >= 0 then
           Inc(Result.BytesTotal, it.TotalBytes)
         else if not it.IsTerminal then
-          // Une taille inconnue rend le total incomplet: le dire evite une barre qui
-          // depasse 100 % quand elle se decouvre.
+          // Sinon la barre depasse 100 % quand la taille se decouvre.
           Result.BytesTotalIsPartial := True;
       end;
     end;
@@ -1116,7 +1058,6 @@ begin
     AddPart(Format('%d left', [s.Pending + s.Running]));
   if not IsFinished then
     Exit(parts);
-  // « Completed » n'est dit que si tout a reussi. Sinon on nomme ce qui manque.
   if AllSucceeded then
     Result := Format('Completed: %s', [parts])
   else

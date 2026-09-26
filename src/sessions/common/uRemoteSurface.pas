@@ -2,9 +2,7 @@ unit uRemoteSurface;
 
 {$mode objfpc}{$H+}
 
-// Surface de session graphique, BGRA 32 bits de stride impose:
-// rendez-vous entre le thread de session qui blitte et le thread UI qui dessine.
-// Partagee RDP/VNC: rien ici ne connait de protocole ni la LCL.
+// BGRA 32 bits partage RDP/VNC: ni protocole ni LCL ici.
 
 interface
 
@@ -12,8 +10,8 @@ uses
   SysUtils, SyncObjs;
 
 const
-  // 40 Mpx (~160 Mio en BGRA) passent tout ecran existant, 8K
-  // portrait compris, la ou 8192 x 8192 en offriraient 256 a un serveur hostile.
+  // 40 Mpx (~160 Mio) couvrent la 8K portrait; 8192x8192 offrirait 256 Mio
+  // a un serveur hostile.
   REMOTE_MIN_WIDTH = 200;
   REMOTE_MIN_HEIGHT = 200;
   REMOTE_MAX_WIDTH = 8192;
@@ -53,13 +51,13 @@ type
 
     procedure Lock;
     procedure Unlock;
-    // Data et ScanLine ne valent qu'entre Lock et Unlock.
+    // Data et ScanLine: seulement entre Lock et Unlock.
     function ScanLine(AY: Integer): PByte;
     property Data: PByte read FData;
 
     property Width: Integer read GetWidth;
     property Height: Integer read GetHeight;
-    // incrementee a chaque Resize: l'UI sait que sa mise en cache est perimee
+    // change a chaque Resize: cache UI perime
     property Generation: Int64 read FGeneration;
   end;
 
@@ -67,8 +65,8 @@ function RemoteRect(ALeft, ATop, ARight, ABottom: Integer): TRemoteRect;
 function RemoteRectIsEmpty(const AR: TRemoteRect): Boolean;
 function RemoteRectUnion(const A, B: TRemoteRect): TRemoteRect;
 
-// SEPARE de Resize: la GDI FreeRDP alloue w*h*4 des l'annonce du serveur, bien
-// avant Resize -- ne verifier que la offrait 256 Mio a un serveur hostile.
+// SEPARE de Resize: la GDI FreeRDP alloue w*h*4 des l'annonce du serveur,
+// bien avant Resize.
 function RemoteSizeAcceptable(AWidth, AHeight: Integer): Boolean;
 
 implementation
@@ -108,8 +106,6 @@ begin
   Result.Bottom := A.Bottom;
   if B.Bottom > Result.Bottom then Result.Bottom := B.Bottom;
 end;
-
-{ TRemoteSurface }
 
 constructor TRemoteSurface.Create;
 begin
@@ -165,23 +161,20 @@ var
 begin
   if (ASrc = nil) or (AWidth <= 0) or (AHeight <= 0) then
     Exit;
-  // un stride negatif ferait pointer la source n'importe ou
   if ASrcStride <= 0 then
     Exit;
   FLock.Acquire;
   try
     if FData = nil then
       Exit;
-    // Rognage en Int64: sur des coordonnees extremes, ces sommes DEBORDENT en
-    // Integer et laissent passer un Move hors de FData. Le controle doit etre
-    // plus large que le type qu'il controle.
+    // Int64: en Integer ces sommes debordent et le Move sort de FData.
     l64 := ALeft;
     t64 := ATop;
     w64 := AWidth;
     h64 := AHeight;
     if l64 < 0 then
     begin
-      w64 := w64 + l64;   // et non Dec(AWidth, -ALeft): -ALeft deborde en -MaxInt
+      w64 := w64 + l64;   // pas Dec(AWidth, -ALeft): -Low(Integer) deborde
       l64 := 0;
     end;
     if t64 < 0 then

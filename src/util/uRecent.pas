@@ -2,15 +2,9 @@ unit uRecent;
 
 {$mode objfpc}{$H+}
 
-// MRU des documents .rsh (File > Open Recent). recent.json dans AppDataDir, en
-// ecriture atomique ET privee: la liste des documents de connexions d'un
-// administrateur dessine son infrastructure, elle n'a pas a etre lisible par
-// les autres comptes de la machine.
-//
-// Plusieurs instances peuvent tourner en meme temps (un document = un verrou):
-// le fichier est relu avant chaque ajout et a chaque ouverture du menu, dernier
-// ecrivain gagne. Best effort de bout en bout: une MRU illisible ne doit jamais
-// empecher d'ouvrir un document.
+// PRIVEE: la MRU d'un admin, c'est le plan de son infrastructure.
+// Plusieurs instances: relue avant chaque ecriture, dernier ecrivain gagne.
+// Best effort: une MRU illisible n'empeche jamais d'ouvrir un document.
 
 interface
 
@@ -26,8 +20,8 @@ procedure RecentAdd(const APath: string);
 procedure RecentRemove(const APath: string);
 procedure RecentClear;
 function RecentCount: Integer;
-function RecentPath(AIndex: Integer): string;    // chemin BRUT (pour ouvrir)
-function RecentDisplay(AIndex: Integer): string; // assaini (libelle de menu)
+function RecentPath(AIndex: Integer): string;    // BRUT, pour ouvrir
+function RecentDisplay(AIndex: Integer): string; // assaini, pour le menu
 
 implementation
 
@@ -116,10 +110,9 @@ begin
         if FList.Count >= MAX_RECENT then Break;
       end;
     except
-      FList.Clear; // fichier corrompu/verrouille: liste vide, pas d'erreur
+      FList.Clear;
     end;
   finally
-    // sans le finally, un Exit (JSON non-tableau) fuit l'arbre a chaque popup
     root.Free;
   end;
 end;
@@ -140,16 +133,14 @@ begin
     finally
       arr.Free;
     end;
-    // privee, pas seulement atomique: voir l'en-tete de l'unite
     SavePrivateFile(RecentFilePath, data);
   except
     on E: Exception do
-      ;   // best effort: la MRU ne casse jamais l'operation en cours
+      ;
   end;
 end;
 
-// Chemin canonique, pour ne pas lister deux fois le meme document atteint par
-// deux ecritures differentes (symlink, casse, chemin relatif).
+// Un document, une entree, quel que soit le chemin (lien, casse, relatif).
 function Canonical(const APath: string): string;
 begin
   try
@@ -179,7 +170,7 @@ begin
   if APath = '' then Exit;
   full := ExpandFileName(APath);
   if not EntryOK(full) then Exit;
-  RecentReload; // fusion avec ce que les autres instances ont ecrit
+  RecentReload; // les autres instances ont pu ecrire
   DropSame(full);
   FList.Insert(0, full);
   while FList.Count > MAX_RECENT do

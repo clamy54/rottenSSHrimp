@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
-# Fabrique RottenSSHrimp.app (macOS): bundle, dylibs rapatriees, signature.
+# RottenSSHrimp.app: bundle, dylibs rapatriees, signature.
 # Usage: scripts/make-app.sh [--release]
-# PIEGE: pas de NSPrincipalClass dans l'Info.plist -- LCL-Cocoa instancie la
-# classe app depuis cette cle, et NSApplication brut = app inquittable.
+# PIEGE: JAMAIS de NSPrincipalClass dans l'Info.plist. LCL-Cocoa en tire sa
+# classe app, et un NSApplication brut donne une app qu'on ne peut plus quitter.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
-# Empreinte (patches + script + tarball epingle): un simple test « absente »
-# laissait rembarquer une dylib vulnerable apres correction d'un patch.
+# EMPREINTE, pas presence: sinon l'ancienne dylib repart apres un patch.
 vdir="$root/third_party/libvnc"
 want_stamp="$(cat "$vdir/SHA256SUMS" "$root/scripts/build-libvnc.sh" \
   "$vdir"/patches/*.patch 2>/dev/null | shasum -a 256 | awk '{print $1}')"
@@ -19,9 +18,7 @@ if [ ! -f "$vdir/out/lib/libvncclient.1.dylib" ] || [ "$want_stamp" != "$have_st
   "$root/scripts/build-libvnc.sh"
 fi
 
-# La table d'offsets du binding doit decrire la dylib qu'on vient de batir,
-# sinon le bundle embarque une bibliotheque que l'app refusera au chargement:
-# VNC disparait du produit, sans rien de visible hors terminal.
+# sinon VNC disparait du produit, et seul le terminal le sait
 "$root/scripts/check-vnc-offsets.sh"
 
 "$root/scripts/build.sh" "$@"
@@ -38,7 +35,7 @@ chmod +x "$macos/rottensshrimp"
 
 [ -d "$root/themes" ] && cp -R "$root/themes" "$macos/themes"
 
-# Embarquer une bibliotheque, c'est la DISTRIBUER: sa licence voyage avec.
+# embarquer, c'est DISTRIBUER: la licence suit
 if [ -d "$root/LICENSES" ]; then
   rm -rf "$res/LICENSES"
   cp -R "$root/LICENSES" "$res/LICENSES"
@@ -46,8 +43,7 @@ if [ -d "$root/LICENSES" ]; then
 fi
 
 
-# Dylibs dans le bundle: fermeture transitive dans
-# Contents/Frameworks/, chemins en @loader_path, jamais d'absolu.
+# Fermeture transitive dans Frameworks/, @loader_path, JAMAIS d'absolu.
 
 fw="$app/Contents/Frameworks"
 mkdir -p "$fw"
@@ -58,16 +54,14 @@ seeds=(
   "/opt/homebrew/opt/freerdp/lib/libwinpr3.3.dylib"
   "/opt/homebrew/opt/libssh2/lib/libssh2.1.dylib"
   "/opt/homebrew/opt/libsodium/lib/libsodium.26.dylib"
-  # cles de securite FIDO2: optionnelle a l'EXECUTION (l'app demarre sans),
-  # obligatoire dans le BUNDLE -- un paquet qui l'oublie livre a tout le monde
-  # un Credential Manager sans FIDO2, en silence. libcbor suit par transitivite.
+  # optionnelle a l'EXECUTION, obligatoire dans le BUNDLE: sinon FIDO2 manque
+  # chez tout le monde, en silence. libcbor suit.
   "/opt/homebrew/opt/libfido2/lib/libfido2.1.dylib"
-  # la notre, vendorisee et patchee -- le paquet Homebrew 0.9.15
-  # traine CVE-2026-50538 et -44988 (Tight, ecriture hors tas, PRE-AUTH).
+  # la notre, patchee: Homebrew 0.9.15 traine CVE-2026-50538/44988 (PRE-AUTH)
   "${root}/third_party/libvnc/out/lib/libvncclient.1.dylib"
 )
 
-# Pas de tableau associatif: le bash livre avec macOS est un 3.2.
+# pas de tableau associatif: le bash de macOS est un 3.2
 alias_of() {
   case "$1" in
     libsodium.26.dylib) echo "libsodium.dylib" ;;
@@ -111,8 +105,7 @@ bundle_one() {
 echo "embarquement des bibliotheques natives..."
 for s in "${seeds[@]}"; do bundle_one "$s"; done
 
-# Shim RDP: OBLIGATOIRE ici, et RECONSTRUIT -- un shim rassis (batti avant un
-# brew upgrade) serait ecarte au chargement, retour aux offsets en dur.
+# Shim OBLIGATOIRE et RECONSTRUIT: un shim d'avant le brew upgrade serait ecarte.
 echo "construction du shim RDP (obligatoire dans l'app)..."
 "$root/scripts/build-rdp-shim.sh" --strict
 shim="$root/lib/librssh_rdp_shim.dylib"
@@ -122,8 +115,8 @@ if [ ! -f "$shim" ]; then
 fi
 bundle_one "$shim"
 
-# Une reference hors bundle = une app qui marche ici et nulle part ailleurs.
-# `|| true`: sous set -e, un dernier grep bredouille -- le cas nominal -- tuerait.
+# Reference hors bundle = une app qui marche ici et nulle part ailleurs.
+# `|| true`: sous set -e, le grep bredouille du cas nominal tuerait le script.
 leaks="$(for f in "$fw"/*.dylib; do
   [ -L "$f" ] && continue
   otool -L "$f" | tail -n +2 | awk '{print $1}' |
@@ -136,8 +129,7 @@ if [ -n "$leaks" ]; then
 fi
 echo "  $(ls -1 "$fw"/*.dylib | wc -l | tr -d ' ') bibliotheques, aucune reference externe"
 
-# Icone best effort. Artwork detoure: la tuile squircle laissait une marge qui
-# rapetissait l'icone dans le Dock.
+# best effort; artwork detoure, la tuile squircle rapetissait l'icone du Dock
 src_icon="$root/icons/icon-transparent.png"
 [ -f "$src_icon" ] || src_icon="$root/icons/icon.png"
 icon_ok=0
@@ -230,8 +222,8 @@ PLIST
 
 plutil -lint "$app/Contents/Info.plist" >/dev/null
 
-# Signature: ad-hoc = local seulement. RSSH_SIGN_IDENTITY
-# ajoute hardened runtime + entitlements. Interieur vers exterieur, pas --deep.
+# ad-hoc = local seulement. RSSH_SIGN_IDENTITY: hardened runtime + entitlements.
+# De l'interieur vers l'exterieur, pas --deep.
 identity="${RSSH_SIGN_IDENTITY:--}"
 entitlements="$root/packaging/entitlements-macos.plist"
 
@@ -291,14 +283,13 @@ for f in "$fw"/*.dylib; do
   [ -L "$f" ] && continue
   sbom_args+=("$(sbom_desc_of "$(basename "$f")")|$f")
 done
-# ${arr[@]+...}: sous set -u, le bash 3.2 de macOS voit un tableau VIDE comme
-# une variable non liee.
+# ${arr[@]+...}: sous set -u, bash 3.2 prend un tableau VIDE pour non lie
 "$root/scripts/gen-sbom.sh" "$app/Contents/Resources/sbom.cdx.json" \
   "RottenSSHrimp" "$ver" "macos-$(uname -m)" \
   "RottenSSHrimp|$ver|GPL-3.0-or-later|$macos/rottensshrimp|application" \
   ${sbom_args[@]+"${sbom_args[@]}"}
 
-# La signature du bundle scelle Contents/: DERNIERE modification, sans appel.
+# scelle Contents/: DERNIERE modification, sans appel
 codesign "${signflags[@]}" --sign "$identity" "$app"
 
 codesign --verify --deep --strict "$app"
@@ -306,10 +297,10 @@ if [ "$identity" = "-" ]; then
   echo "signature OK (ad-hoc: local seulement, ni distribuable ni notarisable)"
 else
   echo "signature OK ($identity, hardened runtime)"
-  # notarisation: compte Apple + reseau, marche a suivre dans make-dmg.sh
+  # notarisation: voir make-dmg.sh
 fi
 
-# LaunchServices (best effort): -f = relire l'Info.plist d'un chemin deja connu
+# -f: relire l'Info.plist d'un chemin deja connu de LaunchServices
 lsreg=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 [ -x "$lsreg" ] && "$lsreg" -f "$app" 2>/dev/null || true
 

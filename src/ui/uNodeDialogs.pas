@@ -2,11 +2,8 @@ unit uNodeDialogs;
 
 {$mode objfpc}{$H+}
 
-// Dialogues de proprietes des noeuds, construits par code. En « Inherit from
-// parent folder », le dialogue AFFICHE ce que l'heritage resoudrait.
-// Aux couleurs du theme, controles peints compris (uThemedControls): les
-// natifs ne se recolorent pas. Un hote SSH a deux onglets, General et
-// Tunnels: la fenetre occupait deja presque tout un ecran de portable.
+// Controles peints (uThemedControls): les natifs ne se recolorent pas.
+// En « Inherit from parent folder », on AFFICHE ce que l'heritage resoudrait.
 
 interface
 
@@ -51,7 +48,6 @@ type
     Proto: TRshProtocol;
     Combo: TThemedCombo;
     Tags: array of string;
-    // entree existante du Credential Manager, en plus des secrets saisis ici
     MgrCombo: TThemedCombo;
     MgrUuids: TStringList;
     UserLbl, DomainLbl, PassLbl, KeyLbl, PhraseLbl: TLabel;
@@ -93,9 +89,7 @@ type
     FHasStoredKey: Boolean;
     FY: Integer;
 
-    // Pages: une seule sans onglets (dossiers, RDP, VNC), deux pour SSH.
-    // FPage est la page EN CONSTRUCTION, ou AddRow/AddEdit posent leurs
-    // controles; FPageY garde le bas de chacune.
+    // FPage: la page EN CONSTRUCTION, cible d'AddRow/AddEdit
     FPages: array of TPanel;
     FPageY: array of Integer;
     FCurPage: Integer;
@@ -104,7 +98,6 @@ type
     FTabs: TThemedTabs;
     FOkBtn, FCancelBtn: TThemedButton;
 
-    // Onglet Tunnels (hote SSH seulement)
     FFwdModel: TRshModel;
     FFwdConn: string;
     FFwdPageIdx: Integer;
@@ -146,8 +139,7 @@ type
     procedure UpdateFolderSections;
     function SectionTag(const ASec: TFolderCredSection): string;
   protected
-    // Entree/Echap: les boutons peints ne sont pas des TButton, la LCL ne
-    // leur route pas Default/Cancel.
+    // boutons peints: la LCL ne leur route pas Default/Cancel
     procedure KeyDown(var Key: Word; Shift: TShiftState); override;
     procedure KeyPress(var Key: Char); override;
   public
@@ -155,8 +147,7 @@ type
     destructor Destroy; override;
   end;
 
-// TransparentColor est ignore sur un glyph Cocoa: on peint sur un fond masque,
-// converti ensuite en alpha=0.
+// Cocoa ignore TransparentColor: fond masque, converti ensuite en alpha=0
 procedure MakeEyeGlyph(ABmp: TBitmap; ACrossed: Boolean);
 const
   MASK = clFuchsia;
@@ -240,8 +231,7 @@ begin
     Result.Visible := False;
 end;
 
-// Pose la barre d'onglets au-dessus de la page General deja commencee, et
-// cree les pages suivantes. A appeler AVANT de construire celles-ci.
+// AVANT de construire les pages suivantes: c'est elle qui les cree.
 procedure TNodeDialog.EnableTabs(const ACaptions: array of string);
 var
   i: Integer;
@@ -296,7 +286,6 @@ begin
     ModalResult := mrCancel;
     Exit;
   end;
-  // Ctrl+Tab passe d'un onglet a l'autre, comme partout ailleurs
   if (Key = VK_TAB) and (ssCtrl in Shift) and (FTabs <> nil) then
   begin
     if ssShift in Shift then
@@ -311,8 +300,7 @@ begin
      not (ActiveControl is TThemedButton) then
   begin
     Key := 0;
-    // Entree dans la saisie d'un tunnel: l'ajouter (ou le mettre a jour),
-    // pas enregistrer toute la fenetre avec un tunnel oublie en chemin.
+    // dans la saisie d'un tunnel: l'ajouter, pas enregistrer sans lui
     if FwdOwnsFocus then
     begin
       if FFwdList.Selected >= 0 then
@@ -327,7 +315,7 @@ begin
   inherited KeyDown(Key, Shift);
 end;
 
-// Le #13 d'une touche Entree deja traitee fait biper le champ sous Windows.
+// #13 d'un Entree deja traite: Windows bipe
 procedure TNodeDialog.KeyPress(var Key: Char);
 begin
   if (Key = #13) and not (ActiveControl is TCustomMemo) then
@@ -350,7 +338,7 @@ destructor TNodeDialog.Destroy;
 var
   i: Integer;
 begin
-  // sans ce relachement, le presse-papiers reste gele jusqu'a la fin du process
+  // sinon le presse-papiers reste gele jusqu'a la fin du process
   if FPassRevealed then
   begin
     FPassRevealed := False;
@@ -388,8 +376,7 @@ begin
   Inc(FY, 34);
 end;
 
-// Toutes les pages prennent la hauteur de la plus haute: changer d'onglet ne
-// fait pas sauter la fenetre ni ses boutons.
+// hauteur de la plus haute page: changer d'onglet ne fait rien sauter
 procedure TNodeDialog.AddButtons(const AOkCaption: string);
 var
   i, h, y: Integer;
@@ -478,8 +465,7 @@ begin
       'The key is read now and stored encrypted in the document.'
   else
     FHintLbl.Caption := 'Shared credential from the Credential Manager.';
-  // les cadres des champs sont peints par la page: un champ qui reapparait
-  // n'invalide que lui-meme, pas le cadre autour
+  // cadres peints par la page: un champ qui reapparait n'invalide que lui
   FPages[0].Invalidate;
 end;
 
@@ -572,7 +558,6 @@ begin
     end;
 end;
 
-// Liste les entrees du Credential Manager utilisables pour ce protocole.
 function FillSectionMgrCombo(AModel: TRshModel;
   var ASec: TFolderCredSection): Boolean;
 var
@@ -585,7 +570,7 @@ begin
   try
     for i := 0 to list.Count - 1 do
     begin
-      // une cle SSH est refusee au connect par RDP/VNC: ne pas la proposer
+      // RDP/VNC refuseraient la cle au connect: ne pas la proposer
       if (ASec.Proto <> rpSsh) and
          (list[i].AuthType in [atManagedKey, atSshKey, atFidoKey]) then
         Continue;
@@ -637,7 +622,6 @@ begin
   sec.Combo.ItemIndex := 0;
   Inc(FY, 34);
 
-  // meme ligne pour toutes les sections: visible seulement en mode gestionnaire
   sec.MgrCombo := TThemedCombo.Create(Self);
   sec.MgrCombo.Parent := FPage;
   sec.MgrCombo.Style := csDropDownList;
@@ -709,7 +693,7 @@ begin
   begin
     FPassEdit.PasswordChar := #0;
     FPassEye.Glyph := tbgEyeCrossed;
-    // en clair, Cocoa redonne un champ copiable: on gele l'annonce presse-papiers
+    // en clair, le champ redevient copiable: on gele le partage presse-papiers
     if not FPassRevealed then
     begin
       FPassRevealed := True;
@@ -751,7 +735,7 @@ begin
     Result := RDP_GATEWAY_DEFAULT_PORT;
 end;
 
-// Possede = un seul usage, modifiable en place; un credential gere, jamais.
+// possede = un seul usage, modifiable en place; un credential gere, jamais
 function IsOwnedCredential(AModel: TRshModel;
   const ACredUuid: string): Boolean;
 begin
@@ -793,7 +777,7 @@ begin
   try
     fs := TFileStream.Create(APath, fmOpenRead or fmShareDenyNone);
     try
-      // taille lue UNE FOIS: en fmShareDenyNone, la relire faisait deborder tmp
+      // taille lue UNE FOIS: en fmShareDenyNone, elle bouge sous nos pieds
       n := fs.Size;
       if n = 0 then
       begin
@@ -857,7 +841,7 @@ begin
   try
     for i := 0 to list.Count - 1 do
     begin
-      // une cle SSH est refusee au connect par RDP/VNC: ne pas la proposer
+      // RDP/VNC refuseraient la cle au connect: ne pas la proposer
       if (AProto <> rpSsh) and
          (list[i].AuthType in [atManagedKey, atSshKey, atFidoKey]) then
         Continue;
@@ -876,8 +860,7 @@ begin
   end;
 end;
 
-// ACanInherit: l'hote est DANS un dossier. A la racine du document il n'y a
-// aucun dossier au-dessus, l'entree n'aurait jamais de valeur a resoudre.
+// ACanInherit: l'hote est DANS un dossier; a la racine, rien a heriter
 procedure FillCredCombo(ADlg: TNodeDialog; AModel: TRshModel;
   const ASelectedUuid: string; AProto: TRshProtocol; AInherit: Boolean;
   ACanInherit: Boolean);
@@ -908,8 +891,7 @@ begin
   ADlg.FCredCombo.ItemIndex := ADlg.FCredUuids.IndexOf(TAG_ASK);
   if ASelectedUuid = '' then
   begin
-    // heritage pose sur un hote de racine (import CSV d'avant): l'entree
-    // n'existe pas ici, on retombe sur « demander au connect »
+    // heritage sur un hote de racine (vieil import CSV): retombe sur « Ask »
     if AInherit and (ADlg.FCredUuids.IndexOf(TAG_INHERIT) >= 0) then
       ADlg.FCredCombo.ItemIndex := ADlg.FCredUuids.IndexOf(TAG_INHERIT);
     Exit;
@@ -950,10 +932,8 @@ begin
     ADlg.FCredCombo.ItemIndex := ADlg.FCredUuids.IndexOf(TAG_ASK);
 end;
 
-{ Filtre les hotes qui rebondissent deja: un seul saut est supporte.
-  AWantInherit ajoute l'entree « heriter du dossier », selectionnee quand
-  AInherit; ASelfUuid vide et AWantInherit = dialogue de DOSSIER, ou l'entree
-  designe le dossier parent. }
+{ Un seul saut: les hotes qui rebondissent deja sont ecartes. ASelfUuid vide
+  + AWantInherit = dialogue de DOSSIER, « heriter » vise alors son parent. }
 procedure FillJumpCombo(ADlg: TNodeDialog; AModel: TRshModel;
   const ASelfUuid, ACurrentJump: string; AWantInherit: Boolean = False;
   AInherit: Boolean = False);
@@ -981,7 +961,7 @@ begin
     offers.Sorted := True;
     AModel.LoadJumpHostOffers(offers);
     filtering := AModel.JumpHostOffersAvailable;
-    // LoadNodes DANS le try: cree avant, offers fuit s'il leve
+    // DANS le try: sinon offers fuit si LoadNodes leve
     nodes := AModel.LoadNodes;
     try
     for i := 0 to nodes.Count - 1 do
@@ -1025,8 +1005,7 @@ begin
     and (ADlg.FJumpUuids[ADlg.FJumpCombo.ItemIndex] = TAG_INHERIT);
 end;
 
-// Les deux etats sont exclusifs cote modele: on pose celui qui est choisi et
-// on efface l'autre, dans cet ordre pour ne jamais laisser les deux poses.
+// Etats exclusifs: poser le choisi PUIS effacer l'autre, jamais les deux a la fois.
 procedure ApplyJumpChoice(AModel: TRshModel; ADlg: TNodeDialog;
   const AConnUuid: string);
 begin
@@ -1040,11 +1019,7 @@ begin
   end;
 end;
 
-{ Onglet Tunnels }
-
-// Hauteur d'un texte coupe aux espaces dans AWidth, a la police d'interface:
-// les libelles de cet onglet sont longs, et une police a chasse fixe en
-// demande une ligne de plus qu'une proportionnelle.
+// a la police d'interface: en chasse fixe, il faut souvent une ligne de plus
 function WrappedHeight(const S: string; AWidth: Integer): Integer;
 var
   words: TStringArray;
@@ -1068,10 +1043,8 @@ begin
   Result := lines * (UiTextHeight('Ag') + 1) + 2;
 end;
 
-// La page Tunnels prend la hauteur de la page General (deja construite): la
-// liste s'etire dans ce qui reste, la saisie reste en bas. Tout ce qui porte
-// du texte est MESURE a la police d'interface (embarquee, souvent a chasse
-// fixe): des cotes fixes coupaient l'introduction et l'invite des champs.
+// Hauteur calee sur la page General, la liste prend le reste. Tout texte est
+// MESURE: la police embarquee rit des cotes fixes.
 procedure TNodeDialog.BuildTunnelsPage(AModel: TRshModel;
   const AConnUuid: string);
 const
@@ -1138,18 +1111,18 @@ begin
     Exit;
   end;
 
-  // largeurs a la mesure de ce qu'elles contiennent (7 = retrait du cadre)
+  // 7 = retrait du cadre
   localW := UiTextWidth('e.g. 10636') + 2 * 7 + 10;
   if localW < 80 then localW := 80;
   portW := UiTextWidth('65535') + 2 * 7 + 14;
   if portW < 64 then portW := 64;
   arrowW := UiTextWidth('→') + 12;
   colonW := UiTextWidth(':') + 10;
-  // le message peut tenir sur trois lignes (conflit de port nomme)
+  // trois lignes: un conflit de port cite les hotes
   msgH := 3 * (UiTextHeight('Ag') + 1) + 2;
   gap := 8;
 
-  // tout ce qui suit la liste, pour lui donner le reste de la hauteur
+  // tout ce qui suit la liste
   after := 10 + lh + 2 + 34 + 36 + 36 + msgH + 4;
   listH := target - FY - after;
   if listH < 170 then
@@ -1162,7 +1135,6 @@ begin
   FFwdList.OnDeleteKey := @FwdRemoveClick;
   Inc(FY, listH + 10);
 
-  // port local  →  destination  :  port
   x := MARGIN + localW + arrowW;
   MkLbl('Local port', MARGIN, FY, localW + arrowW).Tag := THEME_TAG_SECONDARY;
   MkLbl('Destination host', x, FY, 200).Tag := THEME_TAG_SECONDARY;
@@ -1200,7 +1172,7 @@ begin
   FwdSelect(nil);
   UsePage(0);
 end;
-// Couleur posee APRES ThemeControls: le message change en cours de route.
+// couleur posee ici, APRES ThemeControls: le message change en route
 procedure TNodeDialog.FwdSay(const AText: string; AColor: TColor);
 begin
   if FFwdMsg = nil then Exit;
@@ -1259,8 +1231,7 @@ begin
       Exit(True);
 end;
 
-// Marque les tunnels dont le port est deja pris par un AUTRE hote du
-// document: les deux sessions ouvertes en meme temps, l'une echouerait.
+// port pris par un AUTRE hote: ouvertes ensemble, l'une des sessions echoue
 procedure TNodeDialog.FwdRefreshClashes;
 var
   i: Integer;
@@ -1369,7 +1340,7 @@ begin
       'host.', [it.LocalPort]), clScpErr);
     Exit;
   end;
-  // la case « actif » se regle dans la liste: la mise a jour ne la touche pas
+  // « actif » se regle dans la liste, pas ici
   it.Enabled := FFwdList.Item(sel).Enabled;
   FFwdList.Replace(sel, it);
   FwdRefreshClashes;
@@ -1390,8 +1361,7 @@ begin
   FwdRefreshClashes;
 end;
 
-// Une saisie restee dans les champs sans Add ni Update: l'enregistrer sans
-// elle perdrait le tunnel qu'on croit avoir declare.
+// saisie sans Add ni Update: enregistrer perdrait un tunnel qu'on croit declare
 function TNodeDialog.FwdPending: Boolean;
 var
   it, cur: TRshLocalForward;
@@ -1452,8 +1422,6 @@ begin
     Result.FInheritHint := Format('No parent folder provides %s' +
       ' credentials: you will be asked at connect.',
       [UpperCase(PROTOCOL_NAMES[AProto])]);
-  // SSH: General + Tunnels. La barre d'onglets passe au-dessus de la page
-  // General, les autres protocoles gardent une page unique.
   if AProto = rpSsh then
     Result.EnableTabs(['General', 'Tunnels']);
   Result.FNameEdit := Result.AddEdit('Name:', AName);
@@ -1466,7 +1434,7 @@ begin
   Result.FJumpCombo.Parent := Result.FPage;
   Result.FJumpCombo.SetBounds(EDIT_X, Result.FY, EDIT_W, 26);
   Inc(Result.FY, 34);
-  // pas d'heritage a la racine: aucun dossier au-dessus pour porter un bastion
+  // pas d'heritage a la racine: aucun dossier pour porter le bastion
   FillJumpCombo(Result, AModel, AConnUuid, AJumpUuid,
     AModel.JumpInheritAvailable and (AParentUuid <> ''), AJumpInherit);
 
@@ -1506,8 +1474,7 @@ begin
   Result.FUserEdit.SetBounds(EDIT_X, Result.FY, EDIT_W, 26);
   Inc(Result.FY, 34);
 
-  // Domaine: RDP seulement. Ailleurs la ligne reste creee (UpdateAuthRows
-  // la cache) mais ne prend plus de place: 34 px vides de moins.
+  // toujours creee (UpdateAuthRows y touche), mais ne prend de place qu'en RDP
   Result.FDomainLbl := Result.AddRow('Domain:');
   Result.FDomainEdit := TEdit.Create(Result);
   Result.FDomainEdit.Parent := Result.FPage;
@@ -1547,7 +1514,7 @@ begin
 
   Result.FHintLbl := TLabel.Create(Result);
   Result.FHintLbl.Parent := Result.FPage;
-  // AutoSize avant WordWrap: sinon le TLabel s'etire et sort du dialogue
+  // AutoSize avant WordWrap, sinon le label sort du dialogue
   Result.FHintLbl.AutoSize := False;
   Result.FHintLbl.WordWrap := True;
   Result.FHintLbl.SetBounds(EDIT_X, Result.FY, EDIT_W, 32);
@@ -1647,7 +1614,7 @@ begin
   end;
 
   user := Trim(ADlg.FUserEdit.Text);
-  // force a vide en VNC: le champ est masque, l'exiger bloquerait tout
+  // VNC: champ masque, l'exiger bloquerait tout
   if ADlg.FProto = rpVnc then
     user := ''
   else if user = '' then
@@ -1688,7 +1655,7 @@ begin
     owned := IsOwnedCredential(AModel, ACurrentCredUuid);
     if owned then
     begin
-      // secrets nil = inchanges: un champ laisse vide garde sa valeur
+      // secrets nil = inchanges
       AModel.UpdateCredential(ACurrentCredUuid, AConnName, authType,
         user, domain, '', pw, key, phrase);
       ACredUuid := ACurrentCredUuid;
@@ -1704,8 +1671,7 @@ begin
   end;
 end;
 
-// Avant tout batch (modal). Rend False si l'utilisateur doit y revenir: on
-// l'amene sur l'onglet Tunnels, la ou se trouve la saisie en suspens.
+// avant tout batch (modal)
 function ConfirmNoPendingTunnel(ADlg: TNodeDialog): Boolean;
 begin
   Result := not ADlg.FwdPending;
@@ -1928,8 +1894,7 @@ begin
     Exit(True);
   end;
 
-  // Entree du Credential Manager: on la REFERENCE, on ne la recopie pas. Les
-  // secrets saisis dans cette section ne sont alors pas lus.
+  // REFERENCEE, pas recopiee: les secrets saisis ici sont ignores
   if mode = TAG_MANAGED then
   begin
     if (sec^.MgrCombo = nil) or (sec^.MgrCombo.ItemIndex < 0) or
@@ -2044,10 +2009,8 @@ begin
     n.Free;
   end;
   try
-    // Bastion du dossier: il ne s'applique qu'aux hotes regles sur « heriter ».
-    // Un dossier repond direct ou un bastion, jamais « heriter »: on presente
-    // d'emblee ce qui s'applique DEJA, herite d'un dossier au-dessus le cas
-    // echeant, pour qu'un simple Save ne change rien au chemin des sessions.
+    // Pas de « heriter » pour un dossier: on montre ce qui s'applique DEJA,
+    // pour qu'un simple Save ne change pas le chemin des sessions.
     if AModel.JumpInheritAvailable then
     begin
       dlg.AddRow('Connect via:');
@@ -2058,7 +2021,7 @@ begin
       folderJump := AModel.ResolveFolderJump(AUuid);
       FillJumpCombo(dlg, AModel, '', folderJump);
       lbl := dlg.AddRow('');
-      // AutoSize avant WordWrap: sinon le TLabel s'etire et sort du dialogue
+      // AutoSize avant WordWrap, sinon le label sort du dialogue
       lbl.AutoSize := False;
       lbl.SetBounds(EDIT_X, dlg.FY, EDIT_W, 32);
       lbl.WordWrap := True;
@@ -2075,7 +2038,6 @@ begin
       cur := AModel.GetFolderCredential(AUuid, dlg.FSections[i].Proto);
       if cur = '' then Continue;
       dlg.FSections[i].CurCred := cur;
-      // deja une entree du gestionnaire: la reselectionner telle quelle
       if AModel.IsManagedCredential(cur) then
       begin
         mgrIdx := dlg.FSections[i].MgrUuids.IndexOf(cur);

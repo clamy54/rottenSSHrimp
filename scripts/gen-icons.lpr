@@ -2,47 +2,14 @@ program genicons;
 
 {$mode objfpc}{$H+}
 
-// Genere les icones embarquees: le catalogue d'ARBORESCENCE et le jeu de
-// l'onglet de TRANSFERT DE FICHIERS. Les deux partent des memes sources
-// Tabler et du meme reechantillonnage; ce qui les separe est ce qu'on en
-// fait a l'arrivee.
+// Icones embarquees, FCL seule: fpc -O2 scripts/gen-icons.lpr && scripts/gen-icons
 //
+// Arborescence (TREE_<ID>_<VARIANTE>_<N>): monochrome -> alpha repose sur
+// noir et blanc; paires couleur *-dark/*-light prises telles quelles.
+// « -dark » = POUR theme sombre, pas la couleur du trace.
 //
-// A) Arborescence -> resources/icons/tree/, ressources TREE_<ID>_<VARIANTE>_<N>
-//
-// Trois GROUPES (dossiers, hotes, etendu), et pour chacun deux sortes de
-// sources:
-//
-//   1) monochrome    icons/folders/       icons/hosts/
-//      Trace sombre sur fond transparent. On en derive les deux variantes en
-//      reposant l'alpha sur une couleur pleine (noir ou blanc).
-//
-//   2) paires deja faites  icons/folders-dark/ + icons/folders-light/
-//                          icons/hosts-dark/   + icons/hosts-light/
-//      Icones couleur fournies en deux versions. Utilisees telles quelles.
-//      Le suffixe du repertoire designe le THEME vise ("-dark" = pour theme
-//      sombre), et non la couleur du trace.
-//
-//
-//
-// B) Transfert -> resources/icons/transfer/, ressources XFER_<ID>_<N>
-//
-// Source monochrome unique, dans icons/transfer/. Une seule variante est
-// produite, et non une paire ondark/onlight: ce sont des MASQUES. Le blanc
-// n'est la que pour porter l'alpha; l'encre est posee au dessin, a la
-// couleur que le panneau donne a la ligne. Il le faut: un lien s'affiche a
-// la couleur d'accent, un fichier special en avertissement, une entree sans
-// attributs en secondaire. Deux variantes figees rendraient ces couleurs,
-// et avec elles ce qu'elles disent, impossibles.
-//
-// Les tailles y sont plus nombreuses et plus serrees que pour
-// l'arborescence, parce que le rectangle demande suit la hauteur de ligne et
-// la hauteur de barre, qui suivent la police. Le dessin choisit la plus
-// grande taille qui tient et la CENTRE: jamais d'etirement, donc jamais de
-// flou.
-//
-// Outil de build uniquement. Ne depend que de la FCL:
-//   fpc -O2 scripts/gen-icons.lpr && scripts/gen-icons
+// Transfert (XFER_<ID>_<N>): des MASQUES, une seule variante. L'encre se pose
+// au dessin: lien en accent, special en avertissement, et ainsi de suite.
 
 uses
   SysUtils, Classes, Math,
@@ -56,15 +23,14 @@ type
 const
   SIZES: array[0..3] of Integer = (16, 24, 32, 48);
 
-  // Echelle serree: le dessin prend la plus grande qui tient dans le
-  // rectangle, sans etirer. Un trou dans l'echelle se verrait comme une
-  // icone trop petite a cote de son texte.
+  // Serree: le dessin prend la plus grande qui tient, sans etirer. Un trou
+  // ici = une icone naine a cote de son texte.
   XFER_SIZES: array[0..11] of Integer = (12, 14, 16, 18, 20, 22, 24, 28, 32,
     40, 48, 64);
   XFER_DIR = 'transfer';
 
-  ONDARK  = 'ondark';    // affichee sur fond sombre
-  ONLIGHT = 'onlight';   // affichee sur fond clair
+  ONDARK  = 'ondark';
+  ONLIGHT = 'onlight';
 
   GROUP_COUNT = 3;
   GROUPS: array[0..GROUP_COUNT - 1, 0..3] of string = (
@@ -415,9 +381,8 @@ procedure WriteInc;
 var
   s: string;
 begin
-  s := '// GENERE par scripts/gen-icons.lpr -- NE PAS EDITER.'#10 +
-       '// Identifiants d''icones (= noms de fichiers). Stables:'#10 +
-       '// stockes dans nodes.icon_id.'#10 +
+  s := '// GENERE par scripts/gen-icons.lpr: NE PAS EDITER.'#10 +
+       '// IDs = noms de fichiers, stockes dans nodes.icon_id: stables.'#10 +
        'const'#10 +
        PascalArray('TREE_FOLDER_IDS', GroupIds[0]) +
        PascalArray('TREE_HOST_IDS', GroupIds[1]) +
@@ -450,10 +415,8 @@ procedure WriteXferInc;
 var
   s: string;
 begin
-  s := '// GENERE par scripts/gen-icons.lpr -- NE PAS EDITER.'#10 +
-       '// Jeu de l''onglet de transfert. Les identifiants nomment les'#10 +
-       '// ressources XFER_<ID>_<TAILLE>; les tailles sont celles qui'#10 +
-       '// existent reellement, et le dessin ne choisit que parmi elles.'#10 +
+  s := '// GENERE par scripts/gen-icons.lpr: NE PAS EDITER.'#10 +
+       '// Ressources XFER_<ID>_<TAILLE>; seules ces tailles existent.'#10 +
        'const'#10 +
        PascalArray('XFER_ICON_IDS', XferIds) +
        IntArray('XFER_ICON_SIZES', XFER_SIZES);
@@ -488,8 +451,7 @@ begin
   Result := Copy(ALine, p, q - p);
 end;
 
-// Insere un bloc <Resources> vide si le projet n'en a pas encore. Il vit
-// dans <General>, juste avant sa fermeture.
+// <Resources> vit dans <General>, juste avant sa fermeture.
 function WithResourcesBlock(const AText, AEol: string): string;
 var
   p: Integer;
@@ -504,10 +466,8 @@ begin
     Copy(Result, p, Length(Result) - p + 1);
 end;
 
-// AXferOnly: le projet ne recoit que le jeu de transfert. C'est le cas de la
-// suite de fumee, qui peint les memes panneaux que l'application et doit donc
-// peindre les memes icones -- sinon elle verifie un chemin de dessin que
-// personne n'emprunte.
+// AXferOnly: suite de fumee. Memes icones que l'appli, sinon elle teste un
+// chemin de dessin que personne n'emprunte.
 procedure PatchLpi(const AFile: string; AXferOnly: Boolean);
 var
   text, block, line: string;
@@ -607,8 +567,7 @@ begin
       iconId := Rid(files[i]);
       src := LoadPng(srcPath + files[i]);
       try
-        // Blanc plein sous l'alpha de la source: un masque, pas une couleur.
-        // L'encre est choisie au dessin.
+        // blanc plein: un masque, l'encre vient au dessin
         mask := Recolor(src, $FFFF, $FFFF, $FFFF);
         try
           EmitXfer(mask, iconId);
@@ -753,7 +712,7 @@ begin
     WriteInc;
     WriteXferInc;
     PatchLpi(LpiFile, False);
-    // Le projet de fumee ne vit que sur les postes de developpement.
+    // la fumee n'existe que sur les postes de dev
     if FileExists(SmokeLpiFile) then
       PatchLpi(SmokeLpiFile, True);
 

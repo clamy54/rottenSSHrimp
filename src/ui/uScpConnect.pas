@@ -1,15 +1,6 @@
-{ Lancement d'un onglet File Transfer (unites « Scp ») depuis un noeud, sur
-  le modele de uSshConnect.
-
-  Les parametres de connexion sont construits par BuildSshConnectParams, le
-  MEME que pour une session terminal: credentials, heritage de dossier, mots
-  de passe, agent, cles gerees, cles FIDO2, timeouts, keepalives. Il n'y a pas
-  de chemin d'authentification parallele ici, et c'est voulu -- un second
-  chemin serait un second endroit ou oublier une verification.
-
-  Le rebond par bastion passe par EstablishJumpTunnel, comme SSH, RDP et VNC:
-  seule la SOCKET vise 127.0.0.1, la cle d'hote verifiee reste celle de la
-  cible.
+{ Parametres via BuildSshConnectParams, le MEME que le terminal: un second
+  chemin d'authentification serait un second endroit ou oublier un controle.
+  Rebond: seule la SOCKET vise 127.0.0.1, la cle d'hote reste celle de la cible.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -24,23 +15,17 @@ uses
   uRshDocument, uRshModel, uSessionManager, uSessionTabBase, uScpTab,
   uSshTransport, uSshTunnel, uSshTunnelConnect;
 
-// Ouvre un onglet Scp, ou ACTIVE celui qui existe deja pour cette connexion.
-// AErr vide avec un resultat nil = annulation par l'utilisateur.
+// ACTIVE l'onglet existant s'il y en a un. nil + AErr vide = annulation.
 function StartScpSession(APages: TPageControl; ADoc: TRshDocument;
   AModel: TRshModel; AManager: TSessionManager; const AConnUuid: string;
   ANotice: TSessionNoticeEvent; out AErr: string): TScpTab;
 
-// L'item « File Transfer » doit-il apparaitre pour ce noeud? Une seule
-// connexion SSH, et rien d'autre.
 function CanOpenScp(AModel: TRshModel; const AConnUuid: string): Boolean;
 
-// Onglet Scp VIVANT pour cette connexion, nil sinon.
 function ExistingScpTab(APages: TPageControl;
   const AConnUuid: string): TScpTab;
 
-// Parametres et, s'il en faut un, tunnel de rebond. Sert a l'ouverture ET a
-// la reconnexion, par les memes invites: pas de second chemin a oublier.
-// False + AErr vide = annulation.
+// Ouverture ET reconnexion: un seul chemin. False + AErr vide = annulation.
 function BuildScpConnection(ADoc: TRshDocument; AModel: TRshModel;
   const AConnUuid: string; out AParams: TSshConnectParams;
   out ATunnel: TSshTunnel; out ABroker: TSshTunnelBroker;
@@ -63,8 +48,7 @@ begin
     on Exception do Exit;
   end;
   try
-    // nkConnection ET rpSsh seulement: un conteneur n'a pas de systeme de
-    // fichiers joignable en SFTP par son propre compte.
+    // un conteneur n'a pas de SFTP a lui
     Result := (node.Kind = nkConnection) and (node.Protocol = rpSsh);
   finally
     node.Free;
@@ -104,7 +88,7 @@ begin
      ADisplayName, AErr) then
     Exit;
   try
-    // Ni PTY ni shell: cette session n'ouvrira qu'un sous-systeme SFTP.
+    // sous-systeme SFTP seul
     params.RequestPty := False;
     params.ExecCommand := '';
     params.StartupCommand := '';
@@ -141,8 +125,7 @@ begin
   tun := nil;
   broker := nil;
 
-  // Une session de fichiers compte dans le plafond: socket et LIBSSH2_SESSION
-  // a elle.
+  // compte dans le plafond: socket et LIBSSH2_SESSION a elle
   if not AManager.CanOpen then
   begin
     AErr := Format('Limit of %d concurrent sessions reached.',
@@ -157,8 +140,7 @@ begin
       ANotice(Format('%s: file transfer via the SSH jump host.',
         [displayName]));
 
-    // La propriete passe a l'onglet DES l'appel: si le constructeur echoue c'est
-    // lui qui libere, et un params.Free ici libererait une seconde fois.
+    // Possede DES l'appel: si le constructeur echoue, il libere lui-meme.
     handed := params;
     params := nil;
     tab := TScpTab.CreateSession(APages, ADoc, AManager, displayName,
@@ -167,7 +149,6 @@ begin
     tun := nil;
     broker := nil;
     tab.OnNotice := ANotice;
-    // Le bouton « Reconnect » rejoue exactement ce chemin-ci.
     tab.EnableReconnect(AModel, @BuildScpConnection);
     APages.ActivePage := tab;
     tab.Start;

@@ -2,10 +2,8 @@ unit uClusterSshTab;
 
 {$mode objfpc}{$H+}
 
-// Onglet Broadcast SSH facon clusterssh: N terminaux, une barre qui diffuse en
-// OCTETS. Chaque cellule est une VRAIE session, comptee au plafond global.
-// Mode Multi-Terminal: la meme grille sans la barre, on tape dans la cellule
-// qui a le focus (clic, ou Ctrl+Alt+fleches pour passer a la voisine).
+// Facon clusterssh: la barre diffuse des OCTETS. Chaque cellule est une VRAIE
+// session, comptee au plafond global. Multi = meme grille, sans barre.
 
 interface
 
@@ -30,7 +28,7 @@ type
     FTerm: TRottenTerminalControl;
     FTransport: TSshTransport;
     FKnownHosts: TSshKnownHosts;
-    // la cellule POSSEDE son tunnel de rebond; nil = connexion directe
+    // POSSEDE; nil = connexion directe
     FTunnel: TSshTunnel;
     FBroker: TSshTunnelBroker;
     FDisplayName: string;
@@ -38,7 +36,6 @@ type
     FState: TRemoteSessionState;
     FErrorMsg: string;
     FLabel: TLabel;
-    // avis « touchez » et PIN de la cle de securite, par cellule
     FSkPrompts: TObject;
 
     procedure SkCancel(Sender: TObject);
@@ -75,7 +72,7 @@ type
     property Terminal: TRottenTerminalControl read FTerm;
   end;
 
-  // un handle par cellule: 16 sessions cluster comptent pour 16, pas pour 1
+  // un par cellule: 16 cellules comptent pour 16 au plafond, pas pour 1
   TClusterCellHandle = class(TManagedSession)
   private
     FCell: TClusterCell;
@@ -95,7 +92,7 @@ type
     FManager: TSessionManager;
     FGroupName: string;
     FMode: TClusterMode;
-    FCols: Integer;        // colonnes de la derniere mise en page
+    FCols: Integer;
     FClosing: Boolean;
     FBulkHostKeySet: Boolean;
     FBulkHostKeyDecision: TSshHostKeyDecision;
@@ -110,8 +107,6 @@ type
     procedure CellChanged;
     procedure Broadcast(const AData: RawByteString);
     function ModeWord: string;
-    // focus sur la cellule voisine de ACell: en ligne (ADx) ou en colonne
-    // (ADy), en boucle, en sautant ce qui ne peut pas prendre le focus
     procedure FocusNeighbor(ACell: TClusterCell; ADx, ADy: Integer);
     procedure FocusFirstCell;
   public
@@ -274,7 +269,7 @@ begin
   end;
   FreeAndNil(FSkPrompts);   // apres le transport, joint et libere
   FreeAndNil(FBroker);
-  // piege mordu deux fois: la fin de session a pu deposer des appels differes
+  // la fin de session a pu deposer des appels differes
   Application.RemoveAsyncCalls(Self);
   FreeAndNil(FKnownHosts);
   inherited Destroy;
@@ -381,7 +376,7 @@ begin
     ADecision := hkdReject;
     Exit;
   end;
-  // alerte MITM: toujours individuelle, jamais couverte par la decision groupee
+  // alerte MITM: toujours individuelle, jamais en gros
   if AInfo.Verdict = hkChanged then
   begin
     ADecision := AskChangedHostKey(AInfo);
@@ -401,7 +396,6 @@ begin
     AInfo.Fingerprint, AInfo.Blob);
 end;
 
-// La cellule qui a le focus est marquee: c'est elle qui recoit les frappes.
 procedure TClusterCell.UpdateHeader;
 begin
   if (FTerm <> nil) and FTerm.Focused then
@@ -450,7 +444,6 @@ begin
   FMode := AMode;
   Caption := AGroupName + ' — ' + ModeWord;
 
-  // pas de barre en multi: chaque cellule recoit ses propres frappes
   FBar := nil;
   if FMode = cmBroadcast then
   begin
@@ -659,7 +652,6 @@ procedure TClusterSshTab.FocusFirstCell;
 var
   i: Integer;
 begin
-  // une cellule a deja le focus: on ne le deplace pas
   for i := 0 to High(FCells) do
     if (FCells[i] <> nil) and FCells[i].FTerm.Focused then Exit;
   for i := 0 to High(FCells) do
@@ -694,8 +686,7 @@ begin
   begin
     if ADy <> 0 then
     begin
-      // meme colonne, ligne suivante en boucle; la derniere ligne peut etre
-      // incomplete, on saute les cases vides
+      // derniere ligne parfois incomplete: sauter les trous
       row := (row + ADy + rows) mod rows;
       k := row * cols + col;
       if k >= n then Continue;
@@ -719,7 +710,7 @@ end;
 procedure TClusterSshTab.CellFinished(ACell: TClusterCell);
 begin
   CellChanged;
-  // differe: on vient d'un evenement de la cellule, la liberer ici la tue
+  // differe: on est dans un evenement de la cellule, la liberer ici la tue
   if not FClosing then
     Application.QueueAsyncCall(@DeferredRemoveCell, PtrInt(ACell));
 end;
@@ -784,9 +775,7 @@ begin
   FCols := cols;
   cw := FGridHost.ClientWidth div cols;
   ch := FGridHost.ClientHeight div rows;
-  // Meme minuscules, les cellules se REPOSITIONNENT: renoncer ici les
-  // laisserait a leurs anciennes bornes, et apres un retrecissement elles se
-  // chevaucheraient sans que personne ne les remette jamais en place.
+  // Meme minuscules, on REPOSITIONNE: sinon elles se chevauchent pour toujours.
   if cw < 1 then cw := 1;
   if ch < 1 then ch := 1;
   for i := 0 to n - 1 do
@@ -817,13 +806,12 @@ procedure TClusterSshTab.BarKeyDown(Sender: TObject; var Key: Word;
 var
   c: Byte;
 begin
-  // un collage n'emet aucun evenement clavier: sans interception il reste dans
-  // la barre. Ctrl+V ne diffuse donc PAS #22 ici.
+  // un collage n'emet aucune frappe: non intercepte, il reste dans la barre.
+  // Donc Ctrl+V ne diffuse PAS #22.
   {$IFDEF DARWIN}
   if (ssMeta in Shift) and (Key = VK_V) then
   {$ELSE}
-  // sans AltGr: AltGr+V compose un caractere sur certains claviers
-  // (@ en hongrois) qui doit passer, pas coller
+  // sans AltGr: AltGr+V = @ en hongrois, a taper, pas a coller
   if (ssCtrl in Shift) and (not ShiftIsAltGr(Shift)) and (Key = VK_V) then
   {$ENDIF}
   begin
@@ -857,9 +845,7 @@ begin
     VK_RIGHT: begin Broadcast(#27'[C'); Key := 0; end;
     VK_LEFT:  begin Broadcast(#27'[D'); Key := 0; end;
   else
-    // sans AltGr (AltGr+E = euro sur azerty): le caractere compose arrive
-    // par BarUtf8KeyPress et Key := 0 le tuerait. Un vrai Ctrl+Alt+lettre
-    // garde son caractere de controle.
+    // sans AltGr: son caractere arrive par BarUtf8KeyPress, Key := 0 le tuerait
     if (ssCtrl in Shift) and (not ShiftIsAltGr(Shift)) and
        (Key >= Ord('A')) and (Key <= Ord('Z')) then
     begin
@@ -878,7 +864,7 @@ begin
   Broadcast(RawByteString(UTF8Key));
 end;
 
-// Comme uTermControl.DoPasteClipboard, sans bracketed paste: octets bruts.
+// uTermControl.DoPasteClipboard sans bracketed paste: octets bruts
 procedure TClusterSshTab.PasteBroadcast;
 const
   PASTE_MAX = 1024 * 1024;

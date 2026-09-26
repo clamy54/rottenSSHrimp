@@ -2,8 +2,6 @@ unit uRshDocument;
 
 {$mode objfpc}{$H+}
 
-// Cycle de vie du document .rsh: prevalidation, copie de travail
-// privee, remplacement atomique, MAC global du contenu en clair.
 
 interface
 
@@ -18,7 +16,7 @@ type
     decNotRsh,
     decFutureVersion,
     decCorrupt,
-    decBadPasswordOrCorrupt, // mdp faux OU fichier altere: indistinguable
+    decBadPasswordOrCorrupt, // indiscernables, EXPRES
     decTampered,
     decConflict,
     decLocked,
@@ -29,7 +27,7 @@ type
   TDocError = record
     Code: TDocErrorCode;
     UserMessage: string;
-    TechnicalMessage: string;  // sanitize, jamais de secret
+    TechnicalMessage: string;  // jamais de secret
   end;
 
   TRshDocument = class
@@ -44,7 +42,7 @@ type
     FPendingSalt: TBytes;
     FPendingOps: Int64;
     FPendingMem: Int64;
-    // un document non migre se verifie avec le jeu de requetes de SA version
+    // non migre: MAC verifie avec les requetes de SA version
     FSchemaVersion: Integer;
     FDocumentUuid: string;
     FCryptoVersion: Integer;
@@ -77,7 +75,7 @@ type
     function MetaGetBlob(const AKey: string; out AValue: TBytes): Boolean;
     function CanonicalContentBytes: TBytes;
     function ComputeContentMac: TBytes;
-    // callback de pre-commit du FDb: re-scelle dans la transaction courante
+    // pre-commit: re-scelle dans la transaction courante
     procedure SealContent;
     function SaveTo(const ATarget: string; ACheckConflict: Boolean;
       out AErr: TDocError): Boolean;
@@ -121,7 +119,7 @@ type
       out AErr: TDocError): Boolean;
     property Locked: Boolean read FLocked;
 
-    // deballe la DEK puis efface tout: aucun etat touche, une passe Argon2id
+    // aucun etat touche; coute une passe Argon2id
     function VerifyPassword(const APassword: RawByteString): Boolean;
 
     property SourcePath: string read FSourcePath;
@@ -133,7 +131,7 @@ type
     property Db: TSqliteDb read FDb;
   end;
 
-// magic, versions, bornes KDF -- sans deriver ni dechiffrer
+// sans deriver ni dechiffrer
 function PrevalidateRshFile(const APath: string; out AErr: TDocError): Boolean;
 function PrevalidateWorkingSqlite(const APath: string;
   out AErr: TDocError): Boolean;
@@ -184,8 +182,8 @@ const
 
   KDF_ALGORITHM_NAME = 'argon2id13';
 
-  // Tables du MAC global, un jeu FIGE PAR VERSION (le MAC couvre le TEXTE des
-  // requetes). Une table absente d'un jeu se modifie sans detection.
+  // Un jeu FIGE PAR VERSION: le MAC couvre le TEXTE des requetes. Table
+  // absente du jeu = table modifiable sans que personne ne le voie.
   CANONICAL_QUERIES_V1: array[0..14] of string = (
     'SELECT * FROM document_meta WHERE key <> ''content_mac'' ORDER BY key;',
     'SELECT * FROM nodes ORDER BY uuid;',
@@ -334,7 +332,6 @@ const
     'SELECT * FROM sqlite_master WHERE 0;'
   );
 
-  // v12: deux tables de plus a sceller
   CANONICAL_QUERIES_V12: array[0..22] of string = (
     'SELECT * FROM document_meta WHERE key <> ''content_mac'' ORDER BY key;',
     'SELECT * FROM nodes ORDER BY uuid;',
@@ -361,8 +358,7 @@ const
     'SELECT * FROM sqlite_master WHERE 0;'
   );
 
-  // v13: les tunnels entrent sous le sceau. Hors sceau, un tunnel ajoute dans
-  // le fichier a notre insu ouvrirait un port local a la prochaine connexion.
+  // v13: tunnels sous sceau, sinon un tunnel glisse dans le fichier ouvre un port.
   CANONICAL_QUERIES_V13: array[0..23] of string = (
     'SELECT * FROM document_meta WHERE key <> ''content_mac'' ORDER BY key;',
     'SELECT * FROM nodes ORDER BY uuid;',
@@ -431,8 +427,7 @@ begin
         for i := 0 to High(CANONICAL_QUERIES_V7) do
           Result[i] := CANONICAL_QUERIES_V7[i];
       end;
-    // v11 ne change que le CHECK de `credentials`: memes tables, memes colonnes,
-    // donc le meme jeu de requetes canoniques scelle exactement le meme contenu.
+    // v11 ne change qu'un CHECK: meme jeu
     8, 9, 10, 11:
       begin
         SetLength(Result, Length(CANONICAL_QUERIES_V8));
@@ -474,9 +469,7 @@ begin
 end;
 
 {$IFDEF UNIX}
-// False: le systeme n'a pas confirme que le NOUVEAU NOM survivra a une
-// coupure (le contenu, lui, a deja recu son fsync). L'appelant le dit a
-// l'utilisateur au lieu d'annoncer une sauvegarde durable.
+// False: le NOM n'est pas garanti apres coupure (le contenu, si).
 function FsyncDir(const ADir: string): Boolean;
 var
   fd: cint;
@@ -618,7 +611,7 @@ begin
   Result := nil;
   fs := TFileStream.Create(APath, fmOpenRead or fmShareDenyNone);
   try
-    // taille figee UNE fois: la relire pendant la lecture ferait deborder le buffer
+    // taille lue UNE fois: la relire en route deborde le buffer
     n := fs.Size;
     if (AMaxBytes > 0) and (n > AMaxBytes) then
       raise EReadError.CreateFmt('file too large: %d > %d', [n, AMaxBytes]);
@@ -724,8 +717,6 @@ begin
     DeleteFile(OriginSidecarPath(AWorkingPath));
 end;
 
-{ TRshDocument }
-
 constructor TRshDocument.Create;
 begin
   inherited Create;
@@ -738,7 +729,7 @@ destructor TRshDocument.Destroy;
 begin
   ReleaseSourceLock;
   FreeAndNil(FDb);
-  // -wal/-shm survivent a la fermeture: laisses la, un arret propre passe pour un crash
+  // -wal/-shm laisses la: un arret propre passerait pour un crash
   DeleteWorkingArtifacts(FWorkingPath);
   FreeAndNil(FDek);
   FreeAndNil(FMacKey);
@@ -801,7 +792,7 @@ begin
   FindClose(sr);
   if Result then Exit;
 
-  // taille et date se recopient a l'identique; l'inode change a tout rename
+  // taille et date se falsifient; l'inode change a tout rename
   if FileIdentity(FSourcePath, dev, ino) then
     Result := (dev <> FSrcDev) or (ino <> FSrcIno)
   else
@@ -836,8 +827,8 @@ begin
     UnlockFile(FSourceLock);
     FSourceLock := THandle(-1);
     {$IFDEF WINDOWS}
-    // Windows seul: DeleteFile echoue si une autre instance a repris le temoin.
-    // Sous Unix, supprimer un temoin sous flock casserait l'exclusion.
+    // Windows seul (DeleteFile echoue si le temoin est repris). Sous Unix,
+    // supprimer un temoin sous flock casse l'exclusion.
     if FLockPath <> '' then
       DeleteFile(FLockPath);
     {$ENDIF}
@@ -1506,8 +1497,7 @@ begin
       'document verrouille ou cle d''enveloppe absente');
     Exit;
   end;
-  // on ecrit dans la cible REELLE, pas dans le nom. CAPTUREE ici,
-  // validee ici: re-resoudre plus tard rouvrirait la fenetre de substitution.
+  // cible REELLE, resolue UNE fois: re-resoudre rouvre la fenetre de substitution
   realTarget := CanonicalOf(ATarget);
   if realTarget = '' then
     realTarget := ATarget;
@@ -1579,9 +1569,7 @@ begin
     try
       if Length(sealed) > 0 then
         tmpStream.WriteBuffer(sealed[0], Length(sealed));
-      // Le fsync du repertoire ne rend durable que le NOM, pas le contenu.
-      // Windows aussi: sans FlushFileBuffers, le rename puis « saved » ne
-      // survivaient pas a une coupure, le contenu dormant dans le cache.
+      // Le fsync du dossier ne garantit que le NOM. Contenu flushe ici, Windows compris.
       if not FlushToDisk(THandleStream(tmpStream).Handle) then
       begin
         AErr := DocErr(decIo, 'Disk write not confirmed (fsync).',
@@ -1629,16 +1617,13 @@ begin
       DeleteFile(plainTmp);
   end;
 
-  // Le fichier EST remplace: identite enregistree meme si la durabilite du
-  // nom n'est pas confirmee, sinon la prochaine sauvegarde verrait a tort
-  // une « modification externe » (conflit).
+  // Le fichier EST remplace, durable ou pas: sinon faux conflit au prochain Save.
   FSourcePath := ATarget;
   RecordSourceIdentity;
   {$IFDEF UNIX}
   if not dirSynced then
   begin
-    // Ne pas pretendre la sauvegarde acquise: le document reste « a sauver »
-    // et l'utilisateur sait que le fichier, lui, a bien ete remplace.
+    // remplace mais pas garanti: le document reste « a sauver »
     AErr := DocErr(decIo,
       'The file was replaced, but the disk did not confirm that the new ' +
       'name is durable (directory sync failed). A power loss could bring ' +
@@ -1664,8 +1649,7 @@ end;
 procedure TRshDocument.Lock;
 begin
   if FLocked then Exit;
-  // couper le sceau AVANT d'effacer la cle: sinon une mutation passe et laisse
-  // un content_mac perime, donc un document refuse a la reouverture
+  // sceau coupe AVANT la cle: sinon une mutation laisse un content_mac perime
   if FDb <> nil then
   begin
     FDb.BeforeCommit := nil;
@@ -1673,7 +1657,7 @@ begin
   end;
   FreeAndNil(FMacKey);
   FreeAndNil(FDek);
-  // FEnvKey AUSSI: elle ouvre l'enveloppe, donc toute la cartographie du parc
+  // FEnvKey AUSSI: elle ouvre l'enveloppe, donc la carte du parc
   FreeAndNil(FEnvKey);
   FLocked := True;
 end;
@@ -1703,7 +1687,6 @@ begin
   try
     dek := nil;
     Result := UnwrapDek(encDek, dekNonce, kek, uuid, FCryptoVersion, dek);
-    // la DEK deballee ici ne survit pas a la question posee
     FreeAndNil(dek);
   finally
     kek.Free;
@@ -1769,8 +1752,7 @@ begin
     Exit;
   end;
 
-  // verrou de la NOUVELLE cible sans lacher l'ancien: sur echec on doit encore
-  // tenir l'original pour continuer a l'editer
+  // l'ancien verrou tient jusqu'au succes: sur echec, on edite toujours l'original
   newLock := TryLockDocument(ANewPath, held);
   if held then
   begin
@@ -1783,7 +1765,7 @@ begin
     if not UpgradeSchemaIfNeeded(AErr) then Exit;
     Result := SaveTo(ANewPath, False, AErr);
   finally
-    // SaveTo peut LEVER: sans ce finally, newLock resterait detenu a jamais
+    // SaveTo peut LEVER: sans finally, newLock fuit
     if not Result then
     begin
       FReadOnly := wasReadOnly;
@@ -1825,8 +1807,8 @@ var
   procedure RestoreKdfMeta;
   begin
     try
-      // meta d'abord, cle ENSUITE: l'ordre inverse laisserait, sur un commit
-      // rate, un document que ni l'ancien ni le nouveau mot de passe n'ouvre
+      // meta d'abord, cle ENSUITE: l'inverse, sur commit rate, donne un
+      // document qu'aucun des deux mots de passe n'ouvre
       FDb.BeginImmediate;
       try
         MetaSetBlob(META_KDF_SALT, oldSalt);
@@ -1841,7 +1823,7 @@ var
       end;
       RestoreEnvKey;
     except
-      // RestoreEnvKey n'a pas eu lieu: oldEnvKey vit encore, la liberer wipe
+      // pas de RestoreEnvKey: oldEnvKey vit encore, a wiper
       on E: Exception do
       begin
         FreeAndNil(oldEnvKey);
@@ -1856,7 +1838,7 @@ begin
   AErr := NoErr;
   committed := False;
   oldEnvKey := nil;
-  // meme regle que Save: en lecture seule, RIEN ne reecrit le fichier source
+  // lecture seule: RIEN ne reecrit la source
   if FReadOnly then
   begin
     AErr := DocErr(decReadOnly, MSG_READONLY,

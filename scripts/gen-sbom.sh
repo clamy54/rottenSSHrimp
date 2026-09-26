@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 #
-# SBOM CycloneDX 1.5 d'une distribution binaire.
-#
+# SBOM CycloneDX 1.5.
 # Usage: gen-sbom.sh <sortie.json> <produit> <version> <plateforme> <composant>...
-#   composant: "nom|version|licence|chemin[|type]" -- version et licence vides
-#   sont omises du SBOM plutot qu'inventees; type defaut library.
-#
-# Un chemin manquant est un ECHEC: un SBOM qui tait un binaire embarque dit le
-# contraire de ce qu'il prouve. JSON assemble a la main (bash 3.2, pas de jq).
+#   composant: "nom|version|licence|chemin[|type]"; vide = omis, JAMAIS invente;
+#   type par defaut: library.
+# Chemin manquant = ECHEC: un SBOM qui tait un binaire ment. JSON a la main
+# (bash 3.2, pas de jq).
 set -euo pipefail
 
 if [ $# -lt 5 ]; then

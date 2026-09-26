@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
-# Construit une libvncclient VENDORISEE, EPINGLEE et PATCHEE:
-# le paquet Homebrew 0.9.15 traine CVE-2026-50538 et -44988 (Tight, hors tas,
-# PRE-AUTH) qu'aucune release amont ne corrige. La compiler nous-memes fige la
-# config (zlib + JPEG ON, tout le reste OFF) et les offsets de rfbClient.
-# GPL, source correspondante = ce script + les patches + le tarball ARCHIVE
-# dans le depot: le hash seul ne survit pas a la disparition de l'amont.
+# libvncclient VENDORISEE, EPINGLEE, PATCHEE: la 0.9.15 amont traine
+# CVE-2026-50538/44988 (Tight, PRE-AUTH), sans correctif. Config figee (zlib +
+# JPEG, rien d'autre), donc offsets de rfbClient figes aussi.
+# Source GPL = ce script + patches + tarball ARCHIVE: un hash ne survit pas a l'amont.
 
 set -euo pipefail
 
@@ -50,7 +48,7 @@ else NCPU="$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"; fi
 
 mkdir -p "$CACHE"
 
-# La copie ARCHIVEE prime sur le telechargement: c'est elle, la source GPL.
+# la copie ARCHIVEE prime: c'est elle, la source GPL
 if [[ ! -f "${CACHE}/${TARBALL}" ]]; then
   if [[ -f "${VDIR}/${TARBALL}" ]]; then
     echo "==> tarball archive dans le depot"
@@ -77,7 +75,7 @@ tar xzf "${CACHE}/${TARBALL}" -C "$WORK"
 SRC="$(ls -d "${WORK}"/*/)"
 echo "==> source: ${SRC}"
 
-# Ordre lexicographique, --fuzz=0, echec dur: jamais de lib a moitie corrigee.
+# --fuzz=0, echec dur: jamais de lib a moitie corrigee
 for p in "${VDIR}"/patches/*.patch; do
   echo "==> patch $(basename "$p")"
   ( cd "$SRC" && patch -p1 --fuzz=0 <"$p" )
@@ -100,11 +98,9 @@ BUILD="${WORK}/build"
   -DWITH_EXAMPLES=OFF -DWITH_TESTS=OFF \
   >/dev/null
 
-# Les WITH_* ci-dessus ne FIGENT rien: ce sont des « cherche telle bibliotheque ».
-# Introuvable, cmake desactive la fonction et construit quand meme -- une lib
-# sans JPEG recule clientData de 32 octets, assez pour passer le controle de
-# taille de CheckStructLayout et echouer sur la disposition, chez l'utilisateur.
-# Le seul temoin qui fasse foi est le rfbconfig.h GENERE. On le lit.
+# Les WITH_* ne FIGENT rien: lib introuvable, cmake desactive et construit
+# quand meme. Sans JPEG, la disposition casse chez l'utilisateur. Seul le
+# rfbconfig.h GENERE fait foi.
 CFG="${BUILD}/include/rfb/rfbconfig.h"
 [[ -f "$CFG" ]] || { echo "rfbconfig.h introuvable apres configuration: ${CFG}" >&2; exit 1; }
 cfg_bad=0
@@ -145,7 +141,7 @@ mkdir -p "${OUT}/lib" "${OUT}/include/rfb"
 if [[ "$OS" == "Darwin" ]]; then
   LIB="$(ls "${BUILD}"/libvncclient.*.dylib | grep -E 'libvncclient\.[0-9]' | head -1)"
 else
-  # le vrai fichier porte la version complete; les .so/.so.1 du build sont des liens
+  # le vrai fichier porte la version complete; .so/.so.1 sont des liens
   LIB="$(ls "${BUILD}"/libvncclient.so.* | grep -E 'libvncclient\.so\.[0-9]+\.[0-9]' | head -1)"
   [[ -n "$LIB" ]] || LIB="$(ls "${BUILD}"/libvncclient.so.* | head -1)"
 fi
@@ -160,7 +156,7 @@ BASE="$(basename "$LIB")"
     ln -sf "$BASE" "libvncclient.so.1"
     ln -sf "libvncclient.so.1" "libvncclient.so"
   fi )
-# macOS: install_name portable, sinon pas d'embarquement dans le .app.
+# install_name portable, sinon pas d'embarquement dans le .app
 if [[ "$OS" == "Darwin" ]]; then
   install_name_tool -id "@rpath/libvncclient.1.dylib" "${OUT}/lib/${BASE}" 2>/dev/null || true
 fi
@@ -168,7 +164,7 @@ fi
 cp "${SRC}/include/rfb/"*.h "${OUT}/include/rfb/" 2>/dev/null || true
 cp "${BUILD}/include/rfb/rfbconfig.h" "${OUT}/include/rfb/rfbconfig.h"
 
-# Empreinte lue par make-app.sh: sans elle, il rembarque une dylib perimee.
+# lue par make-app.sh: sans elle, il rembarque une dylib perimee
 cat "${VDIR}/SHA256SUMS" "${REPO_ROOT}/scripts/build-libvnc.sh" \
     "${VDIR}"/patches/*.patch > "${WORK}/.stamp-input"
 sha256_of "${WORK}/.stamp-input" > "${OUT}/.build-stamp"

@@ -2,8 +2,8 @@ unit uSshConnect;
 
 {$mode objfpc}{$H+}
 
-// Lancement d'une session SSH depuis un noeud. Modele et secrets restent sur le
-// thread UI; le reseau ne recoit qu'un TSshConnectParams dont il est proprietaire.
+// Modele et secrets restent sur le thread UI; le reseau ne recoit qu'un
+// TSshConnectParams, dont il devient proprietaire.
 
 interface
 
@@ -25,8 +25,7 @@ function BuildSshConnectParams(ADoc: TRshDocument; AModel: TRshModel;
 function SshConnectWouldPrompt(AModel: TRshModel;
   const AConnUuid: string): Boolean;
 
-// True si la connexion s'authentifie par cle de securite FIDO2: un geste par
-// session, a annoncer avant d'en lancer plusieurs (Broadcast).
+// FIDO2: un geste PAR session, a annoncer avant un Broadcast.
 function SshConnectUsesFido(AModel: TRshModel;
   const AConnUuid: string): Boolean;
 
@@ -36,9 +35,7 @@ uses
   uSecureBytes, uRshValidation, uSshKnownHosts, uTheme, uAuthPrompt,
   uSshTunnel, uSshTunnelConnect, uLibssh2Api, uSshFido, uSshForward;
 
-// Identifiant RESOLU d'une connexion (heritage compris), nil si aucun ou si
-// quelque chose cloche -- les deux appelants traitent nil comme « dans le
-// doute ».
+// Heritage compris. nil si aucun ou si ca cloche: « dans le doute » pour tous.
 function ResolvedConnCredential(AModel: TRshModel;
   const AConnUuid: string): TRshCredential;
 var
@@ -84,8 +81,7 @@ begin
   cred := ResolvedConnCredential(AModel, AConnUuid);
   if cred = nil then Exit;
   try
-    // atFidoKey: pas de modale AVANT la grille, le geste vient pendant la
-    // session (avis non modal) -- ne compte donc pas comme une invite.
+    // atFidoKey: le geste vient pendant la session, sans modale: pas une invite.
     Result := (cred.AuthType = atPrompt) or
       ((cred.AuthType = atPassword) and (not cred.HasPassword));
   finally
@@ -263,8 +259,7 @@ begin
         end;
       atFidoKey:
         begin
-          // Le « PEM » d'une cle de securite ne porte pas de secret: c'est le
-          // key handle qui designe la cle restee dans le token.
+          // Ce « PEM » ne porte aucun secret: juste le key handle du token.
           params.AuthKind := sakFidoKey;
           if not cred.HasPrivateKey then
           begin
@@ -272,8 +267,7 @@ begin
               'yet. Open the Credential Manager and save it once to enrol one.';
             Exit;
           end;
-          // Les deux bibliotheques sont chargees ICI, sur le thread UI: un
-          // echec doit sortir en message clair, pas en session qui meurt.
+          // Chargees ICI: un echec en message clair, pas en session qui meurt.
           try
             Libssh2EnsureLoaded;
           except
@@ -335,8 +329,7 @@ begin
   end;
 end;
 
-// Le document est une entree non fiable: chaque destination est revalidee
-// avant de partir vers le serveur, comme l'hote de la session.
+// Document non fiable: chaque destination revalidee, comme l'hote.
 function EnabledForwards(AModel: TRshModel;
   const AConnUuid: string): TSshForwardSpecs;
 var
@@ -388,9 +381,7 @@ begin
     displayName, AErr) then
     Exit;
   try
-    // Tunnels: le TERMINAL seulement. BuildSshConnectParams sert aussi au
-    // SFTP, aux conteneurs et aux rebonds; y mettre les tunnels ferait se
-    // disputer les memes ports par plusieurs onglets du meme hote.
+    // Tunnels au TERMINAL seulement: SFTP et rebonds se disputeraient les ports.
     params.Forwards := EnabledForwards(AModel, AConnUuid);
     // seule la SOCKET bouge, la cle d'hote reste celle de la cible
     jumpUuid := AModel.ResolveJumpVia(AConnUuid);

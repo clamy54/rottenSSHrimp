@@ -1,15 +1,7 @@
-{ Ping ICMP sans privilege, portable.
-
-  Windows: IcmpSendEcho2 / Icmp6SendEcho2 (iphlpapi), aucun droit requis.
-  macOS et Linux: socket SOCK_DGRAM sur IPPROTO_ICMP(V6), sans root; sous
-  Linux elle depend de net.ipv4.ping_group_range, ouvert par defaut depuis
-  systemd 243. Refusee (EACCES/EPERM), on se replie sur le binaire ping du
-  systeme, lance en LANG=C et lu ligne a ligne -- lui porte la capacite.
-
-  Un thread par cible: resolution, un echo par intervalle avec timeout, et
-  chaque resultat remonte au thread UI par Queue (jamais Synchronize: le
-  destructeur de l'onglet joint le thread, un Synchronize en attente y
-  bloquerait). Rien de LCL ici.
+{ Ping ICMP sans privilege. Windows: iphlpapi. Unix: SOCK_DGRAM ICMP, soumis
+  sous Linux a net.ipv4.ping_group_range; refuse, repli sur le ping systeme
+  en LANG=C, qui lui a la capacite.
+  Queue, JAMAIS Synchronize: le destructeur de l'onglet joint le thread.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -28,10 +20,10 @@ type
   TPingSample = record
     Seq: Integer;
     Kind: TPingResultKind;
-    RttMs: Double;      // reponse seulement
+    RttMs: Double;      // prkReply seulement
     Ttl: Integer;       // -1 = inconnu
-    Msg: string;        // detail d'une erreur ou d'un « unreachable »
-    When: TDateTime;    // heure locale de la reponse ou de l'expiration
+    Msg: string;
+    When: TDateTime;    // heure locale
   end;
 
   TPingSampleEvent = procedure(const ASample: TPingSample) of object;
@@ -65,7 +57,7 @@ type
     procedure SetTimeoutMs(AValue: Integer);
     function GetPaused: Boolean;
     procedure SetPaused(AValue: Boolean);
-    // True = le backend natif a pris la main; False = a essayer autrement
+    // False = pas de socket ICMP, passer au repli
     function RunNative(AIpv6: Boolean; ASock: Pointer): Boolean;
     procedure RunFallback;
   protected
@@ -73,7 +65,6 @@ type
   public
     constructor Create(const AHost: string; AIntervalMs, ATimeoutMs: Integer);
     destructor Destroy; override;
-    // Terminate + join, puis purge de ce qui restait en file pour l'UI
     procedure Stop;
     property Host: string read FHost;
     property IntervalMs: Integer read GetIntervalMs write SetIntervalMs;
@@ -89,7 +80,7 @@ const
   PING_TIMEOUT_MIN_MS = 100;
   PING_TIMEOUT_MAX_MS = 30000;
 
-// Horloge haute resolution en millisecondes.
+// Monotone, en ms.
 function HiResMs: Double;
 
 implementation
@@ -111,9 +102,8 @@ type
   PSockAddrBuf = ^TSockAddrBuf;
 
 {$IFDEF WINDOWS}
-// En deux morceaux: compteur x 1000 depasse 2^53. Et transtypages en Double
-// explicites: pour FPC une constante « 1000.0 » est un Single, et tout le
-// calcul se faisait en simple precision, par pas de 64 ms.
+// En deux morceaux: compteur x 1000 depasse 2^53. Double explicites: pour FPC
+// « 1000.0 » est un Single, et l'horloge avancait par pas de 64 ms.
 function HiResMs: Double;
 var
   f, c: Int64;
@@ -123,9 +113,7 @@ begin
   Result := Double(c div f) * 1000 + Double(c mod f) * 1000 / Double(f);
 end;
 {$ELSE}
-// Horloge MONOTONE: les RTT et les echeances sont des durees, et l'heure
-// civile bouge (NTP, changement manuel), ce qui donnait des RTT negatifs ou
-// un timeout premature. L'identifiant differe entre Linux et macOS.
+// MONOTONE: avec l'heure civile, NTP offre des RTT negatifs.
 const
   {$IFDEF DARWIN}
   CLOCK_MONOTONIC_ID = 6;
@@ -142,7 +130,7 @@ var
   tv: TTimeVal;
 begin
   if clock_gettime(CLOCK_MONOTONIC_ID, @ts) = 0 then
-    // memes transtypages: « 1000.0 » serait un Single pour FPC
+    // Double explicites, meme raison
     Result := Double(ts.tv_sec) * 1000 + Double(ts.tv_nsec) / 1000000
   else
   begin
@@ -160,7 +148,7 @@ begin
     Result := NetAddrToStr(psockaddr_in(@ABuf.Data)^.sin_addr);
 end;
 
-// Premiere adresse, IPv4 de preference: c'est ce que ping fait par defaut.
+// IPv4 d'abord, comme ping.
 function PickAddress(AList: Paddrinfo; out ABuf: TSockAddrBuf): Boolean;
 var
   ai, best: Paddrinfo;
@@ -188,8 +176,6 @@ begin
   Result := True;
 end;
 
-{ ================================ TPinger ================================ }
-
 constructor TPinger.Create(const AHost: string; AIntervalMs, ATimeoutMs: Integer);
 begin
   inherited Create(True);
@@ -216,9 +202,8 @@ begin
   if not Suspended then
     WaitFor
   else
-    Start; // un thread jamais lance ne se joint pas: on le laisse sortir
+    Start; // un thread jamais lance ne se joint pas
   if not Finished then WaitFor;
-  // ce qui n'a pas ete draine ne le sera jamais: l'onglet part
   TThread.RemoveQueuedEvents(Self);
 end;
 
@@ -340,8 +325,6 @@ begin
   Queue(@DrainResolved);
 end;
 
-{ ---- backend natif ---- }
-
 {$IFDEF WINDOWS}
 
 type
@@ -395,10 +378,8 @@ const
   REPLY_BUF = 1024;
 
 type
-  // IcmpCloseHandle attend l'achevement d'une requete en vol, et ce handle
-  // n'est pas un objet noyau: CancelIoEx le refuse. Fermer l'onglet d'un hote
-  // muet bloquait donc l'UI le temps du timeout. Ce thread jetable recupere
-  // handle, evenement et tampon de reponse, attend la fin et nettoie.
+  // IcmpCloseHandle attend la requete en vol, et CancelIoEx refuse ce handle
+  // (pas un objet noyau). Ce fossoyeur jetable attend a la place de l'UI.
   TIcmpReaper = class(TThread)
   private
     FH, FEv: THandle;
@@ -441,10 +422,8 @@ begin
   end;
 end;
 
-// Envoi ASYNCHRONE (evenement): un appel bloquant tenait le thread jusqu'au
-// timeout, et fermer l'onglet d'un hote muet gelait l'interface d'autant.
-// Ici on attend par tranches de 50 ms et Terminated coupe court; fermer le
-// handle annule la requete en vol.
+// ASYNCHRONE, par tranches de 50 ms: sinon fermer l'onglet d'un hote muet
+// gele l'interface pour la duree du timeout.
 function TPinger.RunNative(AIpv6: Boolean; ASock: Pointer): Boolean;
 var
   pb: PSockAddrBuf;
@@ -503,7 +482,6 @@ begin
         until (w <> WAIT_TIMEOUT) or Terminated;
         if Terminated then
         begin
-          // requete en vol: le balayeur fermera, nous on part tout de suite
           TIcmpReaper.Create(h, ev, reply, TimeoutMs + 1000);
           handedOff := True;
           Break;
@@ -523,8 +501,7 @@ begin
       if status = IP_SUCCESS then
       begin
         s.Kind := prkReply;
-        // l'API arrondit a la milliseconde; notre chrono est plus fin mais
-        // ne peut que majorer: on le garde, borne par la valeur API + 1 ms
+        // L'API arrondit a la ms; notre chrono, plus fin, ne peut que majorer.
         if AIpv6 then apiRtt := r6^.RoundTripTime else apiRtt := r4^.RoundTripTime;
         s.RttMs := t1 - t0;
         if s.RttMs > apiRtt + 1.0 then s.RttMs := apiRtt + 0.5;
@@ -546,7 +523,7 @@ begin
         s.Msg := StatusText(status);
       end;
       Emit(s);
-      // l'intervalle court depuis l'envoi, comme ping
+      // intervalle compte depuis l'envoi, comme ping
       SleepChecked(IntervalMs - Round(t1 - t0));
     end;
   finally
@@ -623,8 +600,7 @@ begin
   Result := True;
   ident := Word(GetProcessID and $FFFF);
   {$IFDEF LINUX}
-  // Le TTL de la reponse ne se lit pas sans message de controle sous Linux;
-  // on ne l'exploite pas encore, mais l'option ne coute rien.
+  // Sans cmsg le TTL reste illisible sous Linux; pas encore exploite.
   ttlOn := 1;
   if not AIpv6 then
     fpsetsockopt(fd, 0 { SOL_IP }, 12 { IP_RECVTTL }, @ttlOn, SizeOf(ttlOn));
@@ -733,10 +709,9 @@ begin
   end;
 end;
 
-// Binaire ping du systeme. iputils: « 64 bytes from 10.0.0.1: icmp_seq=1
-// ttl=64 time=0.123 ms », « no answer yet for icmp_seq=2 » (-O), « From
-// 10.0.0.1 icmp_seq=1 Destination Host Unreachable ». BSD/macOS: « Request
-// timeout for icmp_seq 3 » et le meme format de reponse.
+// iputils: « 64 bytes from 10.0.0.1: icmp_seq=1 ttl=64 time=0.123 ms »,
+// « no answer yet for icmp_seq=2 » (-O), « From 10.0.0.1 icmp_seq=1
+// Destination Host Unreachable ». BSD/macOS: « Request timeout for icmp_seq 3 ».
 procedure TPinger.RunFallback;
 
   function FieldAfter(const ALine, AKey: string): string;
@@ -822,7 +797,6 @@ begin
         acc := '';
         lastSeq := 0;   // le nouveau ping renumerote depuis 1
       end;
-      // reglages changes: on relance le binaire avec les nouveaux
       if (curInterval <> IntervalMs) or (curTimeout <> TimeoutMs) then
       begin
         proc.Terminate(0);
@@ -865,9 +839,7 @@ begin
         if v = '' then v := FieldAfter(line, 'icmp_seq ');
         if v = '' then Continue;
         seqv := StrToIntDef(v, 0);
-        // iputils numerote sur 16 bits: apres 65535 vient 0, soit 36 h a
-        // 2 s. Avance = ecart modulo 65536 dans la demi-fenetre; 0 ou un
-        // recul = doublon (« DUP! ») ou reponse tardive deja comptee.
+        // 16 bits: 65535 puis 0 (36 h a 2 s). 0 ou recul = « DUP! » ou retard.
         delta := (seqv - lastSeq) and $FFFF;
         if (delta = 0) or (delta > $7FFF) then Continue;
         lastSeq := seqv;

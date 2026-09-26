@@ -1,7 +1,5 @@
 #!/bin/bash
-# Capture la pile du thread principal pendant un blocage (beach ball). Le
-# thread etant bloque, l'echantillon est stable et montre ou ca coince
-# (pthread_join ? boucle a nous ? libssh2 ?).
+# Pile du thread principal pendant un beach ball: bloque, il pose sagement.
 # Usage: scripts/diag-hang.sh, appli GELEE; envoyer le fichier affiche a la fin.
 
 set -u

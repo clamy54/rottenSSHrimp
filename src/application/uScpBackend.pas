@@ -1,17 +1,9 @@
-{ Interface de systeme de fichiers de l'onglet Scp. Abstraite, sans LCL et sans
-  libssh2: le moteur de transfert ne connait que ce contrat, ce qui permet de
-  le faire tourner contre des backends factices et d'y injecter ce qu'un
-  serveur reel ne produit qu'au pire moment.
+{ Contrat du moteur de transfert, sans LCL ni libssh2: testable contre des
+  backends factices qui produisent a volonte ce qu'un vrai serveur reserve au
+  pire moment. Classe et non interface COM: le thread de transport possede,
+  un comptage de references ne ferait que brouiller qui.
 
-  Deux implementations concretes existent: uLocalFileSystem (disque local) et
-  le backend SFTP porte par uSftpTransport.
-
-  Classe abstraite et non interface COM: ces objets appartiennent au thread de
-  transport, qui les cree et les detruit; un comptage de references n'apporte
-  rien ici et masquerait qui possede quoi.
-
-  Convention uniforme: toute methode rend True en cas de succes, et remplit
-  AErr en cas d'echec. Un False avec AErr.Kind a sekNone est un bogue.
+  Convention: False remplit AErr. Un False avec sekNone est un bogue.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -25,30 +17,20 @@ uses
   SysUtils, uScpErrors, uScpPaths;
 
 type
-  // Une entree de listing. IsSpecial couvre sockets, tubes et peripheriques:
-  // ce qu'on refuse de lire comme un fichier.
   TScpEntry = record
-    Name: string;          // nom simple, tel que rendu; jamais un chemin
+    Name: string;          // nom simple, jamais un chemin
     IsDir: Boolean;
     IsLink: Boolean;
-    IsSpecial: Boolean;
-    // Pour un lien: ce que designe la CIBLE, si elle a pu etre suivie. Permet
-    // « lien vers un dossier » sans le suivre en recursion.
-    TargetIsDir: Boolean;
+    IsSpecial: Boolean;    // socket, tube, peripherique: jamais lu comme fichier
+    TargetIsDir: Boolean;  // lien: nature de la CIBLE, sans recursion
     BrokenLink: Boolean;
-    // TargetIsDir et BrokenLink ont-ils ete ETABLIS? Le listing SFTP ne suit
-    // plus chaque lien: trois allers-retours PAR lien rendaient un /usr/lib
-    // interminable. Faux = cible inconnue; on tente l'entree, le serveur
-    // tranche. Le disque local, lui, repond sans latence et etablit toujours.
+    // Faux = les deux champs ci-dessus sont du vent: SFTP ne suit plus chaque
+    // lien (trois allers-retours par lien dans /usr/lib, merci). Le serveur tranche.
     TargetKnown: Boolean;
     Size: Int64;           // -1 si inconnue
     Mode: LongWord;        // 0 si le serveur ne l'a pas envoye
-    // Mode reellement connu? Sans ce drapeau, 0 voudrait dire « inconnu » ET
-    // « aucun droit », et un fichier en 0000 serait publie autrement.
-    ModeKnown: Boolean;
-    // Le serveur n'a pas dit ce qu'est cette entree, ni au listing ni au lstat.
-    // IsDir, IsLink et IsSpecial sont alors tous faux, ce qui ne veut PAS dire
-    // « fichier ordinaire »: le moteur refuse ce qu'il ne sait pas nommer.
+    ModeKnown: Boolean;    // sinon 0 = « inconnu » ET « aucun droit »
+    // Tous les Is* a faux ne veut PAS dire fichier ordinaire: on refuse l'innommable.
     TypeUnknown: Boolean;
     MTimeUtc: Int64;       // secondes Unix, 0 si inconnue
     Owner: string;
@@ -61,7 +43,7 @@ type
 
   TScpEntryArray = array of TScpEntry;
 
-  // Poignee ouverte, propriete du backend: le moteur ne fait que la passer.
+  // Propriete du backend: le moteur ne fait que la passer.
   TScpFileHandle = class
   end;
 
@@ -69,134 +51,105 @@ type
 
   TScpFileSystem = class
   public
-    // Distant ou local: change les regles de nommage, pas le protocole d'appel.
     function IsRemote: Boolean; virtual; abstract;
     function DisplayName: string; virtual; abstract;
 
-    // Annulation cooperative: le moteur l'interroge a chaque tour de boucle.
     function Canceled: Boolean; virtual; abstract;
 
-    // --- Navigation ---
     function HomeDir(out APath: string; out AErr: TScpError): Boolean;
       virtual; abstract;
-    // realpath du serveur ou de l'OS. Un echec n'est pas fatal: forme lexicale.
+    // Echec non fatal: on garde la forme lexicale.
     function RealPath(const APath: string; out AResolved: string;
       out AErr: TScpError): Boolean; virtual; abstract;
-    // '.' et '..' ne doivent JAMAIS figurer dans AEntries: elles deviendraient
-    // transferables ou supprimables.
+    // JAMAIS '.' ni '..': elles deviendraient transferables, voire supprimables.
     function List(const APath: string; out AEntries: TScpEntryArray;
       out AErr: TScpError): Boolean; virtual; abstract;
-    // AFollowLink=False = lstat: c'est le lien lui-meme qu'on decrit.
+    // AFollowLink=False = lstat.
     function Stat(const APath: string; AFollowLink: Boolean;
       out AEntry: TScpEntry; out AErr: TScpError): Boolean; virtual; abstract;
-    // True si le chemin existe, quel qu'il soit. AErr seulement si la question
-    // n'a pas pu etre posee.
+    // AErr seulement si la question n'a pas pu etre posee.
     function Exists(const APath: string; out AFound: Boolean;
       out AErr: TScpError): Boolean; virtual; abstract;
 
-    // --- Operations ---
-    // AMode est DEMANDE a la creation, comme pour un fichier: un dossier prive
-    // l'est des qu'il existe, pas apres un chmod.
+    // AMode pose A LA CREATION: prive des la naissance, pas apres un chmod.
     function MakeDir(const APath: string; AMode: LongWord;
       out AErr: TScpError): Boolean; virtual; abstract;
-    // Ne remplace JAMAIS une cible existante. Seule entorse a la convention:
-    // True AVEC AErr rempli veut dire « publie sous ATo, mais AFrom n'a pas pu
-    // etre retire »; l'appelant garde alors AFrom dans ses partiels a nettoyer.
+    // N'ecrase JAMAIS. Entorse a la convention: True + AErr = publie sous ATo,
+    // AFrom reste a nettoyer.
     function Rename(const AFrom, ATo: string; out AErr: TScpError): Boolean;
       virtual; abstract;
-    // Remplacement ATOMIQUE d'une cible existante. False + sekUnsupported ou
-    // sekRenameRefused si la plateforme ne sait pas faire: l'appelant DEMANDE
-    // avant un repli, il ne supprime jamais la cible de lui-meme.
+    // sekUnsupported/sekRenameRefused: l'appelant DEMANDE avant tout repli,
+    // il ne supprime jamais la cible de lui-meme.
     function ReplaceAtomic(const AFrom, ATo: string;
       out AErr: TScpError): Boolean; virtual; abstract;
     function DeleteFile(const APath: string; out AErr: TScpError): Boolean;
       virtual; abstract;
-    // Retire un temporaire A NOUS, meme devenu lecture seule par
-    // CopyAttributesFrom: sans cela il ne partirait plus. Defaut: DeleteFile.
+    // Passe outre la lecture seule que CopyAttributesFrom a pu poser.
     function DeleteTemp(const APath: string; out AErr: TScpError): Boolean;
       virtual;
     function DeleteDir(const APath: string; out AErr: TScpError): Boolean;
       virtual; abstract;
 
-    // --- Fichiers ---
     function OpenRead(const APath: string; out AHandle: TScpFileHandle;
       out AErr: TScpError): Boolean; virtual; abstract;
-    // Cree un fichier NEUF dans ADir sous un nom imprevisible et en EXCLUSIF: un
-    // lien deja pose doit faire echouer la creation, pas etre suivi. AMode est
-    // DEMANDE a la creation, donc encore restreignable par l'umask.
+    // Nom imprevisible, creation EXCLUSIVE: un lien deja pose fait echouer, pas
+    // suivre. L'umask peut encore restreindre AMode.
     function CreateTemp(const ADir: string; AMode: LongWord;
       out APath: string; out AHandle: TScpFileHandle;
       out AErr: TScpError): Boolean; virtual; abstract;
-    // Rouvre un partiel a AOffset. La poignee doit aussi LIRE: le moteur relit le
-    // prefixe par elle avant d'ecrire, et c'est cette relecture par la MEME
-    // poignee qui garantit qu'on prolonge le fichier verifie. Un lien a ce chemin
-    // doit faire echouer l'ouverture -- ou, la ou le protocole ne sait pas le
-    // refuser a l'ouverture (SFTP v3), etre detecte juste apres.
+    // Poignee en LECTURE aussi: le prefixe verifie doit l'etre par la MEME. Un
+    // lien doit echouer a l'ouverture, ou juste apres en SFTP v3 qui ne sait pas.
     function OpenAppend(const APath: string; AOffset: Int64;
       out AHandle: TScpFileHandle; out AErr: TScpError): Boolean;
       virtual; abstract;
     // AGot < ACount n'est NI une erreur NI la fin: seul AGot = 0 est la fin.
     function Read(AHandle: TScpFileHandle; ABuf: PByte; ACount: Integer;
       out AGot: Integer; out AErr: TScpError): Boolean; virtual; abstract;
-    // APut < ACount est normal: l'appelant boucle sur le reste.
+    // APut < ACount est normal: l'appelant boucle.
     function Write(AHandle: TScpFileHandle; ABuf: PByte; ACount: Integer;
       out APut: Integer; out AErr: TScpError): Boolean; virtual; abstract;
     function Seek(AHandle: TScpFileHandle; AOffset: Int64;
       out AErr: TScpError): Boolean; virtual; abstract;
-    // Vide les tampons. Un echec ici est un echec du TRANSFERT.
+    // Un echec ici est un echec du TRANSFERT.
     function Flush(AHandle: TScpFileHandle; out AErr: TScpError): Boolean;
       virtual; abstract;
-    // Libere la poignee, meme en cas d'echec. AHandle est invalide apres.
+    // Libere meme en cas d'echec.
     function Close(AHandle: TScpFileHandle; out AErr: TScpError): Boolean;
       virtual; abstract;
 
-    // --- Metadonnees ---
-    // Par la POIGNEE, jamais par le chemin: une fois le temporaire ferme, son nom
-    // peut designer autre chose, pose par un tiers qui ecrit dans le dossier. Un
-    // echec remonte sekAttrRefused: AVERTISSEMENT, pas perte de contenu.
+    // Par la POIGNEE: ferme, le nom du temporaire peut deja designer le fichier
+    // d'un tiers. Echec = sekAttrRefused, un avertissement.
     function SetMTime(AHandle: TScpFileHandle; AMTimeUtc: Int64;
       out AErr: TScpError): Boolean; virtual; abstract;
     function SetMode(AHandle: TScpFileHandle; AMode: LongWord;
       out AErr: TScpError): Boolean; virtual; abstract;
-    // Droits par CHEMIN, pour la fenetre de proprietes: un fichier que personne
-    // n'ouvre. Peut suivre un lien -- SETSTAT le fait --, l'appelant les ecarte
-    // par lstat avant. Defaut: sekUnsupported.
+    // Par CHEMIN (fenetre de proprietes). SETSTAT suit les liens: l'appelant
+    // les ecarte par lstat avant.
     function SetModeAt(const APath: string; AMode: LongWord;
       out AErr: TScpError): Boolean; virtual;
-    // Copie SUR PLACE: donne a ATargetPath, tout juste cree, la protection de
-    // ASourcePath la ou les modes ne la portent pas (ACL Windows). Appele
-    // avant qu'un octet y soit ecrit. Defaut: rien a faire.
+    // Copie sur place: ACL Windows posee avant le premier octet.
     function CopyProtectionFrom(const ASourcePath, ATargetPath: string;
       out AErr: TScpError): Boolean; virtual;
-    // Dossier de copie sur place: il NAIT avec la protection de sa source.
-    // Un dossier n'a pas de poignee exclusive pour le proteger entre sa
-    // creation et une copie de droits apres coup. Defaut: MakeDir.
+    // Le dossier NAIT protege: pas de poignee exclusive pour couvrir l'apres-coup.
     function MakeDirFromSource(const ASourcePath, APath: string;
       AMode: LongWord; out AErr: TScpError): Boolean; virtual;
-    // Copie sur place, par les POIGNEES: les attributs de la source que ni les
-    // modes ni la DACL ne portent (lecture seule, cache, systeme, hors index).
-    // Appele en dernier, juste avant de fermer le temporaire. Defaut: rien.
+    // Lecture seule, cache, systeme, hors index. En dernier, avant fermeture.
     function CopyAttributesFrom(ASource, ATarget: TScpFileHandle;
       out AErr: TScpError): Boolean; virtual;
 
-    // --- Chemins: chaque cote a ses regles, jamais de concatenation nue ---
+    // Chaque cote a ses regles: jamais de concatenation nue.
     function Join(const ABase, AName: string): string; virtual; abstract;
     function Parent(const APath: string): string; virtual; abstract;
     function BaseName(const APath: string): string; virtual; abstract;
     function Normalize(const APath: string): string; virtual; abstract;
     function IsUnder(const ARoot, APath: string): Boolean; virtual; abstract;
     function CheckName(const AName: string): TNameVerdict; virtual; abstract;
-    // Cle detectant deux noms qui viseraient le meme fichier (casse, points).
+    // Deux noms, un seul fichier (casse, points).
     function CollisionKey(const AName: string): string; virtual; abstract;
   end;
 
-// Mode d'un fichier NEUF dont la source n'annonce rien (un disque Windows):
-// lisible par tous, inscriptible par son seul proprietaire, jamais executable.
-// Une source qui en annonce un le voit repris sans ecriture pour tous, sans
-// setuid et sans bit d'execution. L'umask peut encore restreindre, jamais
-// elargir. Un fichier REMPLACE garde ses droits de lecture, d'ecriture et
-// d'execution, les memes des deux cotes; setuid, setgid et sticky ne sont
-// jamais reportes sur un contenu nouveau.
+// Source muette (disque Windows). Jamais de setuid/setgid/sticky reportes sur
+// un contenu nouveau.
 const
   SCP_DEFAULT_FILE_MODE = &0644;
   SCP_DEFAULT_DIR_MODE = &0755;

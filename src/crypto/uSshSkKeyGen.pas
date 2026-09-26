@@ -2,17 +2,8 @@ unit uSshSkKeyGen;
 
 {$mode objfpc}{$H+}
 
-// Encodage OpenSSH des cles de securite (FIDO2): sk-ssh-ed25519@openssh.com et
-// sk-ecdsa-sha2-nistp256@openssh.com.
-//
-// Ces cles n'ont PAS de partie privee au sens habituel: le secret reste dans le
-// token, et le fichier « prive » ne contient qu'un key handle, l'application et
-// des drapeaux. Il est neanmoins traite comme un secret (TSecureBytes, scelle
-// dans le document): le key handle designe la cle, et qui le detient peut
-// demander une signature a un token present.
-//
-// Formats: PROTOCOL.u2f d'OpenSSH. Le conteneur openssh-key-v1 est celui
-// d'uSshKeyGen, dont les briques sont reutilisees telles quelles.
+// Cles FIDO2 OpenSSH (PROTOCOL.u2f). Le « prive » n'est qu'un key handle, mais
+// traite en secret quand meme: qui le tient fait signer un token present.
 
 interface
 
@@ -24,15 +15,13 @@ const
   SK_TYPE_ECDSA_P256 = 'sk-ecdsa-sha2-nistp256@openssh.com';
   SK_CURVE_P256 = 'nistp256';
 
-  // sk-api.h d'OpenSSH. La presence est toujours exigee; la verification (PIN)
-  // est un choix de l'utilisateur, fige dans le key handle a l'enrolement.
+  // sk-api.h. Le PIN est fige dans le key handle a l'enrolement.
   SSH_SK_USER_PRESENCE_REQD = $01;
   SSH_SK_USER_VERIFICATION_REQD = $04;
   SSH_SK_RESIDENT_KEY = $20;
 
-  // « application » est le relying party vu du token. La convention OpenSSH
-  // veut le prefixe « ssh: »; le suffixe nous distingue des cles creees par
-  // ssh-keygen, sans quoi elles se melangeraient sur le meme token.
+  // Prefixe « ssh: » impose; le suffixe evite de melanger nos cles et celles
+  // de ssh-keygen sur le meme token.
   SK_APPLICATION = 'ssh:rottensshrimp';
 
   ED25519_SK_PK_LEN = 32;
@@ -43,12 +32,9 @@ type
   TSkAlg = (skaEd25519, skaEcdsaP256);
 
 function SkTypeName(AAlg: TSkAlg): string;
-// Relit les drapeaux (0x01 presence, 0x04 PIN) dans une cle privee sk telle que
-// nous l'encodons; False si ce n'est pas une cle sk lisible. Sert a la rotation:
-// une cle qui exigeait le PIN doit etre remplacee par une cle qui l'exige.
+// Pour la rotation: une cle a PIN se remplace par une cle a PIN.
 function DecodeSkPrivateFlags(const APem: PByte; ALen: NativeUInt;
   out AFlags: Byte): Boolean;
-// Efface puis libere un TBytes qui a porte un key handle.
 procedure WipeBytes(var B: TBytes);
 // APk: 32 octets (ed25519) ou 65 octets 0x04||X||Y (ecdsa p256).
 function EncodeSkPublicLine(AAlg: TSkAlg; const APk: TBytes;
@@ -57,18 +43,14 @@ function EncodeSkPrivatePem(AAlg: TSkAlg; const APk: TBytes;
   const AApplication: string; AFlags: Byte; const AKeyHandle: TBytes;
   const AComment: string; ACheckInt: LongWord): TSecureBytes;
 
-// ECDSA_SIG_VALUE ::= SEQUENCE { r INTEGER, s INTEGER }. Le token rend du DER,
-// libssh2 attend deux entiers bruts de meme longueur: on retire le zero de
-// tete que le DER ajoute pour les valeurs >= 0x80, puis on rembourre a gauche.
+// Le token rend du DER, libssh2 veut r et s bruts de longueur fixe.
 function DecodeEcdsaDerSignature(const ADer: TBytes; ACoordLen: Integer;
   out R, S: TBytes): Boolean;
 
 implementation
 
-// Decodage base64 sur octets (lignes, CR/LF toleres) dans un tampon fourni,
-// jamais reduit: un SetLength de reduction realloue et laisse l'ancien bloc
-// tel quel dans le tas. ADst fait au moins (ACount * 3) div 4 + 3 octets;
-// AN recoit la taille utile.
+// ADst jamais reduit (SetLength realloue et abandonne le secret dans le tas).
+// Taille >= (ACount * 3) div 4 + 3; AN = taille utile.
 procedure B64DecodeInto(const P: PByte; ACount: NativeUInt; var ADst: TBytes;
   out AN: Integer);
 const
@@ -112,11 +94,10 @@ var
   i, n: NativeUInt;
   lineStart: Boolean;
   p, limit, L: Integer;
-  ktype: AnsiString;   // le nom du type n'est pas un secret
+  ktype: AnsiString;   // pas un secret
 
-  // Longueur d'un « string » SSH en APos, borne par ALimit. Controles
-  // soustractifs: la longueur vient du fichier, elle n'est jamais additionnee
-  // avant d'avoir ete comparee, un 0x80000000 ne peut donc pas rendre p negatif.
+  // Controles soustractifs: longueur du fichier jamais additionnee avant
+  // comparaison, un 0x80000000 ne rend pas p negatif.
   function StrLen(APos, ALimit: Integer; out AL: Integer): Boolean;
   var
     u: LongWord;
@@ -153,8 +134,7 @@ begin
   AFlags := 0;
   if (APem = nil) or (ALen < 5) then Exit;
   if not CompareMem(APem, PAnsiChar('-----'), 5) then Exit;
-  // Le corps base64, sans les lignes d'armure: on ne passe par aucune string,
-  // tout ce qui a touche le contenu prive est efface a la sortie.
+  // Aucune string: tout ce qui touche le prive est efface a la sortie.
   b64 := nil;
   SetLength(b64, ALen);
   n := 0;
@@ -185,13 +165,12 @@ begin
     if n > 0 then
       B64DecodeInto(@b64[0], n, blob, limit);
     WipeBytes(b64);
-    // openssh-key-v1\0 (15) | string cipher | string kdf | string kdfopts |
-    // u32 nkeys | string pub | string priv. « limit » est la taille utile,
-    // pas Length(blob).
+    // openssh-key-v1\0 | cipher | kdf | kdfopts | u32 nkeys | pub | priv.
+    // « limit » = taille utile, PAS Length(blob).
     if limit < 15 then Exit;
     if not CompareMem(@blob[0], PAnsiChar(MAGIC), 15) then Exit;
     p := 15;
-    if not StrIs(p, limit, 'none') then Exit;   // cipher: nous n'en posons pas
+    if not StrIs(p, limit, 'none') then Exit;   // cipher
     if not SkipStr(p, limit) then Exit;
     if not StrIs(p, limit, 'none') then Exit;   // kdf
     if not SkipStr(p, limit) then Exit;
@@ -203,9 +182,8 @@ begin
     if not SkipStr(p, limit) then Exit;         // pub
     if not StrLen(p, limit, L) then Exit;       // priv
     Inc(p, 4);
-    limit := p + L;   // la lecture ne sort plus de la section privee
-    // section privee: checkint x2 | string type | [string pk | string curve,
-    // string Q] | string application | u8 flags | ...
+    limit := p + L;
+    // checkint x2 | type | [pk | curve, Q] | application | u8 flags | ...
     if limit - p < 8 then Exit;
     Inc(p, 8);
     if not StrLen(p, limit, L) then Exit;
@@ -254,7 +232,6 @@ begin
   end;
 end;
 
-// Partie publique, commune a la ligne authorized_keys et au conteneur prive.
 procedure BuildSkPublicBlob(var B: TBuf; AAlg: TSkAlg; const APk: TBytes;
   const AApplication: string);
 begin
@@ -317,10 +294,10 @@ begin
       AppendSshBytes(priv, APk[0], Length(APk));
     end;
     AppendSshStr(priv, AnsiString(AApplication));
-    // uint8 nu, PAS un uint32: les drapeaux ne sont pas une chaine SSH
+    // u8 nu, PAS une chaine SSH
     AppendRaw(priv, AFlags, 1);
     AppendSshBytes(priv, AKeyHandle[0], Length(AKeyHandle));
-    AppendSshStr(priv, '');    // reserved, vide a ce jour
+    AppendSshStr(priv, '');    // reserved
     AppendSshStr(priv, AnsiString(cmt));
 
     Result := WrapOpenSshPrivatePem(pub, priv);
@@ -330,9 +307,7 @@ begin
   end;
 end;
 
-// Un INTEGER DER est signe: une valeur dont l'octet de poids fort depasse 0x7F
-// se voit prefixer d'un 0x00. Les coordonnees SSH, elles, sont des entiers non
-// signes de taille fixe.
+// DER signe (0x00 devant tout octet fort > 0x7F); SSH non signe, taille fixe.
 function TrimAndPad(const ASrc: TBytes; AOfs, ALen, ACoordLen: Integer;
   out ADst: TBytes): Boolean;
 var
@@ -340,7 +315,6 @@ var
 begin
   ADst := nil;
   Result := False;
-  // zeros de tete
   while (ALen > 1) and (ASrc[AOfs] = 0) do
   begin
     Inc(AOfs);
@@ -364,7 +338,7 @@ begin
   R := nil;
   S := nil;
   if ACoordLen <= 0 then Exit;
-  // SEQUENCE, longueur courte (une signature P-256 tient largement sous 128)
+  // longueur DER courte: une signature P-256 tient sous 128 octets
   if Length(ADer) < 8 then Exit;
   if ADer[0] <> $30 then Exit;
   seqLen := ADer[1];

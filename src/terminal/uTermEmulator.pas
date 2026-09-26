@@ -2,9 +2,8 @@ unit uTermEmulator;
 
 {$mode objfpc}{$H+}
 
-// Emulateur de terminal: interprete les actions du parseur sur l'ecran. Cible
-// xterm-256color, sous-ensemble VT100/VT220. Sequences dangereuses neutralisees:
-// OSC 52 ignore, titre borne, ni acces fichier ni execution.
+// xterm-256color, sous-ensemble VT220. Le serveur ecrit a l'ecran, point:
+// pas de presse-papiers (OSC 52), pas de fichier, rien d'execute.
 
 interface
 
@@ -40,7 +39,6 @@ type
     FScrollTop, FScrollBottom: Integer;
     FTabs: array of Boolean;
     FLastPrinted: UCS4Char;
-    // modes
     FOrigin: Boolean;
     FAutoWrap: Boolean;
     FInsertMode: Boolean;
@@ -54,7 +52,6 @@ type
     FMouseMode: TMouseTrackMode;
     FMouseSgr: Boolean;
     FCursorStyle: TCursorStyle;
-    // charsets
     FCharset0, FCharset1: Char; // 'B' ascii, '0' DEC graphics
     FGlIsG1: Boolean;
     FSavedMain, FSavedAlt: TSavedCursor;
@@ -64,7 +61,7 @@ type
     FOnResponse: TTermResponseEvent;
     FOnTitle: TTermTitleEvent;
     FOnBell: TTermNotifyEvent;
-    // couleurs par defaut annoncees aux requetes OSC 10/11
+    // reponses OSC 10/11
     FDefaultFgRgb: Cardinal;
     FDefaultBgRgb: Cardinal;
     procedure Damage;
@@ -98,7 +95,6 @@ type
     procedure Resize(ACols, ARows: Integer);
     procedure Reset;
 
-    // TTermHandler
     procedure Print(C: UCS4Char); override;
     procedure Execute(B: Byte); override;
     procedure EscDispatch(const AInters: string; AFinal: Char); override;
@@ -130,7 +126,7 @@ type
 
 implementation
 
-// table DEC Special Graphics (ESC ( 0), plage 0x60..0x7E
+// DEC Special Graphics (ESC ( 0)
 const
   DecGraphics: array[$60..$7E] of UCS4Char = (
     $25C6, $2592, $2409, $240C, $240D, $240A, $00B0, $00B1, // ` a b c d e f g
@@ -211,7 +207,7 @@ end;
 
 function TTermEmulator.BlankPen: TTermCell;
 begin
-  // BCE: on efface avec la couleur de fond courante, sans attributs
+  // BCE: fond courant, aucun attribut
   Result := BlankCell(DefaultColor, FBg);
 end;
 
@@ -277,7 +273,7 @@ begin
   C := TranslateGlyph(C);
   w := CodepointWidth(C);
   if w = 0 then
-    Exit; // combinants ignores dans le MVP (grille stable garantie)
+    Exit; // combinants jetes: une cellule, un caractere
 
   if FWrapPending and FAutoWrap then
   begin
@@ -288,7 +284,7 @@ begin
   else
     FWrapPending := False;
 
-  // caractere large en fin de ligne: force le wrap avant
+  // large en derniere colonne: il ne se coupe pas en deux, il descend
   if (w = 2) and (FX >= FScreen.Cols - 1) then
   begin
     if FAutoWrap then
@@ -407,8 +403,7 @@ procedure TTermEmulator.MoveRel(ADx, ADy: Integer);
 var
   ny, top, bottom: Integer;
 begin
-  // les mouvements relatifs s'arretent aux marges de la region si le
-  // curseur y est, sinon aux bords de l'ecran (VT100)
+  // VT100: bute sur les marges si le curseur est dans la region, sinon sur l'ecran
   if (FY >= FScrollTop) and (FY <= FScrollBottom) then
   begin
     top := FScrollTop;
@@ -445,7 +440,7 @@ end;
 procedure TTermEmulator.Execute(B: Byte);
 begin
   case B of
-    $05: Respond(''); // ENQ: pas de chaine de reponse (rien a divulguer)
+    $05: Respond(''); // ENQ: answerback vide, rien a divulguer
     $07: if Assigned(FOnBell) then FOnBell;
     $08: begin if FX > 0 then Dec(FX); FWrapPending := False; Damage; end;
     $09: begin NextTab; Damage; end;
@@ -467,7 +462,7 @@ var
 begin
   if AInters = '' then
     case AFinal of
-      '7': SaveCursorState(FSavedMain); // DECSC (partage main/alt: suffisant)
+      '7': SaveCursorState(FSavedMain); // DECSC, partage main/alt
       '8': RestoreCursorState(FSavedMain);
       'D': LineFeed;          // IND
       'E': begin LineFeed; CarriageReturn; end; // NEL
@@ -490,7 +485,7 @@ begin
   end
   else if (AInters = '#') and (AFinal = '8') then
   begin
-    // DECALN: remplit l'ecran de E, reset region et curseur
+    // DECALN
     FScrollTop := 0;
     FScrollBottom := FScreen.Rows - 1;
     cellE := BlankCell(DefaultColor, DefaultColor);
@@ -508,7 +503,7 @@ var
   p: array of Integer;
   i, n, m: Integer;
 
-  function P1(Idx: Integer): Integer; // param avec defaut 1
+  function P1(Idx: Integer): Integer; // 0 ou absent = 1
   begin
     if (Idx < AParamCount) and (AParams[Idx] > 0) then
       Result := AParams[Idx]
@@ -516,7 +511,7 @@ var
       Result := 1;
   end;
 
-  function P0(Idx: Integer): Integer; // param avec defaut 0
+  function P0(Idx: Integer): Integer;
   begin
     if Idx < AParamCount then
       Result := AParams[Idx]
@@ -541,11 +536,11 @@ begin
   if APrivate = '>' then
   begin
     if AFinal = 'c' then
-      Respond(#27'[>1;10;0c'); // DA2: VT220-like
+      Respond(#27'[>1;10;0c'); // DA2
     Exit;
   end;
   if APrivate <> #0 then
-    Exit; // '<' ou '=' non supporte: ignore
+    Exit;
 
   if AInters = ' ' then
   begin
@@ -565,7 +560,7 @@ begin
     Exit;
   end;
   if AInters <> '' then
-    Exit; // intermediaires non geres: ignore sans erreur
+    Exit;
 
   case AFinal of
     'A': MoveRel(0, -P1(0));
@@ -631,15 +626,15 @@ begin
     'T': ScrollRegionDown(P1(0));
     'X': begin FScreen.EraseChars(FX, FY, P1(0), BlankPen); Damage; end;
     'Z': for i := 1 to P1(0) do PrevTab;
-    'b': begin // REP: repete le dernier caractere imprime
+    'b': begin // REP
         n := P1(0);
         if n > FScreen.Cols * FScreen.Rows then
-          n := FScreen.Cols * FScreen.Rows; // borne: pas d'allocation distante
+          n := FScreen.Cols * FScreen.Rows; // « REP 65535 » ne gele pas l'UI
         if FLastPrinted >= $20 then
           for i := 1 to n do
             Print(FLastPrinted);
       end;
-    'c': Respond(#27'[?62;22c'); // DA1: VT220 avec couleurs
+    'c': Respond(#27'[?62;22c'); // DA1: VT220 + couleurs
     'd': MoveTo(FX, P1(0) - 1);
     'g': begin
         case P0(0) of
@@ -679,7 +674,7 @@ begin
       end;
     's': SaveCursorState(FSavedMain);
     'u': RestoreCursorState(FSavedMain);
-    't': ; // window ops: ignore, un serveur ne bouge pas nos fenetres
+    't': ; // window ops: un serveur ne bouge pas nos fenetres
   end;
 end;
 
@@ -768,7 +763,7 @@ procedure TTermEmulator.DoDecMode(AMode: Integer; ASet: Boolean);
 begin
   case AMode of
     1: FAppCursorKeys := ASet;   // DECCKM
-    3: begin // DECCOLM: pas de redimensionnement physique, juste clear+home
+    3: begin // DECCOLM: clear+home, la fenetre ne bouge pas
         FScreen.ClearRegion(0, 0, FScreen.Cols - 1, FScreen.Rows - 1, BlankPen);
         FScrollTop := 0;
         FScrollBottom := FScreen.Rows - 1;
@@ -778,14 +773,14 @@ begin
     6: begin FOrigin := ASet; MoveTo(0, 0); end; // DECOM
     7: FAutoWrap := ASet;        // DECAWM
     9: if ASet then FMouseMode := mtX10 else FMouseMode := mtNone;
-    12: ; // clignotement curseur: gere par DECSCUSR
+    12: ; // voir DECSCUSR
     25: begin FCursorVisible := ASet; Damage; end; // DECTCEM
     47: if ASet then EnterAlt(False, False) else LeaveAlt(False);
     1000: if ASet then FMouseMode := mtNormal else FMouseMode := mtNone;
     1002: if ASet then FMouseMode := mtButton else FMouseMode := mtNone;
     1003: if ASet then FMouseMode := mtAny else FMouseMode := mtNone;
     1004: FFocusEvents := ASet;
-    1005: ; // encodage UTF-8 souris: non supporte, SGR le remplace
+    1005: ; // souris UTF-8: SGR (1006) fait mieux
     1006: FMouseSgr := ASet;
     1047: if ASet then EnterAlt(False, True) else LeaveAlt(False);
     1048: if ASet then SaveCursorState(FSaved1049)
@@ -897,7 +892,6 @@ begin
   code := StrToIntDef(string(cmd), -1);
   case code of
     0, 2: begin
-        // titre d'onglet: borne, controles retires
         u := UTF8Decode(string(arg));
         if Length(u) > TERM_MAX_TITLE_LEN then
           SetLength(u, TERM_MAX_TITLE_LEN);
@@ -911,7 +905,6 @@ begin
       end;
     10, 11: if arg = '?' then
       begin
-        // reponses limitees aux requetes de couleur
         if code = 10 then
           hex := Format('rgb:%2.2x/%2.2x/%2.2x',
             [(FDefaultFgRgb shr 16) and $FF, (FDefaultFgRgb shr 8) and $FF,
@@ -922,10 +915,10 @@ begin
              FDefaultBgRgb and $FF]);
         Respond(#27']' + string(cmd) + ';' + RawByteString(hex) + #7);
       end;
-    52: ; // ecriture/lecture presse-papiers distante: refusee
-    8: ;  // hyperlinks: le texte s'affiche, aucune ouverture automatique
+    52: ; // presse-papiers: le serveur n'y lit ni n'y ecrit
+    8: ;  // hyperliens: texte affiche, JAMAIS ouvert
   else
-    ; // OSC inconnu: ignore
+    ;
   end;
 end;
 

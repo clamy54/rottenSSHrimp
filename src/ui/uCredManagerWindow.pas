@@ -2,7 +2,7 @@ unit uCredManagerWindow;
 
 {$mode objfpc}{$H+}
 
-// Credential Manager: les credentials PARTAGES (managed=1) et eux seuls.
+// Credentials PARTAGES (managed=1) seulement.
 // Controles NATIFS clairs: sous Cocoa, un theme sombre les rend illisibles.
 
 interface
@@ -66,13 +66,12 @@ type
     FUvCheck: TCheckBox;
     FHasStoredKey: Boolean;
     FPublicKey: string;
-    // Ce qu'on a lu en ouvrant: changer de type de cle repart de zero (un PEM
-    // Ed25519 ne devient pas un key handle FIDO2, ni l'inverse), revenir au
-    // type d'origine retrouve la cle.
+    // Changer de type repart de zero (un PEM ne devient pas un key handle
+    // FIDO2); revenir au type d'origine retrouve la cle.
     FOrigAuth: TAuthType;
     FOrigPublicKey: string;
     FOrigHasKey: Boolean;
-    // Fige a l'enrolement: le drapeau vit dans le key handle, pas chez nous.
+    // fige a l'enrolement: le drapeau vit dans le key handle, pas chez nous
     FSkFlags: Byte;
     procedure AuthChanged(Sender: TObject);
     procedure EyeClick(Sender: TObject);
@@ -86,7 +85,7 @@ type
     destructor Destroy; override;
   end;
 
-{ helpers de secret (dupliques de uNodeDialogs, prives la-bas) }
+{ dupliques de uNodeDialogs, prives la-bas }
 
 function TakeSecret(AEdit: TEdit): TSecureBytes;
 var
@@ -103,7 +102,7 @@ begin
   end;
 end;
 
-// ecrase le tampon avant de vider: le champ a porte du clair
+// ecrase avant de vider: le champ a porte du clair
 procedure WipeEdit(AEdit: TEdit);
 begin
   if AEdit = nil then Exit;
@@ -111,9 +110,7 @@ begin
   AEdit.Text := '';
 end;
 
-// Le type d'authentification n'est plus deduit d'un indice ecrit en dur a cinq
-// endroits: une seule table, et l'ordre du combo peut changer sans casser le
-// reste.
+// seule source de l'ordre du combo: ne jamais coder un indice en dur ailleurs
 const
   COMBO_AUTH: array[0..3] of TAuthType =
     (atPassword, atSshKey, atManagedKey, atFidoKey);
@@ -148,7 +145,7 @@ begin
   begin AErr := 'Key file not found.'; Exit; end;
   fs := TFileStream.Create(APath, fmOpenRead or fmShareDenyNone);
   try
-    // taille lue UNE FOIS: en fmShareDenyNone, la relire faisait deborder tmp
+    // taille lue UNE FOIS: en fmShareDenyNone, elle bouge sous nos pieds
     n := fs.Size;
     if (n = 0) or (n > MAX_KEY_BYTES) then
     begin AErr := 'Invalid private key file (empty or too large).'; Exit; end;
@@ -186,8 +183,6 @@ begin
   Result.Anchors := [akLeft, akTop, akRight];
   if APassword then Result.PasswordChar := '*';
 end;
-
-{ TCredEditForm }
 
 constructor TCredEditForm.CreateFor(AOwner: TComponent; AModel: TRshModel;
   const AUuid: string);
@@ -275,8 +270,8 @@ begin
   FPubCopy.OnClick := @CopyPubClick;
   FLblPubHint := MakeLabel(Self, '', 20, authY + 52);
 
-  // Decochee par defaut, comme ssh-keygen: le toucher seul protege deja contre
-  // l'usage a distance, le PIN protege contre le vol du token.
+  // Decochee, comme ssh-keygen: le toucher suffit contre l'usage a distance,
+  // le PIN ne sert que contre le vol du token.
   FUvCheck := TCheckBox.Create(Self);
   FUvCheck.Parent := Self;
   FUvCheck.Left := 20;
@@ -354,8 +349,7 @@ begin
   FPubEdit.Visible := isManaged or isFido;
   FPubCopy.Visible := isManaged or isFido;
   FLblPubHint.Visible := isManaged or isFido;
-  // La case ne se change plus une fois la cle enrolee: le drapeau est scelle
-  // dans le key handle du token, il faudrait en creer un autre (Rotate).
+  // enrolee, la case est figee: le drapeau est scelle dans le key handle (Rotate)
   FUvCheck.Visible := isFido;
   FUvCheck.Enabled := isFido and (FPublicKey = '');
   if isManaged then
@@ -395,9 +389,7 @@ begin
   end
   else
   begin
-    // Sans cela, une cle publique heritee de l'autre type empechait la
-    // generation ou l'enrolement, et l'identifiant sortait avec le nouveau
-    // type et l'ancienne cle, inutilisable.
+    // sinon: nouveau type, ancienne cle, identifiant inutilisable
     FPublicKey := '';
     FHasStoredKey := False;
   end;
@@ -470,8 +462,7 @@ begin
     Exit;
   end;
 
-  // L'enrolement AVANT toute ecriture: il demande un geste et peut etre
-  // annule, et un identifiant cree puis abandonne resterait a trainer.
+  // enrolement AVANT toute ecriture: annule, il laisserait un identifiant orphelin
   pem := nil;
   if isFido and (FPublicKey = '') then
   begin
@@ -515,14 +506,14 @@ begin
       if FUuid = '' then
       begin
         uuid := FModel.CreateCredential(dispName, authType, user, domain,
-          keyPath, pw, key, phrase, True);   // AManaged=True
-        // uuid adopte tout de suite: sinon un Save apres echec fait un doublon
+          keyPath, pw, key, phrase, True);   // AManaged
+        // adopte tout de suite: sinon un Save apres echec fait un doublon
         FUuid := uuid;
       end
       else
       begin
         uuid := FUuid;
-        // secrets nil = inchanges: editer le nom ne touche pas la cle privee
+        // secrets nil = inchanges
         FModel.UpdateCredential(FUuid, dispName, authType, user, domain,
           keyPath, pw, key, phrase);
       end;
@@ -538,8 +529,7 @@ begin
       end
       else if isFido and (pem <> nil) then
       begin
-        // La cle est deja sur le token: si le document refuse de la garder, il
-        // reste une cle inutilisable dessus, mais rien d'incoherent ici.
+        // deja sur le token: si ceci leve, elle y reste orpheline, sans plus
         FModel.SetManagedKeyPair(uuid, pem, pubLine);
         FPublicKey := pubLine;
       end;
@@ -562,8 +552,6 @@ begin
   WipeEdit(FPhraseEdit);
   inherited Destroy;
 end;
-
-{ TCredManagerForm }
 
 constructor TCredManagerForm.CreateFor(AOwner: TComponent; ADoc: TRshDocument;
   AModel: TRshModel; ASaveProc: TNotifyEvent);
@@ -661,7 +649,7 @@ procedure TCredManagerForm.SyncButtons;
 var
   has: Boolean;
 begin
-  // Cocoa: OnSelectionChange manque a l'appel, d'ou l'activation sur presence.
+  // Cocoa oublie OnSelectionChange: on active sur presence, pas sur selection
   has := (FList <> nil) and (FList.Count > 0) and (not FBusy);
   FBtnNew.Enabled := not FBusy;
   FBtnEdit.Enabled := has;
@@ -822,8 +810,7 @@ begin
   if MessageDlg('Rotate Managed Key', msg, mtConfirmation,
     [mbYes, mbNo], 0) <> mrYes then Exit;
 
-  // FBusy pendant toute la rotation: sa fenetre d'attente pompe les messages,
-  // et un second clic sur Rotate ou Delete s'imbriquait dans la premiere.
+  // FBusy: la fenetre d'attente pompe les messages, un second clic s'y imbrique
   FBusy := True;
   SyncButtons;
   try
@@ -855,7 +842,6 @@ begin
   if FBusy then Exit;
   uuid := SelectedUuid;
   if uuid = '' then Exit;
-  // encore affecte a un hote: on refuse plutot que de le casser en douce
   usage := FModel.CredentialUsage(uuid);
   if Length(usage) > 0 then
   begin

@@ -2,13 +2,12 @@ unit uSafeSave;
 
 {$mode objfpc}{$H+}
 
-// Ecriture de fichiers sans fenetre de troncature, sans TOCTOU, sans casser
-// les liens. Repris de RottenText.
+// Ecriture atomique, liens respectes. Repris de RottenText.
 
 interface
 
 uses
-  Classes, SysUtils{$IFDEF UNIX}, BaseUnix, Unix{$ENDIF}; // Unix: fpfsync
+  Classes, SysUtils{$IFDEF UNIX}, BaseUnix, Unix{$ENDIF};
 
 type
   TOwnedHandleStream = class(THandleStream)
@@ -17,25 +16,19 @@ type
   end;
 
 function HasHardLinks(const APath: string): Boolean;
-// Couple volume/inode: change a tout rename, meme a taille et date identiques.
+// volume+inode: trahit le rename que taille et date ne voient pas
 function FileIdentity(const APath: string; out ADev, AIno: Int64): Boolean;
-// echoue AVANT toute ecriture plutot que de rendre un chemin encore lie:
-// l'appelant renommerait par-dessus le LIEN
+// Leve AVANT d'ecrire: renommer par-dessus un lien, c'est ecraser le lien.
 function ResolveLink(const APath: string): string;
-// Chemin canonique pour servir de CLE (verrou d'instance): resout liens et
-// jonctions de TOUS les segments, pas seulement du dernier -- deux chemins
-// vers le meme document doivent donner la meme cle, sinon deux instances
-// l'ouvrent chacune sous son verrou. Repli: le chemin absolu tel quel.
+// Cle du verrou d'instance. TOUS les segments resolus, sinon deux chemins
+// vers le meme document = deux instances qui s'ecrasent en bonne entente.
 function CanonicalPathKey(const APath: string): string;
 function CreateTempIn(const ADest: string; out ATmpName: string): TOwnedHandleStream;
-// Contenu rendu durable AVANT le rename: fsync sous Unix, FlushFileBuffers
-// sous Windows. False = le disque n'a pas confirme, la sauvegarde ne l'est pas.
+// False: le disque n'a rien promis, la sauvegarde non plus.
 function FlushToDisk(AHandle: THandle): Boolean;
 function ReplaceByRename(const ATmp, ADest: string): Boolean;
 {$IFDEF WINDOWS}
-// Lecture et repose d'une DACL, etat « heritage coupe » compris: le reposer
-// sans cet etat reactiverait l'heritage sur un fichier qui l'avait coupe.
-// ReplaceByRename s'en sert pour son repli quand ReplaceFileW echoue.
+// DACL avec son etat d'heritage: l'oublier rouvre un heritage coupe.
 function ReadDacl(const AFrom: string; out ASd: TBytes;
   out AInfo: LongWord): Boolean;
 function ApplyDacl(const ATo: string; const ASd: TBytes;
@@ -45,13 +38,11 @@ function ApplyDacl(const ATo: string; const ASd: TBytes;
 function ReplaceByRenamePrivate(const ATmp, ADest: string): Boolean;
 procedure MakePrivateFile(const APath: string);
 procedure MakePrivateDir(const APath: string);
-// Mieux que « SaveToFile puis MakePrivateFile »: pas de fenetre ou un umask
-// permissif expose le contenu a tout le monde.
+// Ne jamais exister, meme un instant, sous l'umask du voisin.
 procedure SavePrivateFile(const APath, AData: string);
 procedure SavePrivateStream(const APath: string; ASrc: TStream);
 procedure WriteInPlaceKeepLinks(const APath, AData: string);
-// WriteBuffer prend un Count Longint: au-dela de 2 Gio la taille wrappe en
-// silence ({$R-}) = copie tronquee
+// WriteBuffer prend un Longint: au-dela de 2 Gio, troncature muette.
 procedure WriteAllBuf(ASt: TStream; const AData: string);
 
 implementation
@@ -90,9 +81,6 @@ const
   MOVEFILE_REPLACE_EXISTING = 1;
   MOVEFILE_COPY_ALLOWED     = 2;
   DACL_SECURITY_INFO = 4;
-  // L'etat « heritage coupe » de la DACL. Se tromper ici reactiverait
-  // l'heritage sur une cible qui l'avait coupe: le document ressortirait
-  // avec, en plus, tout ce que le dossier accorde.
   SE_DACL_PROTECTED_SS        = $1000;
   PROTECTED_DACL_SEC_INFO     = $80000000;
   UNPROTECTED_DACL_SEC_INFO   = $20000000;
@@ -193,7 +181,6 @@ var
   h: THandle;
 begin
   Result := APath;
-  // UTF8Decode explicite: ne pas dependre de DefaultSystemCodePage
   attrs := GetFileAttributesW(PWideChar(UTF8Decode(APath)));
   if (attrs = $FFFFFFFF) or ((attrs and FILE_ATTR_REPARSE) = 0) then
     Exit; // inexistant ou pas un lien: tel quel
@@ -250,8 +237,6 @@ begin
   Result := FlushFileBuffers(AHandle);
 end;
 
-// Lit la DACL de AFrom, et decide avec quel etat d'heritage la reposer:
-// protege si la source coupait l'heritage, rien de plus sinon.
 function ReadDacl(const AFrom: string; out ASd: TBytes;
   out AInfo: LongWord): Boolean;
 var
@@ -297,22 +282,14 @@ begin
   info := 0;
   if FileExists(ADest) then
   begin
-    // La DACL de la cible se lit AVANT ReplaceFileW: interrompu, il peut
-    // avoir deja supprime le nom de la cible, et il serait alors trop tard
-    // pour savoir quels droits reposer sur le temporaire.
+    // AVANT: un ReplaceFileW interrompu a pu deja emporter la cible.
     daclOk := ReadDacl(ADest, sd, info);
-    // SANS le drapeau IGNORE_MERGE_ERRORS: avec lui, ReplaceFileW peut
-    // reussir sans reporter l'ACL de la cible, et un document protege par
-    // des droits particuliers ressortirait en silence avec ceux du dossier.
+    // Pas d'IGNORE_MERGE_ERRORS: il « reussit » en jetant l'ACL au passage.
     if ReplaceFileW(PWideChar(UTF8Decode(ADest)), PWideChar(UTF8Decode(ATmp)),
         nil, 0, nil, nil) then
       Exit(True);
-    // Repli MoveFileExW (montages sans ReplaceFile): seulement une fois la
-    // DACL de la cible reposee sur le temporaire, etat d'heritage compris,
-    // sinon echec FRANC plutot qu'une protection perdue. PIEGE: un
-    // ReplaceFileW interrompu peut avoir deja supprime la cible; refuser
-    // alors laisserait le document SANS fichier -- le rename conclut, c'est
-    // le seul cas ou publier prime sur les droits.
+    // Repli MoveFileExW, DACL reposee ou echec franc. Sauf cible deja
+    // disparue: les droits du dossier valent mieux que pas de fichier.
     if daclOk then
       daclOk := ApplyDacl(ATmp, sd, info);
     if (not daclOk) and FileExists(ADest) then
@@ -371,8 +348,7 @@ begin
     raise EStreamError.CreateFmt('Too many symlink levels resolving %s', [APath]);
 end;
 
-// realpath(3): la libc resout tous les segments, ce que fpReadLink sur le
-// dernier ne fait pas. Tampon >= PATH_MAX partout (4096 Linux, 1024 macOS).
+// realpath resout tous les segments. Tampon >= PATH_MAX (4096 Linux, 1024 macOS).
 function c_realpath(AName, AResolved: PChar): PChar; cdecl;
   external 'c' name 'realpath';
 
@@ -384,8 +360,7 @@ begin
   Result := ExpandFileName(APath);
   if c_realpath(PChar(Result), @buf[0]) <> nil then
     Exit(string(PChar(@buf[0])));
-  // fichier a creer: realpath echoue sur un segment absent, mais le dossier
-  // parent, lui, existe -- canoniser le dossier et garder le nom
+  // fichier a creer: canoniser le parent, garder le nom
   dir := ExcludeTrailingPathDelimiter(ExtractFilePath(Result));
   name := ExtractFileName(Result);
   if (dir <> '') and (name <> '') and
@@ -463,8 +438,7 @@ var
   fs: TFileStream;
   tmp: string;
 begin
-  // filet: contenu complet ecrit d'abord dans un temp, conserve et remonte
-  // dans l'erreur si l'ecriture sur place echoue
+  // filet: si l'ecriture en place casse, le contenu survit dans le temp
   net := CreateTempIn(APath, tmp);
   try
     try
@@ -478,8 +452,7 @@ begin
     raise;
   end;
   try
-    // fmCreate tronquerait la cible avant reecriture: une coupure laisserait tous
-    // les hardlinks vides. On reecrit en place, la taille est posee en dernier.
+    // Pas de fmCreate: une coupure viderait tous les hardlinks. Taille en dernier.
     fs := TFileStream.Create(APath, fmOpenReadWrite);
     try
       if AData <> '' then

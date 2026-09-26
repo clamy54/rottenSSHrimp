@@ -2,9 +2,7 @@ unit uIconPicker;
 
 {$mode objfpc}{$H+}
 
-// Choix d'icone d'arborescence: grille defilante, le catalogue est trop fourni
-// pour un sous-menu. Peinte sur clSideBg, le fond de l'arbre, pour que
-// l'apercu soit le rendu final (c'est ce fond qui decide de la variante).
+// Peinte sur clSideBg, le fond de l'arbre: c'est lui qui choisit la variante.
 
 interface
 
@@ -25,7 +23,7 @@ const
   CELL      = ICON_SIZE + 2 * CELL_PAD;
   MARGIN    = 16;
   COLS      = 5;
-  VIEW_H    = 430;         // hauteur visible de la grille, le reste defile
+  VIEW_H    = 430;         // hauteur visible, le reste defile
 
 type
   TIconPickerForm = class(TForm)
@@ -177,7 +175,6 @@ begin
     ModalResult := mrOk;
 end;
 
-// sinon une icone choisie en bas de catalogue s'ouvre hors champ
 procedure TIconPickerForm.ScrollToSelected;
 var
   x, y: Integer;

@@ -2,22 +2,21 @@ unit uRdpScancodes;
 
 {$mode objfpc}{$H+}
 
-// Touche virtuelle LCL -> scancode PC/XT set 1. RDP transporte des
-// positions physiques, pas des caracteres: la disposition s'applique cote serveur.
-// Sans uses: les VK_* sont numeriques, l'unite reste testable en console.
+// VK -> scancode set 1. RDP transporte des positions, la disposition est cote
+// serveur. Sans uses expres: testable en console.
 
 interface
 
 function VkToScancode(AVk: Word; out AScancode: Integer;
   out AExtended: Boolean): Boolean;
 
-// Position PHYSIQUE (keycode X11 = evdev + 8, et evdev == set 1 jusqu'a 88):
-// sans MapVirtualKeyW, la table VK QWERTY US rendait 'q' pour le A azerty.
+// Position PHYSIQUE: keycode X11 = evdev + 8, evdev = set 1 jusqu'a 88.
+// La table VK QWERTY rendrait 'q' pour le A azerty.
 function X11KeycodeToScancode(AKeycode: Word; out AScancode: Integer;
   out AExtended: Boolean): Boolean;
 
-// Position PHYSIQUE aussi: les kVK_* sont positionnels par construction, mais
-// sans formule -- table figee. Piege ISO: certains claviers croisent $0A et $32.
+// kVK_* positionnels mais sans formule: table figee. Piege ISO: certains
+// claviers croisent $0A et $32.
 function MacKeycodeToScancode(AKeycode: Word; out AScancode: Integer;
   out AExtended: Boolean): Boolean;
 
@@ -54,7 +53,7 @@ begin
   AExtended := False;
   Result := True;
   {$IFDEF WINDOWS}
-  // touches "caractere": la disposition active tranche, la table US plus bas
+  // touches caractere: la disposition active d'abord, la table US en repli
   case AVk of
     Ord('0')..Ord('9'), Ord('A')..Ord('Z'), 186..192, 219..223, 226:
       begin

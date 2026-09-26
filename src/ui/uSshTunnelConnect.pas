@@ -2,9 +2,7 @@ unit uSshTunnelConnect;
 
 {$mode objfpc}{$H+}
 
-// Tunnel SSH « via » un jump host, commun aux flux SSH/VNC/RDP. La cle d'hote de
-// la passerelle passe par le MEME magasin TOFU. Tunnel et courtier reviennent a
-// l'appelant, qui les confie a l'onglet pour la duree de la session.
+// Jump host commun SSH/VNC/RDP. La passerelle passe par le MEME magasin TOFU.
 
 interface
 
@@ -196,8 +194,7 @@ begin
   tun.OnHostKeyLookup := @broker.HostKeyLookup;
   tun.OnHostKey := @broker.HostKeyAsk;
   tun.OnHostKeySave := @broker.HostKeySave;
-  // cle de securite sur le bastion: l'avis et le PIN, sinon une cle a PIN
-  // echoue ici sans un mot
+  // sans eux, une cle a PIN sur le bastion echoue sans un mot
   prompts := TFidoSessionPrompts.Create(nil);
   tun.OnSkNotice := @prompts.SkNotice;
   tun.OnSkPin := @prompts.SkPin;
@@ -233,8 +230,8 @@ begin
   finally
     Screen.Cursor := crDefault;
     dlg.Free;   // apres le Shutdown, jamais avant
-    // le tunnel survit a cette fonction: detacher AVANT de liberer, un
-    // DoSkNotice encore en file viserait un objet mort
+    // le tunnel nous survit: detacher AVANT, un DoSkNotice en file tirerait
+    // sur un cadavre
     tun.OnSkNotice := nil;
     tun.OnSkPin := nil;
     prompts.Free;

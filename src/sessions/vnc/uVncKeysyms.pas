@@ -2,9 +2,8 @@ unit uVncKeysyms;
 
 {$mode objfpc}{$H+}
 
-// Correspondance clavier LCL -> keysym X11 (message RFB KeyEvent). VNC
-// transporte des keysyms, pas des scancodes: c'est le CLIENT qui decide du
-// caractere. Hors ASCII, keysym = point de code + $01000000 (convention RFB).
+// LCL -> keysym X11. VNC transporte des keysyms: c'est le CLIENT qui choisit
+// le caractere. Hors ASCII: point de code + $01000000.
 
 interface
 

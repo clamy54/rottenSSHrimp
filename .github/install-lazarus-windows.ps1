@@ -1,20 +1,9 @@
-# Installe Lazarus 4.8 + FPC 3.2.2 sur un runner Windows x64. Partage par
-# ci.yml et release.yml.
-#
-# Plus setup-lazarus: il s'arrete a 4.4 et tire tout de SourceForge, qui bride
-# les runners GitHub au point de faire expirer le job. L'installeur officiel
-# vient donc du miroir clamy54/lazarus-mirror (meme fichier), SourceForge n'est
-# plus que le secours. Le cache d'actions du workflow evite meme ce premier
-# telechargement d'un run au suivant.
-#
-# L'installeur est confronte a son empreinte AVANT d'etre execute, qu'il
-# vienne du miroir, de SourceForge ou du cache: un miroir, un cache ou un
-# telechargement tronque ne doivent pas pouvoir fabriquer le compilateur qui
-# fabrique les binaires publies. Le telechargement va dans un fichier
-# temporaire, renomme une fois verifie: le cache ne contient jamais un fichier
-# a moitie ecrit.
-#
-# Install silencieuse dans C:\lazarus, un des chemins que build.ps1 sonde.
+# Lazarus 4.8 + FPC 3.2.2, runner Windows x64 (ci.yml, release.yml).
+# Pas setup-lazarus: bloque a 4.4, et SourceForge bride les runners jusqu'au
+# timeout. Miroir d'abord, SourceForge en secours.
+# Empreinte verifiee AVANT execution, d'ou qu'il vienne: le compilateur des
+# binaires publies ne sort pas d'un cache douteux. Temp puis rename.
+# Cible C:\lazarus, sondee par build.ps1.
 $ErrorActionPreference = 'Stop'
 
 $name = "lazarus-4.8-fpc-3.2.2-win64.exe"

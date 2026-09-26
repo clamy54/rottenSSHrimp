@@ -2,8 +2,7 @@ unit uVersion;
 
 {$mode objfpc}{$H+}
 
-// Source unique de verite pour la version: lue aussi par scripts/make-app.sh
-// (Info.plist) et par la CI. Ne pas dupliquer ailleurs.
+// Lu aussi par scripts/make-app.sh (Info.plist) et la CI. Ne pas dupliquer.
 
 interface
 

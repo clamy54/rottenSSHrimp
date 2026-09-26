@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
 #
-# Confronte les empreintes de packaging/windows/DEPS.md aux DLL versionnees.
-# Deux invariants: chaque empreinte correspond a son fichier, et chaque DLL
-# suivie a son empreinte.
-#
-# Un document de provenance aux empreintes perimees ne prouve rien: c'est
-# arrive, 9 sur 11 apres un re-provisioning oublie. D'ou ce controle en CI.
+# DEPS.md contre les DLL versionnees, dans les deux sens. Une provenance
+# perimee ne prouve rien: deja vu, 9 sur 11 apres un re-provisioning.
 #
 # Usage: scripts/check-win-deps.sh   (0 = concordance, 1 = ecarts detailles)
 set -uo pipefail
@@ -22,7 +18,7 @@ fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-# Paires « nom hash »: `xxx.dll` puis, apres un deux-points, 64 hexa.
+# `xxx.dll`: `64 hexa`
 sed -n 's/.*`\([A-Za-z0-9._-]*\.dll\)`[[:space:]]*:[[:space:]]*`\([0-9a-f]\{64\}\)`.*/\1 \2/p' \
   "$deps" | sort -u > "$tmp/doc.txt"
 
@@ -33,14 +29,13 @@ fi
 
 fail=0
 
-# Deux hash differents pour un meme nom: le document se contredit, on le dit
-# avant toute comparaison aux fichiers.
+# un nom, deux hash: le document se contredit avant meme les fichiers
 for dup in $(cut -d' ' -f1 "$tmp/doc.txt" | sort | uniq -d); do
   echo "CONTRADICTION ${dup}: plusieurs empreintes differentes dans DEPS.md"
   fail=1
 done
 
-# 1. Document -> fichiers suivis.
+# 1. document -> fichiers
 while IFS=' ' read -r name want; do
   f="${root}/${name}"
   if [ ! -f "$f" ]; then
@@ -55,7 +50,7 @@ while IFS=' ' read -r name want; do
   fi
 done < "$tmp/doc.txt"
 
-# 2. Fichiers suivis -> document.
+# 2. fichiers -> document
 git -C "$root" ls-files '*.dll' | grep -v '/' > "$tmp/tracked.txt"
 while IFS= read -r name; do
   if ! grep -q "^${name} " "$tmp/doc.txt"; then

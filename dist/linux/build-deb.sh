@@ -1,14 +1,10 @@
 #!/usr/bin/env bash
-# Construit un paquet Debian/Ubuntu (.deb) de RottenSSHrimp.
-# Prerequis : scripts/build.sh --release, plus dpkg-deb et cmake (libvncclient).
-# Usage : ./build-deb.sh [version]
+# .deb Debian/Ubuntu. Prerequis: scripts/build.sh --release, dpkg-deb, cmake.
+# Usage: ./build-deb.sh [version]
 #
-# Layout : le binaire N'EST PAS dans /usr/bin. Les chargeurs cherchent lib/ A
-# COTE de l'executable (ExtractFilePath(ParamStr(0)) + 'lib/'), donc un
-# /usr/bin/rottensshrimp nu irait chercher /usr/bin/lib/. Tout vit dans
-# /usr/lib/rottensshrimp/ et /usr/bin/rottensshrimp est un WRAPPER qui fait exec
-# sur le vrai binaire -- exec remplace argv[0] par le chemin reel. Un symlink ne
-# suffirait PAS : argv[0] resterait /usr/bin/rottensshrimp.
+# Les chargeurs cherchent lib/ A COTE de argv[0]: tout vit dans
+# /usr/lib/rottensshrimp/, /usr/bin n'a qu'un WRAPPER exec. Un symlink
+# laisserait argv[0] dans /usr/bin, et lib/ irait se chercher en /usr/bin/lib/.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
@@ -23,8 +19,7 @@ bin="$root/rottensshrimp"
 	exit 1
 }
 
-# libvncclient vendorisee : comparer une EMPREINTE, pas la seule presence du
-# fichier, sinon on rediffuse une lib vulnerable apres correction d'un patch.
+# EMPREINTE, pas presence: sinon un patch corrige et on rediffuse l'ancienne lib.
 vdir="$root/third_party/libvnc"
 want_stamp="$(cat "$vdir/SHA256SUMS" "$root/scripts/build-libvnc.sh" \
 	"$vdir"/patches/*.patch 2>/dev/null | sha256sum | awk '{print $1}')"
@@ -34,14 +29,12 @@ if [ ! -f "$vdir/out/lib/libvncclient.so.1" ] || [ "$want_stamp" != "$have_stamp
 	"$root/scripts/build-libvnc.sh"
 fi
 
-# La table d'offsets du binding doit decrire la lib qu'on vient de batir. Sans
-# ce controle, le paquet s'installe, se lance, et VNC est desactive au premier
-# chargement pour tout le monde -- message visible uniquement en terminal.
+# Offsets du binding contre la lib batie. Sans ca, VNC meurt chez tout le
+# monde et ne le dit qu'au terminal.
 "$root/scripts/check-vnc-offsets.sh"
 
-# Shim RDP : un paquet qui l'oublie livre le mode degrade a tout le monde, en
-# silence. Ici il est construit contre les en-tetes de la machine de build,
-# c'est-a-dire de la cible -- l'avantage du paquet natif sur l'archive.
+# Shim RDP oublie = mode degrade pour tous, en silence. Bati contre les
+# en-tetes de la cible: l'avantage du paquet natif.
 echo "==> construction du shim RDP"
 "$root/scripts/build-rdp-shim.sh" --strict
 shim="$root/lib/librssh_rdp_shim.so"
@@ -58,7 +51,7 @@ mkdir -p "$pkg/DEBIAN" \
 
 install -m 0755 "$bin" "$pkg/usr/lib/rottensshrimp/rottensshrimp"
 install -m 0644 "$shim" "$pkg/usr/lib/rottensshrimp/lib/"
-# le fichier reel ET les liens que le chargeur essaie (.so.1 puis .so)
+# fichier reel ET liens essayes par le chargeur (.so.1 puis .so)
 cp -P "$vdir/out/lib/"libvncclient.so* "$pkg/usr/lib/rottensshrimp/lib/"
 
 cat > "$pkg/usr/bin/rottensshrimp" <<'EOF'
@@ -68,17 +61,12 @@ EOF
 chmod 0755 "$pkg/usr/bin/rottensshrimp"
 
 install -m 0644 "$here/rottensshrimp.desktop" "$pkg/usr/share/applications/rottensshrimp.desktop"
-# Le .desktop annonce « MimeType=application/x-rottensshrimp-document »; sans la
-# definition qui suit, ce type n'existe pour personne et l'association reste
-# lettre morte.
+# sans cette definition, le MimeType du .desktop n'existe pour personne
 install -m 0644 "$here/rottensshrimp-mime.xml" \
 	"$pkg/usr/share/mime/packages/rottensshrimp.xml"
 
-# Les bases MIME, desktop et icones sont des CACHES: poser les fichiers ne
-# suffit pas, il faut les reconstruire, sinon l'association n'apparait qu'au
-# prochain rafraichissement fortuit. Chaque outil est teste avant usage (un
-# conteneur minimal peut ne pas les avoir) et aucun echec n'interrompt
-# l'installation: un cache non regenere ne casse pas l'application.
+# MIME, desktop, icones: des CACHES a reconstruire. Outils optionnels (conteneur
+# minimal), et un cache perime ne vaut pas une install ratee.
 cat > "$pkg/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e
@@ -97,8 +85,7 @@ exit 0
 EOF
 chmod 0755 "$pkg/DEBIAN/postinst"
 
-# Meme reconstruction apres retrait, sinon le type et l'association survivent
-# dans les caches et le bureau propose encore d'ouvrir avec un binaire absent.
+# sinon le bureau propose encore d'ouvrir avec un binaire disparu
 cat > "$pkg/DEBIAN/postrm" <<'EOF'
 #!/bin/sh
 set -e
@@ -117,9 +104,8 @@ exit 0
 EOF
 chmod 0755 "$pkg/DEBIAN/postrm"
 
-# Licences. On distribue des binaires tiers (libvncclient en tete), leurs textes
-# voyagent avec, plus la source correspondante GPL : le tarball epingle
-# lui-meme, ses patches et la recette. Une empreinte seule ne reconstruit rien.
+# Binaires tiers distribues: licences + source GPL correspondante (tarball,
+# patches, recette). Une empreinte seule ne reconstruit rien.
 install -m 0644 "$root/LICENSE" "$pkg/usr/share/doc/rottensshrimp/copyright"
 mkdir -p "$pkg/usr/share/doc/rottensshrimp/LICENSES"
 cp -R "$root/LICENSES/." "$pkg/usr/share/doc/rottensshrimp/LICENSES/"
@@ -150,8 +136,7 @@ install -m 0644 "$root/scripts/build-libvnc.sh" "$srcdir/"
 install -m 0644 "$root/scripts/gen-vnc-offsets.c" "$srcdir/"
 find "$srcdir" -type f -exec chmod 0644 {} +
 
-# SBOM : ce que CE paquet embarque. Les deps de la distribution n'y sont pas,
-# on ne les distribue pas.
+# SBOM: ce que CE paquet embarque, pas les deps de la distribution.
 vnc_ver="$(sed -n 's/.*LibVNCServer-\([0-9.]*\)\.tar\.gz.*/\1/p' "$vdir/SHA256SUMS" | head -1)"
 "$root/scripts/gen-sbom.sh" \
 	"$pkg/usr/share/doc/rottensshrimp/sbom.cdx.json" \
@@ -160,8 +145,7 @@ vnc_ver="$(sed -n 's/.*LibVNCServer-\([0-9.]*\)\.tar\.gz.*/\1/p' "$vdir/SHA256SU
 	"librssh_rdp_shim|$ver|GPL-3.0-or-later|$pkg/usr/lib/rottensshrimp/lib/librssh_rdp_shim.so" \
 	"libvncclient (LibVNCServer)|${vnc_ver:-0.9.15}|GPL-2.0-or-later|$pkg/usr/lib/rottensshrimp/lib/libvncclient.so.1"
 
-# Icones dans le theme hicolor. ImageMagick optionnel ; sans lui on pose la
-# source telle quelle en 256.
+# ImageMagick optionnel; sans lui, la source telle quelle en 256.
 if command -v magick >/dev/null 2>&1; then im="magick"
 elif command -v convert >/dev/null 2>&1; then im="convert"
 else im=""
@@ -183,15 +167,9 @@ else
 	install -m 0644 "$src_icon" "$d/rottensshrimp.png"
 fi
 
-# Depends. Deux moitiers, et la seconde est le piege :
-#  - ce qui est LIE au binaire (GTK, X11, libc) : calcule par dpkg-shlibdeps,
-#    jamais ecrit a la main, les noms de paquets bougent (la transition time64
-#    d'Ubuntu a renomme libgtk2.0-0 en libgtk2.0-0t64, et un Depends sur un
-#    paquet inexistant = paquet installable nulle part).
-#  - ce qui est ouvert par dlopen (FreeRDP, libssh2, SQLite, libsodium) :
-#    INVISIBLE pour shlibdeps, qui ne lit que la table des symboles. Sans cette
-#    liste ecrite a la main, le paquet s'installe, se lance, et n'ouvre aucune
-#    session -- l'echec le plus couteux a diagnostiquer.
+# Depends: le LIE vient de dpkg-shlibdeps (les noms bougent, cf. time64).
+# Le dlopen est INVISIBLE pour lui: liste a la main, sinon le paquet
+# s'installe, se lance, et n'ouvre aucune session.
 deps=""
 if command -v dpkg-shlibdeps >/dev/null 2>&1; then
 	sd="$here/build/shlibdeps"
@@ -207,25 +185,15 @@ fi
 	echo "dpkg-shlibdeps indisponible : Depends de repli (a verifier)" >&2
 	deps="libc6, libgtk2.0-0t64 | libgtk2.0-0, libx11-6"
 }
-# FreeRDP compte pour TROIS paquets, pas un. libfreerdp3.so.3,
-# libfreerdp-client3.so.3 et libwinpr3.so.3 sont empaquetes separement et
-# libfreerdp3-3 ne tire QUE libwinpr3-3: sans la ligne ci-dessous, une machine
-# neuve n'a pas libfreerdp-client3-3, le chargeur exige les trois fichiers et
-# RDP tombe sur « FreeRDP not found in the expected locations ». Constate sur
-# Linux Mint 22.3. libwinpr3-3 est declare aussi: on l'ouvre nous-memes par
-# dlopen, s'en remettre au Depends d'un autre paquet est un pari, pas une regle.
+# FreeRDP = TROIS paquets; libfreerdp3-3 ne tire pas le client. winpr declare
+# aussi: on le dlopen nous-memes, compter sur un Depends tiers est un pari.
 dlopen_deps="libfreerdp3-3, libfreerdp-client3-3, libwinpr3-3"
 dlopen_deps="${dlopen_deps}, libssh2-1t64 | libssh2-1, libsqlite3-0, libsodium23"
 deps="${deps}, ${dlopen_deps}"
-# Recommends, pas Depends: libfido2 n'est ouverte que pour un identifiant FIDO2
-# et l'application vit tres bien sans. apt l'installe par defaut, un serveur
-# minimal peut la refuser sans rien casser.
+# Recommends: sans libfido2, seul FIDO2 manque.
 recommends="libfido2-1"
 
-# Substitution bash, PAS sed : les Depends contiennent des alternatives Debian
-# (« libssh2-1t64 | libssh2-1 »), et le premier | de la valeur fermait
-# l'expression s|@DEPENDS@|...| -- « unknown option to `s' ». Ici le
-# remplacement est litteral, aucun caractere n'a de sens special.
+# Substitution bash, PAS sed: le | des alternatives Debian ferme s|...|...|.
 control="$(cat "$here/control.in")"
 control="${control//@VERSION@/$ver}"
 control="${control//@ARCH@/$arch}"

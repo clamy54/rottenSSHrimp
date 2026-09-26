@@ -1,7 +1,5 @@
-{ CF_HDROP, lu et ecrit par l'API Windows: la liste de fichiers du
-  presse-papiers local, telle que l'Explorateur la pose et la colle. Les
-  autres plateformes compilent des reponses vides -- le copier-coller de
-  fichiers RDP est un pont Windows<->Windows.
+{ CF_HDROP du presse-papiers local. Ailleurs que sous Windows: reponses vides,
+  le copier-coller de fichiers RDP est un pont Windows/Windows.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -14,16 +12,13 @@ interface
 uses
   SysUtils;
 
-// True avec la liste (vide s'il n'y a pas de fichiers); False = presse-papiers
-// verrouille par un autre programme, a retenter.
+// False = presse-papiers verrouille par un autre, a retenter. Vide n'est pas False.
 function ClipReadHdrop(out APaths: TStringArray): Boolean;
 
-// Pose APaths en CF_HDROP avec « Preferred DropEffect » = copie. False =
-// rien n'a ete change.
+// False = rien n'a ete change.
 function ClipWriteHdrop(const APaths: TStringArray): Boolean;
 
-// Numero de sequence du presse-papiers systeme: il change a CHAQUE ecriture,
-// par qui que ce soit. Zero la ou la plateforme ne le donne pas.
+// Change a CHAQUE ecriture, par qui que ce soit. 0 hors Windows.
 function ClipSequence: LongWord;
 
 implementation
@@ -81,7 +76,6 @@ var
 begin
   APaths := nil;
   Result := False;
-  // Pas de fichiers: une lecture SAINE d'une liste vide, pas un echec.
   if not IsClipboardFormatAvailable(CF_HDROP_) then
     Exit(True);
   if not OpenClipboard(0) then
@@ -90,8 +84,7 @@ begin
     h := GetClipboardData(CF_HDROP_);
     if h = 0 then
       Exit;
-    // La liste part ENTIERE: tronquer ici enverrait au serveur une selection
-    // qui n'est pas celle copiee. C'est l'annonce qui refuse, avec un motif.
+    // ENTIERE, jamais tronquee: c'est l'annonce qui refuse, avec un motif.
     n := DragQueryFileW(h, $FFFFFFFF, nil, 0);
     SetLength(APaths, n);
     for i := 0 to n - 1 do
@@ -159,8 +152,8 @@ begin
   pw^ := #0;
   GlobalUnlock(hDrop);
 
-  // « Preferred DropEffect » = copie: sans lui certains collages proposent un
-  // DEPLACEMENT, et l'Explorateur effacerait nos temporaires sources.
+  // Sans « Preferred DropEffect » = copie, certains collages DEPLACENT et
+  // l'Explorateur efface nos temporaires sources.
   hEff := GlobalAlloc(GMEM_MOVEABLE_, 4);
   if hEff <> 0 then
   begin

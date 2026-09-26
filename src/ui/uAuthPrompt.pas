@@ -2,9 +2,7 @@ unit uAuthPrompt;
 
 {$mode objfpc}{$H+}
 
-// Demande interactive d'identifiants, SSH et RDP: une connexion sans credential
-// demande au lieu de refuser. Le mot de passe sort en TSecureBytes,
-// mais l'effacement est du MEILLEUR EFFORT: la LCL garde ses propres copies.
+// Effacement du mot de passe au MEILLEUR EFFORT: la LCL garde ses copies.
 
 interface
 
@@ -17,8 +15,6 @@ function AskLogin(const ATitle, APrompt: string; AAskDomain: Boolean;
   AAskUsername: Boolean = True;
   const AOkCaption: string = 'Connect'): Boolean;
 
-// Un seul champ masque: mot de passe deja connu de l'appelant, passphrase, ou
-// PIN d'une cle de securite.
 function AskSecret(const APrompt: string; out ASecret: TSecureBytes): Boolean;
 
 implementation
@@ -88,7 +84,6 @@ begin
       ASecret := TSecureBytes.CreateFrom(raw[1], Length(raw));
       Result := True;
     finally
-      // Meilleur effort: le widget garde sa copie (voir uAuthPrompt)
       if raw <> '' then
         FillChar(raw[1], Length(raw), 0);
       ed.Text := '';
@@ -145,7 +140,7 @@ begin
     lbl.Parent := f;
     lbl.Left := 16;
     lbl.Top := y;
-    // AutoSize recalcule la LARGEUR: un prompt long deborde au lieu de replier.
+    // AutoSize recalcule la LARGEUR: un prompt long deborde au lieu de replier
     lbl.AutoSize := False;
     lbl.Width := 388;
     lbl.Height := 54;
@@ -182,7 +177,7 @@ begin
     f.ClientHeight := y + 32 + 16;
     ApplyUiFont(f);
 
-    // Pas SetFocus: sur une forme pas encore affichee il leve 'Can not focus'.
+    // Pas SetFocus: forme pas encore affichee = 'Can not focus'
     if (edUser <> nil) and (edUser.Text = '') then
       f.ActiveControl := edUser
     else

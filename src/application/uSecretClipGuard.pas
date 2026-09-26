@@ -1,14 +1,6 @@
-{ Garde: ne pas exfiltrer vers un serveur distant un secret revele localement.
-
-  Reveler un mot de passe recree le champ en NSTextField ordinaire sous Cocoa
-  (SetPasswordChar => RecreateWnd): AppKit y autorise le Copy que le
-  NSSecureTextField interdisait. Les sondes de presse-papiers RDP/VNC (700 ms,
-  400 ms) l'annoncent alors a tous les serveurs connectes, sans trace visible.
-
-  Tant qu'un champ est revele, les sondes ADOPTENT ce qu'elles lisent au lieu de
-  l'annoncer: le contenu copie pendant la revelation ne partira pas, meme apres
-  remasquage. Le partage n'est pas desactive, seule la fenetre a risque l'est.
-  Une copie faite depuis une autre application n'est pas couverte.
+{ Un mot de passe revele sous Cocoa redevient un NSTextField copiable, et les
+  sondes RDP/VNC l'offriraient a tous les serveurs. Pendant la revelation, elles
+  ADOPTENT sans annoncer. Copie depuis une autre application: non couverte.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -18,22 +10,19 @@ unit uSecretClipGuard;
 
 interface
 
-{ Appairees et comptees: l'appelant DOIT relacher a la fermeture du dialogue,
-  meme si le champ est reste revele. }
+{ Comptees: relacher a la fermeture du dialogue, meme champ encore revele. }
 procedure SecretRevealBegin;
 procedure SecretRevealEnd;
 
 function SecretRevealActive: Boolean;
 
-{ Suspension GLOBALE du partage, pour le verrouillage du document: les sessions
-  gardees restent connectees et leurs sondes tournent -- seule la reconnexion
-  etait inhibee. Comme pour la revelation, la sonde adopte sans annoncer. }
+{ Document verrouille: les sessions gardees tournent encore, leurs sondes aussi.
+  Elles adoptent sans annoncer. }
 procedure SetClipboardSharingSuspended(AValue: Boolean);
 function ClipboardSharingSuspended: Boolean;
 
-{ Incrementee a chaque OUVERTURE d'une fenetre protegee: une sonde qui memorise
-  la generation vue detecte une fenetre entierement comprise entre deux ticks et
-  re-adopte sans annoncer. Comparaison par egalite, le debordement est sans effet. }
+{ Rattrape une revelation tenue entre deux ticks de sonde. Comparer par egalite:
+  le debordement est alors sans effet. }
 function ClipGuardGeneration: LongInt;
 
 implementation
@@ -51,7 +40,7 @@ end;
 
 procedure SecretRevealEnd;
 begin
-  // Plancher a zero: un relachement en trop desactiverait le garde pour de bon.
+  // Plancher a zero, sinon un relachement en trop desarme le garde pour de bon.
   if InterLockedDecrement(GRevealed) < 0 then
     InterLockedIncrement(GRevealed);
 end;

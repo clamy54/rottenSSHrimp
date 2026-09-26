@@ -1,14 +1,4 @@
-{ Dialogues de decision de l'onglet Scp: conflit de cible, et confirmation d'un
-  remplacement non atomique.
-
-  Le dialogue de conflit montre les DEUX cotes -- chemin, taille, date --
-  parce qu'un choix entre « garder » et « remplacer » sans savoir lequel est le
-  plus recent n'est pas un choix. « Resume » n'est propose que si la reprise
-  est reellement sure; sinon le bouton reste desactive et la raison du refus
-  est ecrite a cote, plutot que de laisser croire a une option disponible.
-
-  Ces dialogues s'ouvrent sur le thread UI, appeles depuis le thread de
-  transport qui attend leur reponse.
+{ Thread UI, appeles par le transport qui attend la reponse.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -22,12 +12,10 @@ uses
   Classes, SysUtils, Controls, Forms, StdCtrls, ExtCtrls, Graphics, Dialogs,
   uTransferQueue, uScpPaths, uTheme;
 
-// Rend la decision de l'utilisateur. Fermer la fenetre vaut cnSkip: ne rien
-// decider ne doit jamais se traduire par un ecrasement.
+// Fermer vaut cnSkip: ne rien decider n'ecrase jamais rien.
 function AskTransferConflict(const AInfo: TConflictInfo): TConflictDecision;
 
-// Le remplacement atomique est indisponible. True = l'utilisateur accepte le
-// repli, en connaissance du risque. Defaut: False.
+// True: repli non atomique accepte en connaissance de cause. Defaut: False.
 function AskNonAtomicReplace(const ATargetPath: string): Boolean;
 
 implementation
@@ -147,8 +135,7 @@ begin
   AddBtn('Skip', Ord(cnSkip), 122, 80);
   AddBtn('Keep both', Ord(cnKeepBoth), 208, 100);
   resumeBtn := AddBtn('Resume', Ord(cnResume), 314, 90);
-  // Desactive plutot qu'absent: l'utilisateur voit que l'option existe, et
-  // la ligne au-dessus lui dit pourquoi elle ne s'applique pas ici.
+  // Desactive plutot qu'absent: la ligne au-dessus dit pourquoi.
   resumeBtn.Enabled := AInfo.ResumeAllowed;
   AddBtn('Cancel queue', Ord(cnCancelQueue), 410, 120);
 
@@ -171,7 +158,7 @@ end;
 procedure TConflictForm.FormClose(Sender: TObject;
   var CloseAction: TCloseAction);
 begin
-  // Fermer sans choisir n'est pas un accord: la cible reste intacte.
+  // Fermer sans choisir n'est pas un accord.
   if FForm.ModalResult <> mrOK then
   begin
     FDecision.Action := cnSkip;

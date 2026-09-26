@@ -2,9 +2,7 @@ unit uCrashRecoveryDialog;
 
 {$mode objfpc}{$H+}
 
-// Recuperation apres crash: les copies de travail orphelines, une action par
-// element. Rien n'ecrase l'original -- TRshDocument.RecoverDocument rend un
-// document sans chemin source, il n'a nulle part ou retomber.
+// Rien n'ecrase l'original: RecoverDocument rend un document sans chemin source.
 
 interface
 

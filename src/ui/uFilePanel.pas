@@ -1,10 +1,5 @@
-{ Panneau de fichiers de l'onglet Scp: barre d'adresse, barre d'outils, liste
-  en vue detaillee, bandeau d'erreur. Le meme controle sert des deux cotes;
-  seules les colonnes affichees changent.
-
-  Tout est dessine a la main, comme le reste du projet: une TListView native
-  reste blanche en plein theme sombre sous Windows, ignore la police embarquee,
-  et ses en-tetes ne se recolorent pas du tout.
+{ Dessine a la main: une TListView native reste blanche en theme sombre sous
+  Windows, ignore la police embarquee, et ses en-tetes ne se recolorent pas.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -25,7 +20,7 @@ type
   TFilePanelSide = (fpsLocal, fpsRemote);
 
   TFilePanelAction = (
-    fpaNavigate,      // entrer dans le dossier sous le curseur
+    fpaNavigate,
     fpaParent,
     fpaBack,
     fpaForward,
@@ -34,17 +29,16 @@ type
     fpaNewFolder,
     fpaRename,
     fpaDelete,
-    fpaTransfer,      // F5, bouton, ou glisser-deposer: envoyer en face
+    fpaTransfer,
     fpaDuplicate,     // copie sur place, sous un nom libre
     fpaCopyPath,
-    fpaProperties,    // droits d'acces de la selection distante
+    fpaProperties,
     fpaFocusOther);
 
   TFilePanelActionEvent = procedure(AAction: TFilePanelAction) of object;
   TFilePathEvent = procedure(const APath: string) of object;
 
-  // Depot venant de l'AUTRE panneau. ASubFolder vide = le dossier affiche;
-  // sinon le dossier survole, qui devient la racine de confinement.
+  // ASubFolder vide = dossier affiche; sinon le survole, racine de confinement
   TFileDropEvent = procedure(ASourceSide: TFilePanelSide;
     const ASubFolder: string) of object;
 
@@ -68,7 +62,7 @@ type
     FMiRename: TMenuItem;
     FMiDuplicate: TMenuItem;
     FMiDelete: TMenuItem;
-    // Cote local seulement: nil. Les droits Unix n'y veulent rien dire.
+    // nil en local: pas de droits Unix a montrer
     FMiProps: TMenuItem;
     FOnAction: TFilePanelActionEvent;
     FOnNavigate: TFilePathEvent;
@@ -109,8 +103,7 @@ type
     destructor Destroy; override;
 
     procedure ApplyTheme;
-    // Largeur en dessous de laquelle la barre d'icones se tronque: le
-    // separateur des volets ne doit pas descendre en dessous.
+    // plancher du separateur des volets
     function ToolbarMinWidth: Integer;
     procedure SetPathText(const APath: string);
     function PathText: string;
@@ -150,15 +143,11 @@ type
     FOnAction: TFilePanelActionEvent;
     FOnDrop: TFileDropEvent;
     FHoverHeader: Integer;
-    // Le glissement demarre au premier deplacement FRANC, pas au clic: sinon un
-    // clic de selection partirait en glissement.
     FDragArmed: Boolean;
     FDragOrigin: TPoint;
-    FDragOver: Boolean;          // un lot venant d'en face survole la liste
-    FDropIndex: Integer;         // ligne visee, -1 = le dossier affiche
-    // Ligne « .. » synthetique, dans FEntries pour que tri, defilement et clic
-    // marchent sans cas particulier. FParentIndex la designe partout ou elle doit
-    // etre EXCLUE. -1 = a la racine, pas de ligne.
+    FDragOver: Boolean;
+    FDropIndex: Integer;         // -1 = le dossier affiche
+    // « .. » synthetique, vit dans FEntries: a EXCLURE partout. -1 = racine.
     FParentIndex: Integer;
 
     function VisibleCount: Integer;
@@ -193,26 +182,18 @@ type
   public
     constructor Create(AOwner: TComponent); override;
 
-    // Publiques comme dans TControl: les proteger reduirait la visibilite d'une
-    // methode virtuelle heritee.
+    // publiques comme dans TControl: on ne reduit pas une visibilite heritee
     procedure DragOver(Source: TObject; X, Y: Integer; AState: TDragState;
       var Accept: Boolean); override;
     procedure DragDrop(Source: TObject; X, Y: Integer); override;
 
-    // AHasParent ajoute « .. » en tete: l'appelant seul sait s'il y a un parent.
     procedure SetEntries(const AEntries: TScpEntryArray; AHasParent: Boolean);
     procedure SelectAll;
     procedure ClearSelection;
-    // Noms selectionnes, y compris les entrees non transferables: c'est le moteur
-    // qui tranche, avec un motif. Les cacher ici les ferait disparaitre sans un mot.
+    // Non transferables compris: le moteur les refuse AVEC un motif, pas nous en silence.
     function SelectedNames: TStringArray;
-    // Memes entrees que SelectedNames, entieres: la fenetre de droits a
-    // besoin du mode de chacune, et un second lstat par fichier dirait la
-    // meme chose en chargeant le serveur.
     function SelectedEntries: TScpEntryArray;
     function FocusedEntry(out AEntry: TScpEntry): Boolean;
-    // La ligne sous le curseur est-elle « .. »? Renommer, supprimer ou copier le
-    // chemin doivent le savoir: ce n'est pas un element.
     function FocusedIsParent: Boolean;
     function SelectionCount: Integer;
     procedure CaptureView(out ASelected: TStringArray; out AFocused: string;
@@ -224,7 +205,6 @@ type
     property SideKind: TFilePanelSide read FSide;
     procedure RecomputeMetrics;
 
-    // IThemedScrollTarget
     function ScrollViewportHeight: Integer;
     function ScrollMaxTop: Integer;
     function ScrollGetTop: Integer;
@@ -249,9 +229,7 @@ uses
 const
   PANEL_PAD = 6;
   MIN_ROW_HEIGHT = 18;
-  // Seuil au-dela duquel un clic devient un glissement. Trop bas, la selection
-  // part en glissement au moindre tremblement.
-  DRAG_THRESHOLD = 6;
+  DRAG_THRESHOLD = 6;   // px; plus bas, le moindre tremblement devient un glisser
 
 function FormatStamp(AUnixUtc: Int64): string;
 var
@@ -261,8 +239,6 @@ begin
   dt := UniversalTimeToLocal(UnixToDateTime(AUnixUtc));
   Result := FormatDateTime('yyyy-mm-dd hh:nn', dt);
 end;
-
-{ TFileListView }
 
 constructor TFileListView.Create(AOwner: TComponent);
 begin
@@ -300,9 +276,8 @@ var
   avail: Integer;
   charW: Integer;
 
-  // Panneau trop etroit: la colonne s'EFFACE (largeur nulle, comme mode et
-  // proprietaire en local) plutot que d'etre coupee a droite sans defilement
-  // pour la ravoir. Elle revient d'elle-meme quand la place revient.
+  // Trop etroit: la colonne s'EFFACE plutot que d'etre coupee a droite, sans
+  // defilement horizontal pour la ravoir.
   procedure ShedIfCramped(ACol: TFileSortColumn);
   begin
     if (FColWidths[ACol] = 0) or (avail >= charW * 12) then Exit;
@@ -322,21 +297,17 @@ begin
   end
   else
   begin
-    // Pas de mode POSIX ni de proprietaire en local: une colonne inventee vaut
-    // moins qu'une colonne absente.
     FColWidths[fscMode] := 0;
     FColWidths[fscOwner] := 0;
   end;
   avail := ClientWidth - PANEL_PAD * 2 - FColWidths[fscSize] -
     FColWidths[fscModified] - FColWidths[fscMode] - FColWidths[fscOwner];
-  // Tant que le nom n'a pas une largeur lisible, les colonnes cedent de la
-  // moins utile a la plus utile.
+  // de la moins utile a la plus utile
   ShedIfCramped(fscOwner);
   ShedIfCramped(fscMode);
   ShedIfCramped(fscModified);
   ShedIfCramped(fscSize);
-  // Le nom prend le reste, avec un plancher: la colonne la plus utile en
-  // dernier recours, meme si elle depasse.
+  // plancher meme si ca deborde: sans nom, le reste ne sert a rien
   FColWidths[fscName] := Max(avail, charW * 12);
 end;
 
@@ -353,8 +324,7 @@ begin
   Result := Length(FOrder);
 end;
 
-// Les dossiers d'abord, quoi qu'il arrive: les melanger dans un tri par
-// taille rend la navigation impraticable.
+// dossiers d'abord, quel que soit le tri
 procedure TFileListView.Reorder;
 var
   i, j, tmp: Integer;
@@ -364,7 +334,6 @@ var
     ea, eb: TScpEntry;
     r: Integer;
   begin
-    // « .. » reste en tete quel que soit le tri: c'est la sortie, pas un element.
     if A = FParentIndex then Exit(True);
     if B = FParentIndex then Exit(False);
     ea := FEntries[A];
@@ -425,8 +394,7 @@ begin
     FEntries[FParentIndex].IsDir := True;
   end;
   SetLength(FSelected, Length(FEntries));
-  // FSelected[0] sur un tableau vide dereference nil, et un dossier vide est
-  // un cas courant.
+  // FSelected[0] sur tableau vide = dereference de nil
   if Length(FSelected) > 0 then
     FillChar(FSelected[0], Length(FSelected) * SizeOf(Boolean), 0);
   Reorder;
@@ -462,8 +430,7 @@ procedure TFileListView.RestoreView(const ASelected: TStringArray;
 var
   i, j: Integer;
 begin
-  // Sur les NOMS: apres un renommage les index ont bouge, et restaurer par
-  // position selectionnerait autre chose.
+  // par NOM: apres un renommage, les index mentent
   for i := 0 to High(FOrder) do
     for j := 0 to High(ASelected) do
       if FEntries[FOrder[i]].Name = ASelected[j] then
@@ -522,8 +489,7 @@ begin
       Result[n] := FEntries[FOrder[i]].Name;
       Inc(n);
     end;
-  // Rien de coche: l'element sous le curseur fait office de selection. « .. »
-  // ne compte pas, elle n'est ni a envoyer ni a supprimer.
+  // rien de coche: l'element sous le curseur, sauf « .. »
   if (n = 0) and (FFocusIndex >= 0) and (FFocusIndex < Length(FOrder)) and
      (not IsParentRow(FFocusIndex)) then
   begin
@@ -672,8 +638,7 @@ var
     Canvas.TextRect(Rect(x + PANEL_PAD, 0, x + w - 2, FHeaderHeight),
       x + PANEL_PAD, (FHeaderHeight - Canvas.TextHeight('Wg')) div 2,
       headText);
-    // La fleche porte le sens du tri. Omise plutot que rognee si la colonne est
-    // trop etroite: une demi fleche ne dit plus ou elle pointe.
+    // omise plutot que rognee: une demi-fleche ne dit plus ou elle pointe
     if FSortCol = ACol then
     begin
       arrowBox := FHeaderHeight - 6;
@@ -748,8 +713,7 @@ begin
   r := Rect(0, AY, ClientWidth, AY + FRowHeight);
 
   if drop then
-    // Le dossier vise par le lacher, distinct de la selection: l'un dit OU, et
-    // l'autre QUOI.
+    // distinct de la selection: l'un dit OU, l'autre QUOI
     rowBg := BlendColor(clAccent, clPanelBg, 40)
   else if sel then
   begin
@@ -797,8 +761,7 @@ begin
     AY + FRowHeight), PANEL_PAD * 2 + iconBox, textTop, s);
   Inc(x, w);
 
-  // « .. » n'a ni taille, ni date, ni mode a montrer: ceux du parent comme ceux
-  // du dossier courant seraient faux. Le cadre de focus, lui, se dessine.
+  // « .. »: ni taille, ni date, ni mode; ceux du parent comme du courant mentiraient
   if not parentRow then
   begin
     if e.IsDir then
@@ -951,7 +914,6 @@ begin
       end;
     VK_A:
       begin
-        // Ctrl+A ou Cmd+A: la LCL met Meta dans ssMeta, les deux doivent marcher.
         if (ssCtrl in Shift) or (ssMeta in Shift) then
         begin
           SelectAll;
@@ -1037,8 +999,7 @@ begin
 
   idx := RowAt(Y);
   if idx < 0 then Exit;
-  // Clic droit DANS la selection: on la garde, sinon un menu contextuel sur dix
-  // fichiers n'en laisserait qu'un.
+  // clic droit DANS la selection: on la garde, sinon dix fichiers deviennent un
   if (Button = mbRight) and (not IsParentRow(idx)) and
      FSelected[FOrder[idx]] then
   begin
@@ -1116,8 +1077,7 @@ begin
   inherited MouseMove(Shift, X, Y);
 end;
 
-// Un lot ne se depose que dans l'AUTRE panneau: vers lui-meme ce serait une
-// copie locale, que cet onglet ne fait pas.
+// AUTRE panneau seulement: cet onglet ne fait pas de copie sur place
 procedure TFileListView.DragOver(Source: TObject; X, Y: Integer;
   AState: TDragState; var Accept: Boolean);
 var
@@ -1142,7 +1102,6 @@ begin
     Exit;
   end;
 
-  // Lacher sur un dossier y entre, ailleurs le lot va dans le dossier affiche.
   // Un lien n'est pas une destination: ecrire au travers sortirait du panneau.
   newDrop := -1;
   idx := RowAt(Y);
@@ -1174,8 +1133,7 @@ begin
     FOnDrop(src.SideKind, sub);
 end;
 
-// Appele sur la SOURCE, quelle que soit la fin: lacher, Echap ou perte du
-// focus.
+// sur la SOURCE, quelle que soit la fin: lacher, Echap ou perte du focus
 procedure TFileListView.DoEndDrag(Target: TObject; X, Y: Integer);
 begin
   FDragArmed := False;
@@ -1272,8 +1230,6 @@ begin
   FOnViewChanged := AHandler;
 end;
 
-{ TFilePanel }
-
 constructor TFilePanel.CreateSide(AOwner: TComponent; ASide: TFilePanelSide);
 var
   topRow: TPanel;
@@ -1306,8 +1262,6 @@ begin
   topRow.ParentColor := False;
   topRow.Height := 30;
 
-  // Selecteur de volumes cote LOCAL seulement: un serveur POSIX n'a qu'une
-  // arborescence.
   if ASide = fpsLocal then
   begin
     FVolumeBox := TComboBox.Create(Self);
@@ -1382,8 +1336,7 @@ begin
   ApplyTheme;
 end;
 
-// Menu contextuel: exactement ce que font F5, F2, Suppr et la duplication.
-// Des chemins que le clavier n'a pas seraient un second jeu de regles.
+// Rien que le clavier ne fasse deja: pas de second jeu de regles.
 procedure TFilePanel.BuildMenu;
 
   function AddItem(const ACaption: string; AHandler: TNotifyEvent): TMenuItem;
@@ -1415,8 +1368,6 @@ begin
   FMiDuplicate := AddItem('Duplicate', @MenuDuplicate);
   AddSeparator;
   FMiDelete := AddItem('Delete', @MenuDelete);
-  // Une entree qui n'existe que d'un cote n'est pas une entree qui va et
-  // vient: le panneau local n'a pas de droits Unix a montrer.
   if FSide = fpsRemote then
   begin
     AddSeparator;
@@ -1428,8 +1379,7 @@ begin
   {$ENDIF}
 end;
 
-// GRISE, pas absent: un menu dont les entrees vont et viennent ne s'apprend
-// pas.
+// GRISE, pas absent: un menu qui change de forme ne s'apprend pas
 procedure TFilePanel.MenuPopup(Sender: TObject);
 var
   n: Integer;
@@ -1522,8 +1472,7 @@ end;
 
 function TFilePanel.ToolbarMinWidth: Integer;
 begin
-  // derive du dessin de ToolbarPaint (PANEL_PAD + i * (taille + 6)): suit
-  // tout ajout de bouton sans re-mesure a la main
+  // meme arithmetique que ToolbarPaint
   Result := 2 * PANEL_PAD + ButtonCount * (ButtonSize + 6) - 6;
 end;
 
@@ -1607,8 +1556,7 @@ begin
   begin
     x := PANEL_PAD + i * step;
     r := Rect(x, 3, x + size, 3 + size);
-    // Hover et pressed se distinguent par le fond, pas par un deplacement: une
-    // icone qui bouge d'un pixel a l'air d'un defaut d'affichage.
+    // par le fond, pas par un decalage: une icone qui bouge d'un pixel fait bug
     if i = FPressedButton then
     begin
       bg := clSelActive;
@@ -1659,7 +1607,7 @@ var
   b: Integer;
 begin
   b := ButtonAt(X);
-  // Relachement sur le meme bouton que l'appui: en sortir, c'est renoncer.
+  // sortir du bouton avant de relacher, c'est renoncer
   if (b >= 0) and (b = FPressedButton) and Assigned(FOnAction) then
     FOnAction(ButtonAction(b));
   FPressedButton := -1;
@@ -1693,7 +1641,7 @@ procedure TFilePanel.VolumeSelected(Sender: TObject);
 var
   i: Integer;
 begin
-  // Sans ce drapeau, repositionner le selecteur relancerait une navigation.
+  // sinon repositionner le selecteur relance une navigation
   if FSuppressVolumeEvent or (FVolumeBox = nil) then Exit;
   i := FVolumeBox.ItemIndex;
   if (i < 0) or (i >= FVolumePaths.Count) then Exit;
@@ -1756,7 +1704,7 @@ procedure TFilePanel.SetVolumes(const ACaptions, APaths: array of string);
 var
   i: Integer;
 begin
-  if FVolumeBox = nil then Exit;   // panneau distant: pas de volumes
+  if FVolumeBox = nil then Exit;
   FSuppressVolumeEvent := True;
   try
     FVolumeBox.Items.BeginUpdate;
@@ -1783,8 +1731,7 @@ begin
   if FVolumeBox = nil then Exit;
   best := -1;
   bestLen := 0;
-  // Le volume RETENU est le plus SPECIFIQUE qui contienne le chemin: sinon
-  // « Home » gagnerait contre son propre lecteur.
+  // le plus SPECIFIQUE: le lecteur contient aussi « Home »
   for i := 0 to FVolumePaths.Count - 1 do
     if LocalIsUnder(FVolumePaths[i], APath) and
        (Length(FVolumePaths[i]) > bestLen) then

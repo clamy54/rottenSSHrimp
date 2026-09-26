@@ -2,9 +2,7 @@ unit uPasswordDialog;
 
 {$mode objfpc}{$H+}
 
-// Dialogues de mot de passe maitre. La jauge est informative: aucune regle de
-// composition n'est imposee. Les champs sont effaces avant fermeture et le mot
-// de passe sort en RawByteString UTF-8 que l'appelant DOIT effacer.
+// Le mot de passe sort en RawByteString UTF-8 que l'appelant DOIT effacer.
 
 interface
 
@@ -40,7 +38,7 @@ type
     procedure WipeFields;
   end;
 
-// longueur x log2(classes presentes): grossier, et surtout sans consequence
+// longueur x log2(classes presentes): grossier, et sans consequence
 function EstimateBits(const S: string): Double;
 var
   lower, upper, digit, other: Boolean;
@@ -143,8 +141,7 @@ begin
 
   warn := TLabel.Create(Self);
   warn.Parent := Self;
-  // AutoSize AVANT WordWrap: sinon le label s'etire et le texte est tronque au
-  // bord au lieu de passer a la ligne
+  // AutoSize AVANT WordWrap, sinon le texte est tronque au lieu de revenir a la ligne
   warn.AutoSize := False;
   warn.WordWrap := True;
   warn.SetBounds(MARGIN, y, DLG_W - 2 * MARGIN, 66);
@@ -246,8 +243,7 @@ end;
 
 procedure TPasswordDialog.WipeFields;
 begin
-  // Meilleur effort seulement: assigner Text alloue une string neuve et
-  // abandonne l'ancienne sans la zeroer. Reduit l'exposition, ne l'annule pas.
+  // Meilleur effort: Text realloue et abandonne l'ancienne string sans la zeroer.
   FEdit.Text := StringOfChar('*', Length(FEdit.Text));
   FEdit.Text := '';
   if FConfirm <> nil then

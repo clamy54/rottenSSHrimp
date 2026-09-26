@@ -2,8 +2,7 @@ unit uHostKeyDialog;
 
 {$mode objfpc}{$H+}
 
-// Dialogues de confiance de cle d'hote. Cle modifiee = alerte MITM, Cancel par
-// defaut, remplacement seulement apres confirmation renforcee.
+// Cle modifiee = alerte MITM: Cancel par defaut, remplacement sur saisie explicite.
 
 interface
 
@@ -16,8 +15,7 @@ function AskUnknownHostKey(const AInfo: TSshHostKeyInfo): TSshHostKeyDecision;
 // Rend hkdReject sauf remplacement explicite.
 function AskChangedHostKey(const AInfo: TSshHostKeyInfo): TSshHostKeyDecision;
 
-// Un seul dialogue pour N hotes jamais vus. Appele AVANT le handshake: pas
-// d'empreintes a montrer. Une cle CHANGEE n'y passe jamais.
+// AVANT le handshake: aucune empreinte a montrer. Une cle CHANGEE n'y passe jamais.
 function AskBulkUnknownHostKeys(const AHosts: array of string;
   out ADecision: TSshHostKeyDecision; out ACancelled: Boolean): Boolean;
 
@@ -83,7 +81,7 @@ begin
       'covered by this choice: it is always confirmed individually.';
     Inc(y, 56);
 
-    // par defaut: le choix le moins engageant montre chaque empreinte
+    // par defaut: le moins engageant
     btnEach := TButton.Create(f);
     btnEach.Parent := f;
     btnEach.Caption := 'Ask for each host';
@@ -183,7 +181,7 @@ begin
     lblFp.Caption := AInfo.Fingerprint;
     Inc(y, 40);
 
-    // par defaut la moins engageante des deux acceptations
+    // par defaut: le moins engageant
     btnOnce := TButton.Create(f);
     btnOnce.Parent := f;
     btnOnce.Caption := 'Trust once';
@@ -301,7 +299,7 @@ begin
     btnCancel.Caption := 'Cancel';
     btnCancel.ModalResult := mrCancel;
     btnCancel.Cancel := True;
-    btnCancel.Default := True;   // l'action sure reste par defaut
+    btnCancel.Default := True;
     btnCancel.Left := 504;
     btnCancel.Top := y;
     btnCancel.Width := 100;
@@ -323,7 +321,7 @@ begin
     f.Free;
   end;
 
-  // saisie explicite, jamais un simple clic
+  // saisie, jamais un simple clic
   typed := '';
   if not InputQuery('Replace Host Key',
     Format('Type REPLACE to trust the new key for %s:%d.',
@@ -370,7 +368,7 @@ begin
       Format('Host: %s:%d', [AInfo.Host, AInfo.Port]);
     Inc(y, 52);
 
-    // Cancel par defaut: le remplacement n'est jamais a portee d'un Entree reflexe
+    // Cancel par defaut: le remplacement jamais a portee d'un Entree reflexe
     btnCancel := TButton.Create(f);
     btnCancel.Parent := f;
     btnCancel.Caption := 'Cancel';

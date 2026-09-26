@@ -1,8 +1,6 @@
-{ Garde-fou avant GetJSON: le DOM fpjson se construit par recursion, dix mille
-  '[' epuisent sa pile et le try/except n'y peut rien (violation d'acces, pas
-  exception). Partage par l'import JSON et les themes: un theme depose dans le
-  dossier utilisateur se lit AVANT la fenetre principale, il bloquerait sinon
-  tous les demarrages suivants.
+{ Avant GetJSON: fpjson recurse, dix mille '[' font sauter la pile et aucun
+  try/except ne rattrape une violation d'acces. Un theme piege, lu au
+  demarrage, et l'application ne redemarre plus jamais.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -13,11 +11,10 @@ unit uJsonGuard;
 interface
 
 const
-  // Profondeur d'imbrication acceptee par defaut: largement au-dela de tout
-  // fichier legitime, tres en deca de ce qui fait tomber le parseur.
+  // loin au-dessus du legitime, loin en dessous du crash
   JSON_MAX_DEPTH_DEFAULT = 64;
 
-// Balayage lineaire, chaines et echappements compris; True = ne pas parser.
+// True = ne pas parser.
 function JsonNestingTooDeep(const AText: string;
   AMax: Integer = JSON_MAX_DEPTH_DEFAULT): Boolean;
 

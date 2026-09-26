@@ -2,8 +2,7 @@ unit uLibssh2Api;
 
 {$mode objfpc}{$H+}
 
-// Binding dynamique libssh2, charge par chemins absolus controles: repertoire
-// applicatif puis emplacements systeme. Jamais le cwd ni PATH.
+// Chemins absolus: dossier de l'appli puis systeme. JAMAIS le cwd ni PATH.
 
 interface
 
@@ -21,8 +20,7 @@ const
   LIBSSH2_ERROR_DECRYPT = -12;
   LIBSSH2_ERROR_SOCKET_DISCONNECT = -13;
   LIBSSH2_ERROR_PROTO = -14;
-  // rendu quand la cle privee ne se laisse pas lire: pour une cle sk, c'est le
-  // signe d'un backend crypto sans support des cles de securite (libgcrypt)
+  // cle sk illisible: backend sans cles de securite (libgcrypt)
   LIBSSH2_ERROR_FILE = -16;
   LIBSSH2_ERROR_AUTHENTICATION_FAILED = -18;
   LIBSSH2_ERROR_CHANNEL_CLOSED = -26;
@@ -31,11 +29,10 @@ const
   LIBSSH2_ERROR_EAGAIN = -37;
   LIBSSH2_ERROR_SOCKET_RECV = -43;
   LIBSSH2_ERROR_BAD_SOCKET = -45;
-  // Erreur cote SFTP: le code utile est alors dans libssh2_sftp_last_error.
+  // le vrai code est dans libssh2_sftp_last_error
   LIBSSH2_ERROR_SFTP_PROTOCOL = -31;
 
-  // Cles de securite FIDO2 (OpenSSH sk-*). Le drapeau de presence est toujours
-  // pose par ssh-keygen comme par nous; la verification (PIN) est optionnelle.
+  // sk-*: presence toujours posee, PIN optionnel
   LIBSSH2_SK_PRESENCE_REQUIRED = $01;
   LIBSSH2_SK_VERIFICATION_REQUIRED = $04;
 
@@ -64,8 +61,6 @@ const
 
   SSH_DISCONNECT_BY_APPLICATION = 11;
 
-  // --- SFTP ------------------------------------------------------------
-  // Drapeaux d'ouverture (SSH_FXF_*).
   LIBSSH2_FXF_READ = $00000001;
   LIBSSH2_FXF_WRITE = $00000002;
   LIBSSH2_FXF_APPEND = $00000004;
@@ -76,9 +71,8 @@ const
   LIBSSH2_SFTP_OPENFILE = 0;
   LIBSSH2_SFTP_OPENDIR = 1;
 
-  // v3, la version que parle libssh2, IGNORE ces drapeaux: le serveur recoit
-  // un SSH_FXP_RENAME nu, qui echoue si la cible existe. Le remplacement
-  // atomique passe donc par posix-rename@openssh.com, pas par ces bits.
+  // DECORATIFS: SFTP v3 les ignore et le rename echoue si la cible existe.
+  // L'atomique passe par posix-rename@openssh.com.
   LIBSSH2_SFTP_RENAME_OVERWRITE = $00000001;
   LIBSSH2_SFTP_RENAME_ATOMIC = $00000002;
   LIBSSH2_SFTP_RENAME_NATIVE = $00000004;
@@ -91,15 +85,14 @@ const
   LIBSSH2_SFTP_READLINK = 1;
   LIBSSH2_SFTP_REALPATH = 2;
 
-  // Quels champs de LIBSSH2_SFTP_ATTRIBUTES ont un sens. Lire un champ dont
-  // le bit est absent, c'est lire ce que le serveur n'a pas envoye.
+  // Bit absent = champ jamais envoye: le lire, c'est lire du vent.
   LIBSSH2_SFTP_ATTR_SIZE = $00000001;
   LIBSSH2_SFTP_ATTR_UIDGID = $00000002;
   LIBSSH2_SFTP_ATTR_PERMISSIONS = $00000004;
   LIBSSH2_SFTP_ATTR_ACMODTIME = $00000008;
   LIBSSH2_SFTP_ATTR_EXTENDED = $80000000;
 
-  // Type de fichier, dans les bits hauts de permissions (S_IFMT POSIX).
+  // S_IFMT, dans les bits hauts de permissions
   LIBSSH2_SFTP_S_IFMT = &0170000;
   LIBSSH2_SFTP_S_IFIFO = &0010000;
   LIBSSH2_SFTP_S_IFCHR = &0020000;
@@ -109,8 +102,7 @@ const
   LIBSSH2_SFTP_S_IFLNK = &0120000;
   LIBSSH2_SFTP_S_IFSOCK = &0140000;
 
-  // Codes SSH_FX_* rendus par libssh2_sftp_last_error. Les distinguer est ce
-  // qui separe « acces refuse » de « disque plein » dans l'interface.
+  // libssh2_sftp_last_error
   LIBSSH2_FX_OK = 0;
   LIBSSH2_FX_EOF = 1;
   LIBSSH2_FX_NO_SUCH_FILE = 2;
@@ -151,7 +143,7 @@ type
   libssh2_uint64_t = cuint64;
   libssh2_int64_t = cint64;
 
-  // layout a l'octet pres de libssh2.h: la lib alloue, on ne fait que lire
+  // libssh2.h a l'octet pres; la lib alloue, on ne fait que lire
   Plibssh2_agent_publickey = ^libssh2_agent_publickey;
   libssh2_agent_publickey = record
     magic: cuint;
@@ -161,22 +153,19 @@ type
     comment: PAnsiChar;
   end;
 
-  // Signature rendue par une cle de securite. C'est NOUS qui remplissons ce
-  // record depuis le token; libssh2 en fait le blob SSH (« string sig || byte
-  // flags || uint32 counter ») et LIBERE sig_r/sig_s avec le free() de SON
-  // runtime C: les allouer avec le malloc C, jamais avec GetMem.
+  // Rempli par nous, libere par libssh2 avec le free() de SON runtime C:
+  // sig_r/sig_s viennent du malloc C, JAMAIS de GetMem.
   PLIBSSH2_SK_SIG_INFO = ^LIBSSH2_SK_SIG_INFO;
   LIBSSH2_SK_SIG_INFO = record
     flags: cuint8;
     counter: cuint32;
     sig_r: PByte;
     sig_r_len: csize_t;
-    sig_s: PByte;      // ECDSA seulement; nil pour ed25519
+    sig_s: PByte;      // nil pour ed25519
     sig_s_len: csize_t;
   end;
 
-  // LIBSSH2_USERAUTH_SK_SIGN_FUNC. Appelee sur le thread qui fait l'auth, une
-  // fois par tentative; « data » est le message brut a signer, jamais hache.
+  // Thread de l'auth, une fois par tentative. « data » brut, PAS hache.
   TLibssh2SkSignFunc = function(session: PLIBSSH2_SESSION;
     sig_info: PLIBSSH2_SK_SIG_INFO; data: PByte; data_len: csize_t;
     algorithm: cint; flags: cuint8; application: PAnsiChar;
@@ -225,9 +214,7 @@ type
     privatekeydata: PAnsiChar; privatekeydata_len: csize_t;
     passphrase: PAnsiChar): cint; cdecl;
 
-  // Cle de securite: libssh2 lit la cle privee OpenSSH sk (elle ne contient pas
-  // de secret, seulement le key handle), en tire application/flags/handle, et
-  // nous rappelle pour la signature. pubkeydata peut etre nil.
+  // libssh2 lit le key handle et nous rappelle pour signer. pubkeydata: nil permis.
   Tlibssh2_userauth_publickey_sk = function(session: PLIBSSH2_SESSION;
     username: PAnsiChar; username_len: csize_t;
     pubkeydata: PByte; pubkeydata_len: csize_t;
@@ -249,7 +236,7 @@ type
     channel_type: PAnsiChar; channel_type_len: cuint;
     window_size, packet_size: cuint;
     message: PAnsiChar; message_len: cuint): PLIBSSH2_CHANNEL; cdecl;
-  // port-forwarding local: en non bloquant, EAGAIN veut dire "reessayer"
+  // non bloquant: EAGAIN = reessayer, pas echouer
   Tlibssh2_channel_direct_tcpip_ex = function(session: PLIBSSH2_SESSION;
     host: PAnsiChar; port: cint; shost: PAnsiChar; sport: cint): PLIBSSH2_CHANNEL; cdecl;
   Tlibssh2_channel_request_pty_ex = function(channel: PLIBSSH2_CHANNEL;
@@ -273,37 +260,29 @@ type
   Tlibssh2_channel_get_exit_status = function(
     channel: PLIBSSH2_CHANNEL): cint; cdecl;
 
-  // LIBSSH2_SFTP_ATTRIBUTES, a l'octet pres. « unsigned long » ne fait PAS la
-  // meme taille partout: 4 octets sur Windows x64 (LLP64), 8 sur Linux et
-  // macOS (LP64). ctypes.culong porte cette difference; l'ecrire en cuint32
-  // decalerait tout le record d'un OS a l'autre. PACKRECORDS C reproduit en
-  // plus le bourrage que le compilateur C insere entre flags (4 octets sur
-  // Win64) et filesize (aligne sur 8).
+  // unsigned long = 4 octets sous Win64 (LLP64), 8 ailleurs: culong, JAMAIS
+  // cuint32. PACKRECORDS C pour le bourrage entre flags et filesize.
   {$PACKRECORDS C}
   PLIBSSH2_SFTP_ATTRIBUTES = ^LIBSSH2_SFTP_ATTRIBUTES;
   LIBSSH2_SFTP_ATTRIBUTES = record
-    flags: culong;            // LIBSSH2_SFTP_ATTR_*: quels champs sont valides
+    flags: culong;            // LIBSSH2_SFTP_ATTR_*
     filesize: libssh2_uint64_t;
     uid, gid: culong;
-    permissions: culong;      // mode POSIX, type compris (S_IFMT)
-    atime, mtime: culong;     // secondes depuis l'epoque Unix
+    permissions: culong;      // S_IFMT compris
+    atime, mtime: culong;     // epoque Unix, secondes
   end;
   {$PACKRECORDS DEFAULT}
 
-  // statvfs@openssh.com. Champs et types repris de sftp.h: ici TOUT est en
-  // libssh2_uint64_t, y compris les compteurs, donc pas de piege LLP64.
+  // statvfs@openssh.com: tout en uint64, pas de piege LLP64.
   {$PACKRECORDS C}
-  // Nom volontairement DIFFERENT de celui de sftp.h: le C distingue
-  // LIBSSH2_SFTP_STATVFS (le type) de libssh2_sftp_statvfs (la fonction),
-  // le Pascal non. Garder le nom d'origine ferait collisionner le type avec
-  // le pointeur de fonction declare plus bas.
+  // Renomme: Pascal ne distingue pas la casse, le type heurterait la fonction.
   PLibssh2SftpStatVfs = ^TLibssh2SftpStatVfs;
   TLibssh2SftpStatVfs = record
-    f_bsize: libssh2_uint64_t;     // taille de bloc du systeme de fichiers
-    f_frsize: libssh2_uint64_t;    // taille de bloc pour les compteurs
-    f_blocks: libssh2_uint64_t;    // blocs au total
-    f_bfree: libssh2_uint64_t;     // blocs libres
-    f_bavail: libssh2_uint64_t;    // blocs libres pour un non-privilegie
+    f_bsize: libssh2_uint64_t;
+    f_frsize: libssh2_uint64_t;    // unite des compteurs de blocs
+    f_blocks: libssh2_uint64_t;
+    f_bfree: libssh2_uint64_t;
+    f_bavail: libssh2_uint64_t;    // pour un non-root
     f_files: libssh2_uint64_t;
     f_ffree: libssh2_uint64_t;
     f_favail: libssh2_uint64_t;
@@ -313,16 +292,14 @@ type
   end;
   {$PACKRECORDS DEFAULT}
 
-  // OPTIONNELLE cote SERVEUR: l'extension peut ne pas etre annoncee, et
-  // l'appel rend alors une erreur. Aucune decision de transfert n'en depend.
+  // Extension serveur OPTIONNELLE: aucune decision de transfert n'en depend.
   Tlibssh2_sftp_statvfs = function(sftp: PLIBSSH2_SFTP;
     path: PAnsiChar; path_len: csize_t;
     st: PLibssh2SftpStatVfs): cint; cdecl;
 
   Tlibssh2_sftp_init = function(session: PLIBSSH2_SESSION): PLIBSSH2_SFTP; cdecl;
   Tlibssh2_sftp_shutdown = function(sftp: PLIBSSH2_SFTP): cint; cdecl;
-  // Code SSH_FX_* du DERNIER echec SFTP. N'a de sens qu'apres un appel ayant
-  // rendu LIBSSH2_ERROR_SFTP_PROTOCOL.
+  // Sens UNIQUEMENT apres un LIBSSH2_ERROR_SFTP_PROTOCOL.
   Tlibssh2_sftp_last_error = function(sftp: PLIBSSH2_SFTP): culong; cdecl;
   Tlibssh2_sftp_get_channel = function(
     sftp: PLIBSSH2_SFTP): PLIBSSH2_CHANNEL; cdecl;
@@ -332,8 +309,7 @@ type
     open_type: cint): PLIBSSH2_SFTP_HANDLE; cdecl;
   Tlibssh2_sftp_close_handle = function(
     handle: PLIBSSH2_SFTP_HANDLE): cint; cdecl;
-  // Rend ce qu'il a pu: une lecture plus courte que demandee n'est NI une
-  // erreur NI la fin du fichier. Seul 0 est la fin.
+  // Lecture courte: NI erreur NI fin. Seul 0 est la fin.
   Tlibssh2_sftp_read = function(handle: PLIBSSH2_SFTP_HANDLE;
     buffer: PAnsiChar; buffer_maxlen: csize_t): cssize_t; cdecl;
   Tlibssh2_sftp_write = function(handle: PLIBSSH2_SFTP_HANDLE;
@@ -343,7 +319,7 @@ type
   Tlibssh2_sftp_tell64 = function(
     handle: PLIBSSH2_SFTP_HANDLE): libssh2_uint64_t; cdecl;
   Tlibssh2_sftp_fsync = function(handle: PLIBSSH2_SFTP_HANDLE): cint; cdecl;
-  // Une entree par appel; 0 = fin du repertoire, negatif = erreur.
+  // 0 = fin, negatif = erreur
   Tlibssh2_sftp_readdir_ex = function(handle: PLIBSSH2_SFTP_HANDLE;
     buffer: PAnsiChar; buffer_maxlen: csize_t;
     longentry: PAnsiChar; longentry_maxlen: csize_t;
@@ -357,9 +333,8 @@ type
   Tlibssh2_sftp_rename_ex = function(sftp: PLIBSSH2_SFTP;
     source: PAnsiChar; source_len: cuint;
     dest: PAnsiChar; dest_len: cuint; flags: clong): cint; cdecl;
-  // posix-rename@openssh.com: le SEUL remplacement atomique disponible en
-  // SFTP v3. OPTIONNEL a deux titres: absent des libssh2 < 1.11, et refuse
-  // par un serveur qui n'annonce pas l'extension.
+  // SEUL remplacement atomique en SFTP v3. Absent avant libssh2 1.11, et le
+  // serveur peut le refuser.
   Tlibssh2_sftp_posix_rename_ex = function(sftp: PLIBSSH2_SFTP;
     source: PAnsiChar; source_len: csize_t;
     dest: PAnsiChar; dest_len: csize_t): cint; cdecl;
@@ -369,7 +344,6 @@ type
     path: PAnsiChar; path_len: cuint; mode: clong): cint; cdecl;
   Tlibssh2_sftp_rmdir_ex = function(sftp: PLIBSSH2_SFTP;
     path: PAnsiChar; path_len: cuint): cint; cdecl;
-  // link_type: SYMLINK (creer), READLINK (lire la cible), REALPATH (resoudre).
   Tlibssh2_sftp_symlink_ex = function(sftp: PLIBSSH2_SFTP;
     path: PAnsiChar; path_len: cuint;
     target: PAnsiChar; target_len: cuint; link_type: cint): cint; cdecl;
@@ -400,8 +374,7 @@ var
   libssh2_userauth_authenticated: Tlibssh2_userauth_authenticated = nil;
   libssh2_userauth_password_ex: Tlibssh2_userauth_password_ex = nil;
   libssh2_userauth_publickey_frommemory: Tlibssh2_userauth_publickey_frommemory = nil;
-  // OPTIONNEL: absent des builds sans support des cles de securite. Toujours
-  // tester Libssh2HasSkAuth avant d'appeler.
+  // OPTIONNEL: Libssh2HasSkAuth d'abord.
   libssh2_userauth_publickey_sk: Tlibssh2_userauth_publickey_sk = nil;
   libssh2_agent_init: Tlibssh2_agent_init = nil;
   libssh2_agent_connect: Tlibssh2_agent_connect = nil;
@@ -441,7 +414,7 @@ var
   libssh2_sftp_fstat_ex: Tlibssh2_sftp_fstat_ex = nil;
   libssh2_sftp_stat_ex: Tlibssh2_sftp_stat_ex = nil;
   libssh2_sftp_rename_ex: Tlibssh2_sftp_rename_ex = nil;
-  // OPTIONNEL: tester Libssh2HasPosixRename avant d'appeler.
+  // OPTIONNEL: Libssh2HasPosixRename d'abord.
   libssh2_sftp_posix_rename_ex: Tlibssh2_sftp_posix_rename_ex = nil;
   libssh2_sftp_unlink_ex: Tlibssh2_sftp_unlink_ex = nil;
   libssh2_sftp_mkdir_ex: Tlibssh2_sftp_mkdir_ex = nil;
@@ -449,21 +422,19 @@ var
   libssh2_sftp_symlink_ex: Tlibssh2_sftp_symlink_ex = nil;
   libssh2_sftp_statvfs: Tlibssh2_sftp_statvfs = nil;
 
-// Idempotent. Leve ELibssh2Error si la lib manque, est trop ancienne ou incomplete.
+// Idempotent. Leve si la lib manque, est trop vieille ou incomplete.
 procedure Libssh2EnsureLoaded;
 function Libssh2IsLoaded: Boolean;
-// Les cles de securite ne sont implementees que par le backend OpenSSL de
-// libssh2; un build libgcrypt exporte le symbole mais rend LIBSSH2_ERROR_FILE.
-// False = ne pas proposer l'authentification FIDO2.
+// Backend OpenSSL seulement: libgcrypt exporte le symbole et rend
+// LIBSSH2_ERROR_FILE, le mensonge par omission.
 function Libssh2HasSkAuth: Boolean;
-// posix-rename@openssh.com cote CLIENT seulement. Le serveur peut malgre tout
-// refuser l'extension: son absence de son cote ne se decouvre qu'a l'appel.
+// Cote CLIENT seulement: le refus du serveur ne se decouvre qu'a l'appel.
 function Libssh2HasPosixRename: Boolean;
 function Libssh2VersionString: string;
 function Libssh2HostKeyTypeName(AType: Integer): string;
 
-// Une cle RSA epinglee doit offrir rsa-sha2-512, rsa-sha2-256 ET ssh-rsa: meme
-// cle, trois signatures. Epingler ssh-rsa seul casse contre OpenSSH >= 8.8.
+// RSA epinglee = rsa-sha2-512, rsa-sha2-256 ET ssh-rsa. ssh-rsa seul casse
+// contre OpenSSH >= 8.8.
 function Libssh2HostKeyPref(const ATypes: array of string): string;
 
 implementation
@@ -525,8 +496,7 @@ begin
     raise ELibssh2Error.CreateFmt('libssh2: missing symbol: %s', [AName]);
 end;
 
-// Symbole facultatif: son absence ne doit pas condamner toute la lib, elle
-// retire seulement la fonctionnalite qui en depend.
+// Absent: la fonctionnalite saute, pas toute la lib.
 function OptSym(const AName: string): Pointer;
 begin
   Result := GetProcAddress(GLib, AName);
@@ -635,7 +605,7 @@ begin
     raise ELibssh2Error.Create(
       'libssh2 not found in the expected locations');
   BindSymbols;
-  // libssh2_version(n) rend NULL si la lib est plus ancienne que n
+  // NULL si la lib est plus ancienne que n
   ver := libssh2_version(LIBSSH2_MIN_VERSION_NUM);
   if ver = nil then
   begin

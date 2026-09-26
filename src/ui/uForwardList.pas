@@ -1,9 +1,4 @@
-{ Liste des tunnels d'un hote, dans l'onglet « Tunnels » des proprietes:
-  actif, port local, destination, note. Peinte aux couleurs du theme, comme
-  les panneaux de fichiers. La case de la premiere colonne active ou coupe un
-  tunnel sans le perdre.
-
-  Copyright (C) 2024 - 2026 Cyril LAMY
+{ Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
 unit uForwardList;
 
@@ -18,7 +13,7 @@ type
   TForwardListView = class(TCustomControl)
   private
     FItems: TRshLocalForwards;
-    // True: un autre hote ecoute deja ce port (marque dans la colonne)
+    // True: un autre hote ecoute deja ce port
     FClash: array of Boolean;
     FSel: Integer;
     FTop: Integer;
@@ -53,7 +48,7 @@ type
     procedure Remove(AIndex: Integer);
     procedure Toggle(AIndex: Integer);
     property Items: TRshLocalForwards read FItems;
-    // -1 = rien de selectionne
+    // -1 = rien
     property Selected: Integer read FSel write SetSel;
     property OnSelect: TNotifyEvent read FOnSelect write FOnSelect;
     property OnToggle: TNotifyEvent read FOnToggle write FOnToggle;
@@ -199,7 +194,7 @@ begin
   SetLength(FClash, Length(FClash) - 1);
   if FTop > 0 then
     Dec(FTop);
-  // la selection reste au meme rang: on enchaine les suppressions au clavier
+  // meme rang: les suppressions s'enchainent au clavier
   FSel := -1;
   if Length(FItems) > 0 then
   begin
@@ -224,8 +219,7 @@ begin
     FOnToggle(Self);
 end;
 
-// Texte trop long pour sa colonne: coupe avec « … », pour qu'on voie qu'il
-// continue (hote coupe net = hote qu'on croit lire en entier).
+// « … » obligatoire: un hote coupe net, on croit le lire en entier
 function TForwardListView.Fit(const S: string; AWidth: Integer): string;
 var
   n: Integer;
@@ -267,7 +261,6 @@ begin
   hh := HeaderH;
   ColumnX(xOn, xPort, xDest, xNote);
 
-  // en-tete
   Canvas.Brush.Color := BlendColor(clAppFg, clAppBg, 10);
   Canvas.FillRect(Rect(1, 1, r.Right - 1, hh));
   Canvas.Brush.Style := bsClear;
@@ -312,11 +305,9 @@ begin
     end;
     Canvas.Brush.Color := bg;
     Canvas.FillRect(cell);
-    // un tunnel coupe reste lisible, mais en retrait
     if not it.Enabled then
       fg := fg2;
 
-    // case « actif »
     Canvas.Pen.Color := BlendColor(clAppFg, clAppBg, 40);
     if it.Enabled then
       Canvas.Brush.Color := clAccent

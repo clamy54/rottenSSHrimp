@@ -2,10 +2,8 @@ unit uLocalTermTab;
 
 {$mode objfpc}{$H+}
 
-// Onglet de terminal local: un TSessionTabBase ordinaire dont les octets
-// viennent d'un TLocalPty au lieu d'un transport reseau. Ce n'est PAS une
-// session distante -- pas d'enregistrement aupres du TSessionManager, donc
-// hors plafond et hors « deconnecter tout le dossier ».
+// Pas une session distante: absent du TSessionManager, donc hors plafond et
+// hors « deconnecter tout le dossier ».
 
 interface
 
@@ -18,7 +16,7 @@ type
   private
     FTerm: TRottenTerminalControl;
     FPty: TLocalPty;
-    FTitle: string;      // titre pose par le shell (OSC), sinon vide
+    FTitle: string;      // pose par le shell (OSC)
     FExited: Boolean;
     FClosing: Boolean;
     procedure TermSend(const AData: RawByteString);
@@ -30,8 +28,7 @@ type
   public
     constructor CreateTab(APages: TPageControl);
     destructor Destroy; override;
-    // a appeler APRES ActivePage := tab: la grille reelle doit etre connue.
-    // False = l'appelant libere l'onglet.
+    // APRES ActivePage := tab, sinon la grille est fausse. False: l'appelant libere.
     function Start(out AErr: string): Boolean;
     function TabState: TRemoteSessionState; override;
     function TabBarCaption: string; override;
@@ -65,8 +62,7 @@ var
   cb: TNotifyEvent;
 begin
   FClosing := True;
-  // le join du thread lecteur pompe la file: un PtyExit en attente rappellerait
-  // un onglet deja mort, FClosing le neutralise
+  // le join du lecteur pompe la file: FClosing muselle un PtyExit posthume
   FreeAndNil(FPty);
   Application.RemoveAsyncCalls(Self);
   cb := FOnDestroyed;
@@ -108,8 +104,7 @@ end;
 procedure TLocalTermTab.PtyExit(ACode: Integer);
 begin
   if FClosing then Exit;
-  // on ne referme PAS l'onglet: la sortie finale reste lisible jusqu'a ce que
-  // l'utilisateur ferme lui-meme
+  // on ne ferme PAS: les dernieres lignes sont souvent les seules utiles
   FExited := True;
   FTerm.FeedData(#13#10'[process exited with code ' + IntToStr(ACode) +
     ']'#13#10);

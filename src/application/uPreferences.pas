@@ -2,16 +2,15 @@ unit uPreferences;
 
 {$mode objfpc}{$H+}
 
-// Preferences locales en INI dans AppDataDir, jamais dans le .rsh: un document
-// de connexions se partage, le choix de police de son proprietaire non. Aucun
-// mot de passe ici. Fichier = entree non fiable: famille whitelistee, taille bornee.
+// Jamais dans le .rsh: le document se partage, les manies de son proprietaire non.
+// Aucun mot de passe ici. INI = entree non fiable: tout est borne ou whiteliste.
 
 interface
 
 type
   TLockSessionPolicy = (
     lspAsk,
-    lspDisconnect,  // le plus sur, defaut
+    lspDisconnect,  // defaut
     lspKeep         // sessions conservees, reconnexion interdite
   );
 
@@ -21,13 +20,12 @@ const
   PREF_TERM_FONT_SIZE_DEFAULT = 12;
 
 var
-  PrefTerminalFontFamily: string = '';  // cle de famille embarquee ('Neon',
-                                        // 'JetBrainsMono'...); '' = defaut
+  PrefTerminalFontFamily: string = '';  // cle embarquee ('Neon'...); '' = defaut
   PrefTerminalFontSize: Integer = PREF_TERM_FONT_SIZE_DEFAULT;
 
   PrefLogEnabled: Boolean = False;
-  PrefLogDebug: Boolean = False;        // sans effet si le journal est inactif
-  PrefLogConfidential: Boolean = False; // masque host/username dans les entrees
+  PrefLogDebug: Boolean = False;
+  PrefLogConfidential: Boolean = False; // masque host/username
 
   PrefThemeName: string = 'Rotten';
 
@@ -53,7 +51,7 @@ const
   SECTION_DIAG = 'Diagnostics';
   SECTION_SEC = 'Security';
 
-// Nom en clair, jamais l'ordinal: un ajout au milieu du type relirait de travers.
+// Nom, jamais l'ordinal: un ajout au milieu du type relirait de travers.
 function PolicyName(APolicy: TLockSessionPolicy): string;
 begin
   case APolicy of
@@ -68,7 +66,7 @@ function PolicyFromName(const AName: string): TLockSessionPolicy;
 begin
   if SameText(Trim(AName), 'ask') then Result := lspAsk
   else if SameText(Trim(AName), 'keep') then Result := lspKeep
-  else Result := lspDisconnect;  // inconnu ou absent: le plus sur
+  else Result := lspDisconnect;  // inconnu: le plus sur
 end;
 
 procedure ApplyLogPreferences;
@@ -104,7 +102,7 @@ begin
   if resolved = '' then
   begin
     if MonaspaceAvailable then
-      // defaut TERMINAL = Radon, pas Neon: sinon ce fallback ecrase le demarrage
+      // Radon, pas Neon: sinon ce repli ecrase le defaut du demarrage
       resolved := MonaspaceTerminalDefaultFamily
     else
       resolved := '';   // fallback widgetset
@@ -174,7 +172,7 @@ begin
     end;
   except
     on E: Exception do
-      ;   // l'ecriture des preferences ne doit pas casser une session en cours
+      ;   // une police mal sauvee ne vaut pas une session coupee
   end;
 end;
 

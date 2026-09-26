@@ -2,8 +2,7 @@ unit uAppPaths;
 
 {$mode objfpc}{$H+}
 
-// Repertoires applicatifs par plateforme. Le dossier recovery accueille les
-// copies de travail: permissions privees, un sous-dossier par processus.
+// recovery: copies de travail, privees, un sous-dossier par processus.
 
 interface
 
@@ -145,9 +144,7 @@ var
 begin
   Result := '';
   if APath = '' then Exit;
-  // TOUS les segments canonises: un lien ou une jonction dans un dossier
-  // parent donnerait sinon une autre cle, donc un second verrou sur le
-  // MEME document, et deux instances l'ouvriraient cote a cote.
+  // TOUS les segments: un lien dans un parent = seconde cle, second verrou.
   canon := CanonicalPathKey(APath);
   {$IFDEF WINDOWS}
   canon := LowerCase(canon);

@@ -2,9 +2,8 @@ unit uSshKeyGen;
 
 {$mode objfpc}{$H+}
 
-// Paires Ed25519 « gerees », encodees aux formats OpenSSH. La
-// cle privee ne touche jamais le disque: TSecureBytes, scellee dans le
-// document, remise a libssh2 par publickey_frommemory.
+// Ed25519 au format OpenSSH. La cle privee ne touche JAMAIS le disque:
+// scellee dans le document, remise a libssh2 par publickey_frommemory.
 
 interface
 
@@ -16,13 +15,11 @@ const
   ED25519_SK_LEN = 64;   // seed (32) || cle publique (32), convention libsodium
 
 type
-  // Tampon a croissance controlee: la reallocation efface l'ancien bloc, et
-  // Locked le tient hors du swap. Expose pour uSshSkKeyGen, qui encode les
-  // memes structures OpenSSH pour les cles de securite.
+  // La reallocation efface l'ancien bloc; Locked le tient hors du swap.
   TBuf = record
     Data: TBytes;
     Len: Integer;
-    Locked: Boolean;   // mlock: le tampon porte du secret
+    Locked: Boolean;   // mlock
   end;
 
 procedure GenerateEd25519KeyPair(const AComment: string;
@@ -33,7 +30,6 @@ function EncodeEd25519PublicLine(const APk: array of Byte;
 function EncodeEd25519PrivatePem(const APk, ASk: array of Byte;
   const AComment: string; ACheckInt: LongWord): TSecureBytes;
 
-// Briques d'encodage OpenSSH, partagees avec uSshSkKeyGen.
 procedure BufInit(out B: TBuf; ACapacity: Integer; ALock: Boolean = False);
 procedure BufWipe(var B: TBuf);
 procedure AppendRaw(var B: TBuf; const AData; ACount: Integer);
@@ -44,9 +40,7 @@ procedure B64Append(var Dst: TBuf; const Src: TBytes; SrcLen: Integer);
 function SanitizeComment(const S: string): string;
 function B64Line(const Src: TBuf): string;
 
-// Assemble le conteneur openssh-key-v1 (cipher none) autour d'un blob public et
-// d'une section privee SANS bourrage: le bourrage 1,2,3... est ajoute ici, la
-// structure etant la meme pour toutes les cles non chiffrees.
+// APriv SANS bourrage: le 1,2,3... est ajoute ici, APriv est donc modifie.
 function WrapOpenSshPrivatePem(const APub: TBuf; var APriv: TBuf): TSecureBytes;
 
 implementation
@@ -106,8 +100,7 @@ begin
   B.Locked := False;
 end;
 
-// La croissance efface l'ancien bloc: SetLength nu laisserait le secret intact
-// dans le tas libere.
+// Pas de SetLength nu: il laisserait le secret en clair dans le tas libere.
 procedure AppendRaw(var B: TBuf; const AData; ACount: Integer);
 var
   need, oldLen: Integer;
@@ -214,15 +207,13 @@ begin
   end;
 end;
 
-// Conteneur commun a toutes les cles openssh-key-v1 non chiffrees. APriv est
-// modifie: le bourrage y est ajoute.
 function WrapOpenSshPrivatePem(const APub: TBuf; var APriv: TBuf): TSecureBytes;
 var
   blob, b64, pem: TBuf;
   i, pad, col: Integer;
   lf: Byte;
 begin
-  // checkint repete et bourrage 1,2,3...: OpenSSH verifie meme sans chiffre
+  // OpenSSH verifie le bourrage meme sans chiffrement
   pad := 1;
   while (APriv.Len mod 8) <> 0 do
   begin
@@ -244,7 +235,7 @@ begin
 
     B64Append(b64, blob.Data, blob.Len);
 
-    // LF meme sous Windows: convention OpenSSH sur toutes les plateformes.
+    // LF meme sous Windows: OpenSSH n'en demord pas.
     lf := 10;
     AppendRaw(pem, AnsiString(PEM_HEADER)[1], Length(PEM_HEADER));
     AppendRaw(pem, lf, 1);
@@ -307,8 +298,7 @@ begin
     raise EArgumentException.Create('Ed25519 private key must be 64 bytes');
   cmt := SanitizeComment(AComment);
   L := Length(cmt);
-  // Surdimensionne pour ne jamais croitre: mlock stable, pas de cle en clair
-  // dans le swap. pub ne porte que du public.
+  // Surdimensionne pour ne jamais croitre: mlock stable.
   BufInit(pub, 64);
   BufInit(priv, 512 + 4 * L, True);
   try

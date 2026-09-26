@@ -2,10 +2,8 @@ unit uLog;
 
 {$mode objfpc}{$H+}
 
-// Journalisation locale: desactivee par defaut, aucune telemetrie, rotation
-// bornee, 0600/0700. Ne journalise JAMAIS de secret -- discipline d'appelant,
-// le module ne fournit que la redaction et le masquage. Les sessions ecrivent
-// depuis leur thread reseau: tout passe par une section critique.
+// Off par defaut, 0600/0700. JAMAIS de secret: c'est a l'appelant d'y veiller,
+// ici on ne fait que masquer. Ecrit depuis les threads reseau: section critique.
 
 interface
 

@@ -2,9 +2,7 @@ unit uTheme;
 
 {$mode objfpc}{$H+}
 
-// Polices et couleurs en globales, remplacables a chaud (uThemeLoad les
-// ecrit). Chaque control les relit a son dessin: appliquer un theme = ecrire
-// les globales puis repeindre.
+// Globales relues a chaque dessin: appliquer un theme = les ecrire, repeindre.
 
 interface
 
@@ -33,8 +31,7 @@ var
   clStatusBg: TColor;
   clStatusText: TColor;
 
-  // barre custom Windows/Linux seulement: macOS garde le menu global natif et
-  // ignore ces couleurs
+  // ignorees sous macOS: menu global natif
   clMenuBg: TColor;
   clMenuText: TColor;
   clMenuHover: TColor;
@@ -55,17 +52,15 @@ var
   clTermBg: TColor;
   clTermFg: TColor;
 
-  // Jetons de l'onglet Scp: listes de fichiers, en-tetes, file de transferts.
-  // Un theme externe qui ne les cite pas garde ces defauts, qui sont construits
-  // pour rester lisibles sur les fonds du theme « rotten ».
+  // Onglet Scp. Non cites par un theme externe: defauts calibres pour « rotten ».
   clPanelBg: TColor;
-  clPanelAltRow: TColor;     // ligne alternee, tres proche du fond
+  clPanelAltRow: TColor;
   clPanelHeader: TColor;
   clPanelHeaderText: TColor;
-  clPanelGrid: TColor;       // filets de separation des colonnes
+  clPanelGrid: TColor;
   clTextSecondary: TColor;   // taille, date, proprietaire
-  clSelActive: TColor;       // selection dans le panneau qui a le focus
-  clSelInactive: TColor;     // selection dans l'autre panneau
+  clSelActive: TColor;       // panneau qui a le focus
+  clSelInactive: TColor;
   clSelText: TColor;
   clScpOk: TColor;
   clScpWarn: TColor;
@@ -76,21 +71,17 @@ var
 // a appeler apres LoadEmbeddedFonts, avant la creation des fenetres
 procedure ApplyDefaultFonts;
 
-// recursif sur les enfants; les composants natifs (menu global macOS,
-// dialogues systeme) n'y passent pas
+// menu global macOS et dialogues systeme hors d'atteinte
 procedure ApplyUiFont(AControl: TControl);
 
-// RGB 0xRRGGBB (comme dans les themes) -> TColor (0xBBGGRR)
+// 0xRRGGBB (themes) -> TColor (0xBBGGRR)
 function RgbHexToColor(ARgb: Cardinal): TColor;
 
 // APct % de A, le reste de B
 function BlendColor(A, B: TColor; APct: Integer): TColor;
 
-// Hauteur d'une ligne de texte dans la police d'interface, SANS handle de
-// fenetre. Le Canvas d'un controle exige un parent: le mesurer depuis un
-// constructeur, avant que le controle soit pose, leve « Control has no parent
-// window ». La mesure se fait donc sur un bitmap hors ecran, qui donne les
-// memes metriques et n'a besoin de personne.
+// Sur bitmap hors ecran: le Canvas d'un controle sans parent leve « Control
+// has no parent window » (typiquement depuis un constructeur).
 function UiTextHeight(const ASample: string): Integer;
 function UiTextWidth(const ASample: string): Integer;
 
@@ -131,10 +122,8 @@ begin
   end;
 end;
 
-// Canvas hors ecran pret a mesurer, a la police d'interface courante. Le
-// bitmap est garde: LayoutColumns mesure a chaque redimensionnement, et en
-// recreer un par appel ferait defiler les objets GDI pendant un glisser.
-// Thread UI uniquement, comme tout ce qui dessine.
+// Bitmap garde: un par appel ferait defiler les objets GDI pendant un glisser.
+// Thread UI uniquement.
 var
   GMeasureBmp: TBitmap = nil;
 

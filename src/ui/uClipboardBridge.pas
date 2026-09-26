@@ -1,20 +1,7 @@
-{ Pont presse-papiers local <-> serveur, commun aux onglets RDP et VNC. Rien ne
-  part tant qu'une lecture saine n'a pas fixe la reference; ce qui est copie sous
-  garde est adopte sans envoi; ce qui vient du serveur ne lui revient jamais.
-  Thread UI seulement, aucun verrou.
-
-  Seul l'onglet au PREMIER PLAN envoie. Chaque onglet surveille le meme
-  presse-papiers global: sans cette regle, un texte recu du serveur A etait pris
-  pour une copie locale par l'onglet B et lui partait en arriere-plan -- fuite
-  entre deux environnements que rien ne relie. Un onglet en arriere-plan ne
-  touche pas a sa reference: ce qui a ete copie pendant qu'il etait cache part
-  quand l'utilisateur le remet devant, comme le ferait un client RDP classique.
-
-  Et ce qui vient d'UN serveur ne part vers AUCUN autre: la signature du dernier
-  texte recu est memorisee au niveau de l'unite, tous ponts confondus. Un onglet
-  qui la retrouve dans le presse-papiers l'adopte sans envoyer, meme au premier
-  plan. Prix assume: copier dans la session A puis coller dans la session B ne
-  passe plus par le partage automatique. }
+{ Presse-papiers RDP/VNC. Thread UI seulement, aucun verrou.
+  Invariants: rien ne part avant une reference saine; copie sous garde = adoptee
+  sans envoi; seul l'onglet au PREMIER PLAN envoie; ce qui vient d'UN serveur ne
+  part vers AUCUN autre (copier dans A pour coller dans B: a la main). }
 
 { Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -25,18 +12,14 @@ unit uClipboardBridge;
 interface
 
 type
-  { False = echec FRANC (presse-papiers verrouille): le pont reste non amorce
-    et rien ne part. Un presse-papiers vide, lui, est une reference valide. }
+  { False = presse-papiers verrouille, rien ne part. Vide = reference valide. }
   TClipReadFunc = function(out AText: string): Boolean of object;
 
   TClipSendProc = procedure(const AText: string) of object;
 
-  { True = cet onglet est celui que l'utilisateur regarde: le seul a envoyer. }
   TClipForegroundFunc = function: Boolean of object;
 
-  { Pose AText dans le presse-papiers systeme. False = l'ecriture a echoue
-    (presse-papiers verrouille par un autre programme): l'ancien contenu y est
-    toujours. }
+  { False: l'ancien contenu y est toujours. }
   TClipWriteFunc = function(const AText: string): Boolean of object;
 
   TClipboardBridge = class
@@ -58,12 +41,8 @@ type
 
     procedure Poll;
 
-    { Texte recu du serveur: memorise sa provenance PUIS l'ecrit via AWrite. La
-      provenance est posee avant l'ecriture (sinon un sondage glisse entre les
-      deux et le renvoie: boucle d'echo) et RETIREE si l'ecriture echoue. Sans
-      ce retour en arriere, le presse-papiers garde le texte du serveur A, la
-      signature globale annonce B, et le prochain sondage de l'onglet B prend
-      le texte de A pour une copie locale et le lui envoie. }
+    { Provenance posee AVANT l'ecriture (sinon echo) et RETIREE si elle echoue,
+      sinon le texte de A, etiquete B, part chez B. }
     function NoteRemote(const AText: string; AWrite: TClipWriteFunc): Boolean;
   end;
 
@@ -76,8 +55,7 @@ uses
   SysUtils, uSecretClipGuard;
 
 var
-  // Signature (non bornee) du dernier texte recu d'un serveur, quel qu'il
-  // soit. Thread UI seulement, comme les ponts.
+  // dernier texte recu, tous serveurs confondus; non bornee
   GRemoteSig: string = '';
 
 function ClipSignature(const S: string; ABound: Integer): string;
@@ -141,8 +119,7 @@ begin
     FPrimed := True;
     Exit;
   end;
-  // Trois declencheurs: garde active, garde vue au dernier sondage, ou garde
-  // ouverte ET refermee entre deux ticks.
+  // gen: une garde ouverte ET refermee entre deux ticks compte aussi
   gen := ClipGuardGeneration;
   guarded := SecretRevealActive or ClipboardSharingSuspended;
   if guarded or FGuardSeen or (gen <> FGuardGen) then
@@ -152,8 +129,8 @@ begin
     FGuardGen := gen;
     Exit;
   end;
-  // Arriere-plan: ni envoi ni adoption. La garde ci-dessus passe AVANT, un
-  // secret revele pendant que l'onglet etait cache reste adopte, jamais envoye.
+  // Arriere-plan: ni envoi ni adoption. Garde AVANT: un secret vu cache
+  // reste adopte, jamais envoye.
   if Assigned(FForeground) and (not FForeground()) then
     Exit;
   if cur = '' then
@@ -162,7 +139,7 @@ begin
   if sig = FSig then
     Exit;
   FSig := sig;
-  // Recu d'un autre serveur: adopte, jamais retransmis.
+  // recu d'un serveur: adopte, jamais retransmis
   if (GRemoteSig <> '') and (ClipSignature(cur, 0) = GRemoteSig) then
     Exit;
   FSend(cur);

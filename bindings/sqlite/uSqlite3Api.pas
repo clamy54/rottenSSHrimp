@@ -2,8 +2,8 @@ unit uSqlite3Api;
 
 {$mode objfpc}{$H+}
 
-// Binding dynamique SQLite, chemins absolus controles. sqlite3_db_config est
-// variadique: cdecl varargs impose, l'ABI arm64 Darwin les traite a part.
+// Chemins absolus. sqlite3_db_config est variadique: varargs OBLIGATOIRE,
+// l'ABI arm64 Darwin passe les variadiques sur la pile.
 
 interface
 
@@ -43,7 +43,7 @@ const
   SQLITE_LIMIT_VARIABLE_NUMBER = 9;
   SQLITE_LIMIT_TRIGGER_DEPTH = 10;
 
-  // 3.26 introduit DEFENSIVE et trusted_schema
+  // 3.26: DEFENSIVE et trusted_schema
   SQLITE_MIN_VERSION_NUMBER = 3026000;
 
 type
@@ -121,7 +121,7 @@ function SQLITE_TRANSIENT: Pointer; inline;
 
 procedure SqliteEnsureLoaded;
 function SqliteIsLoaded: Boolean;
-// False sous SQLITE_OMIT_LOAD_EXTENSION (SQLite d'Apple): db_config 1005 y repond SQLITE_MISUSE
+// False sous SQLITE_OMIT_LOAD_EXTENSION (Apple): le 1005 y rend SQLITE_MISUSE
 function SqliteHasLoadExtension: Boolean;
 
 implementation

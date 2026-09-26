@@ -2,17 +2,14 @@ unit uRsUtil;
 
 {$mode objfpc}{$H+}
 
-// Petits utilitaires sans dependance: temps UTC ms, UUID canonique, hex.
-
 interface
 
 uses
   SysUtils;
 
-// millisecondes UTC depuis l'epoque Unix
 function NowUtcMs: Int64;
 
-// UUID v4 aleatoire, forme canonique minuscule sans accolades
+// v4, minuscules, sans accolades
 function NewUuid: string;
 function IsCanonicalUuid(const S: string): Boolean;
 

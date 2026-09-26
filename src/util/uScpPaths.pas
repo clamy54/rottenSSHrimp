@@ -1,21 +1,7 @@
-{ Chemins et noms de fichiers de l'onglet Scp. Unite PURE: ni LCL, ni reseau,
-  ni acces disque -- tout y est testable a froid, et c'est voulu, parce que
-  c'est ici que se joue la securite de la fonctionnalite.
-
-  Regle de base: un nom qui vient du SERVEUR est une entree hostile. Il n'est
-  jamais concatene, jamais decode, jamais « repare » en silence. Il passe un
-  controle explicite, et ce controle dit pourquoi il refuse.
-
-  Deux jeux de regles, volontairement differents:
-
-  - CheckRemoteChildName decide ce qu'on accepte de MANIPULER a distance. Un
-    fichier POSIX nomme « a\b » est parfaitement legal la-bas: on le liste, on
-    le renomme, on le supprime.
-  - CheckLocalName decide ce qu'on accepte de CREER ici. Le meme « a\b »
-    deviendrait deux composants sous Windows: refuse, avec la raison.
-
-  Les fusionner reviendrait soit a cacher des fichiers distants legitimes, soit
-  a laisser un nom fabrique sortir du dossier de destination.
+{ Unite PURE (ni LCL, ni reseau, ni disque): la securite du Scp se joue ici.
+  Un nom venu du SERVEUR est hostile: jamais concatene, decode ni « repare ».
+  CheckRemoteChildName: ce qu'on MANIPULE la-bas (« a\b » y est legal).
+  CheckLocalName: ce qu'on CREE ici (« a\b » y fait deux dossiers). Ne pas fusionner.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -37,31 +23,28 @@ const
   SCP_LIST_FIRST_CAPACITY = 256;
 
 type
-  // Pourquoi un nom est refuse. Le texte va a l'utilisateur: il nomme la cause.
   TNameVerdict = (
     nvOk,
     nvEmpty,
-    nvDot,             // '.' : entree de repertoire, pas un objet
-    nvDotDot,          // '..' : idem, et vecteur de remontee
-    nvSeparator,       // '/' ou '\' dans ce qui doit etre un nom simple
-    nvNul,             // #0 : tronque tout chemin passe a une API C
-    nvControl,         // < 0x20 ou 0x7F : sequences destinees au terminal
+    nvDot,
+    nvDotDot,          // vecteur de remontee
+    nvSeparator,
+    nvNul,             // tronque tout chemin passe a une API C
+    nvControl,         // < 0x20 ou 0x7F: de quoi piloter le terminal
     nvTooLong,
-    nvReservedWin,     // CON, NUL, COM1... : pieges de l'espace de noms Win32
+    nvReservedWin,     // CON, NUL, COM1...
     nvTrailingWin,     // point ou espace final: Windows les mange en silence
     nvInvalidCharWin); // < > : " | ? *
 
 function NameVerdictText(AVerdict: TNameVerdict;
   const ADisplayName: string): string;
 
-// --- Cote distant: POSIX, separateur '/', casse significative -------------
+// Distant: POSIX, '/', casse significative.
 
 function RemoteIsAbsolute(const APath: string): Boolean;
-// Normalisation LEXICALE, sans lien suivi ni acces reseau: '//' fusionnes,
-// '.' retires, '..' depiles sans remonter au-dessus de la racine.
+// LEXICALE: aucun lien suivi, '..' ne remonte pas au-dessus de la racine.
 function RemoteNormalize(const APath: string): string;
-// AName DOIT avoir passe CheckRemoteChildName. Seule construction de chemin
-// distant autorisee: la concatenation nue est proscrite.
+// AName DOIT avoir passe CheckRemoteChildName. Jamais de concatenation nue.
 function RemoteJoin(const ABase, AName: string): string;
 function RemoteParent(const APath: string): string;
 function RemoteBaseName(const APath: string): string;
@@ -70,8 +53,6 @@ function RemoteDepth(const APath: string): Integer;
 
 function CheckRemoteChildName(const AName: string): TNameVerdict;
 
-// --- Cote local: separateur de la plateforme, racines Windows ------------
-
 function LocalIsAbsolute(const APath: string): Boolean;
 function LocalNormalize(const APath: string): string;
 function LocalJoin(const ABase, AName: string): string;
@@ -79,25 +60,18 @@ function LocalParent(const APath: string): string;
 function LocalBaseName(const APath: string): string;
 function LocalIsUnder(const ARoot, APath: string): Boolean;
 
-// Nom acceptable pour une CREATION locale. Autre chose que nvOk = refus, dit
-// a l'utilisateur: on ne renomme jamais d'office.
+// Refus dit a l'utilisateur; on ne renomme jamais d'office.
 function CheckLocalName(const AName: string): TNameVerdict;
 
 function LocalCollisionKey(const AName: string): string;
 
-// Chemin pour les API natives: sous Windows, prefixe \\?\ au-dela de MAX_PATH.
-// Ce prefixe exige un chemin deja normalise, d'ou l'ordre.
+// Windows: \\?\ au-dela de MAX_PATH.
 function LocalNativePath(const APath: string): string;
 
-// --- Affichage ------------------------------------------------------------
-
-// Neutralise ce qui mentirait a l'oeil ou piloterait le terminal: CR, LF,
-// controles, ESC, et le bidirectionnel qui fait lire « gpj.exe » pour
-// « exe.jpg ».
+// Controles, ESC, et le bidi qui deguise « gpj.exe » en « exe.jpg ».
 function DisplaySafeName(const S: string): string;
 
-// Candidat « Keep both », AIndex >= 1: le suffixe se glisse avant la derniere
-// extension, et un nom qui s'ouvre par un point n'en a pas.
+// AIndex >= 1
 function KeepBothCandidate(const AName: string; AIndex: Integer): string;
 
 function FormatUnixMode(AMode: LongWord): string;
@@ -106,30 +80,18 @@ function ModeIsLink(AMode: LongWord): Boolean;
 function ModeIsRegular(AMode: LongWord): Boolean;
 function ModeIsSpecial(AMode: LongWord): Boolean;
 
-// --- Droits d'acces -------------------------------------------------------
-
-// Les douze bits qu'un chmod peut poser: rwx pour trois classes, plus setuid,
-// setgid et le sticky bit. Le type du fichier n'en fait pas partie.
 const
-  SCP_MODE_BITS = LongWord(&07777);
+  SCP_MODE_BITS = LongWord(&07777);   // ce que chmod pose, sans le type
 
-// Applique une decision a un mode existant. AMask porte les bits DECIDES et
-// ABits leur valeur: hors du masque le mode ne bouge pas, ce qui permet de ne
-// toucher qu'une case sur une selection dont les fichiers n'ont pas les memes
-// droits. ADirX ajoute x la ou r est acquis, sur les DOSSIERS seulement: un
-// dossier lisible mais non traversable ne sert a rien, tandis que poser x sur
-// des fichiers les rendrait executables.
+// Hors de AMask, rien ne bouge: une case cochee sur une selection heterogene.
+// ADirX: x la ou r, sur les DOSSIERS seulement (sur un fichier: executable).
 function ScpApplyMode(AOld, ABits, AMask: LongWord;
   AIsDir, ADirX: Boolean): LongWord;
-// Quatre chiffres, toujours: « 755 » et « 0755 » se lisent pareil, mais la
-// forme fixe montre que le premier chiffre existe et vaut zero.
+// Toujours quatre chiffres.
 function ScpModeToOctal(AMode: LongWord): string;
-// Taille suivante d'un tableau de listing plein a ACount: il DOUBLE, borne par
-// SCP_MAX_DIR_ENTRIES. Une entree de plus a chaque fois recopiait tout le
-// tableau, chaines comprises, a chaque entree: quadratique sur 200 000.
+// DOUBLE, borne par SCP_MAX_DIR_ENTRIES: +1 a chaque fois = quadratique.
 function ScpListCapacity(ACount: Integer): Integer;
-// False si ce n'est pas un octal de 1 a 4 chiffres. Un champ mal saisi ne doit
-// pas se traduire par un mode arbitraire.
+// False plutot qu'un mode arbitraire pour une saisie ratee.
 function ScpOctalToMode(const AText: string; out AMode: LongWord): Boolean;
 
 implementation
@@ -185,10 +147,7 @@ begin
   end;
 end;
 
-// --- Controles communs ----------------------------------------------------
-
-// Ni decodage de %2F ni desechappement: un nom est une suite d'octets, et
-// l'interpreter est la faille qu'on refuse de rouvrir.
+// Ni %2F ni desechappement: un nom est une suite d'octets, pas une invitation.
 function BasicNameVerdict(const AName: string): TNameVerdict;
 var
   i: Integer;
@@ -225,8 +184,7 @@ begin
   Result := BasicNameVerdict(AName);
   if Result <> nvOk then Exit;
   {$IFDEF WINDOWS}
-  // Ici seulement un '\' ferait un dossier. Sous POSIX c'est un caractere de
-  // nom, et refuser « a\b » y empecherait un telechargement legitime.
+  // Windows seulement: sous POSIX « a\b » est un nom legitime.
   for i := 1 to Length(AName) do
     if AName[i] = '\' then Exit(nvSeparator);
   for i := 1 to Length(AName) do
@@ -238,7 +196,7 @@ begin
   end;
   c := AName[Length(AName)];
   if (c = '.') or (c = ' ') then Exit(nvTrailingWin);
-  // Le piege porte sur la RACINE du nom: « nul.txt » est aussi un peripherique.
+  // « nul.txt » est AUSSI un peripherique.
   p := Pos('.', AName);
   if p > 0 then stem := Copy(AName, 1, p - 1) else stem := AName;
   for i := 0 to High(WIN_RESERVED) do
@@ -251,8 +209,7 @@ function LocalCollisionKey(const AName: string): string;
 begin
   Result := AName;
   {$IFDEF WINDOWS}
-  // Windows compare sans la casse et ampute points et espaces finaux: deux noms
-  // distants distincts visent un seul fichier, et le second ecrase le premier.
+  // Casse ignoree, points et espaces finaux amputes: deux noms, un fichier.
   while (Result <> '') and
         ((Result[Length(Result)] = '.') or (Result[Length(Result)] = ' ')) do
     SetLength(Result, Length(Result) - 1);
@@ -262,8 +219,6 @@ begin
   Result := UTF8LowerCase(Result);
   {$ENDIF}
 end;
-
-// --- Chemins distants -----------------------------------------------------
 
 function RemoteIsAbsolute(const APath: string): Boolean;
 begin
@@ -308,7 +263,7 @@ begin
       Continue;
     if parts[i] = '..' then
     begin
-      // Absolu: '..' a la racine est absorbe. Relatif: il compte et reste.
+      // Absolu: '..' meurt a la racine. Relatif: il reste.
       if (top > 0) and (stack[top - 1] <> '..') then
         Dec(top)
       else if not isAbs then
@@ -338,8 +293,7 @@ begin
   if AName = '' then
     Exit(RemoteNormalize(ABase));
   if RemoteIsAbsolute(AName) then
-    // Un nom d'enfant ABSOLU remplacerait la base au lieu de s'y joindre.
-    // CheckRemoteChildName l'a deja refuse; ici on ne l'aggrave pas.
+    // Absolu: il remplace la base. Deja refuse par CheckRemoteChildName.
     Exit(RemoteNormalize(AName));
   if ABase = '' then
     Exit(RemoteNormalize(AName));
@@ -384,7 +338,7 @@ begin
   if r = p then Exit(True);
   if r = '/' then
     Exit((Length(p) > 1) and (p[1] = '/'));
-  // Le separateur est OBLIGATOIRE: sans lui, /home/bob validerait /home/bobby.
+  // Sans le separateur, /home/bob contiendrait /home/bobby.
   Result := (Length(p) > Length(r)) and
     (Copy(p, 1, Length(r)) = r) and (p[Length(r) + 1] = '/');
 end;
@@ -396,8 +350,6 @@ begin
   SplitPosix(RemoteNormalize(APath), parts);
   Result := Length(parts);
 end;
-
-// --- Chemins locaux -------------------------------------------------------
 
 function IsSep(C: Char): Boolean; inline;
 begin
@@ -445,8 +397,7 @@ begin
     end;
     Exit(i);
   end;
-  // 'C:\' seulement: 'C:xyz' depend du repertoire courant DU LECTEUR, donc d'un
-  // etat global.
+  // Pas 'C:xyz': relatif au cwd DU LECTEUR, un etat global.
   if (Length(APath) >= 3) and (APath[2] = ':') and IsSep(APath[3]) then
     Exit(3);
 end;
@@ -571,14 +522,12 @@ begin
   r := UTF8LowerCase(r);
   p := UTF8LowerCase(p);
   {$ENDIF}
-  // 'C:\' finit deja par un separateur: sans ce retrait il ne contiendrait pas
-  // 'C:\x', un separateur de plus etant alors exige.
+  // 'C:\' porte deja son separateur.
   if (Length(r) > 1) and IsSep(r[Length(r)]) then
     SetLength(r, Length(r) - 1);
   if r = p then Exit(True);
   if r = '' then Exit(False);
-  // La racine POSIX est un separateur a elle seule: exiger un separateur de
-  // PLUS sortirait /tmp/x de /. Tout chemin absolu est sous la racine.
+  // '/' est deja un separateur: en exiger un de PLUS sortirait /tmp/x de /.
   if (Length(r) = 1) and IsSep(r[1]) then
     Exit((Length(p) > 1) and IsSep(p[1]));
   Result := (Length(p) > Length(r)) and
@@ -596,7 +545,7 @@ begin
   Result := norm;
   if Length(norm) < LONG_PATH_THRESHOLD then Exit;
   if Copy(norm, 1, 4) = '\\?\' then Exit;
-  // \\?\ desactive la normalisation du systeme: LocalNormalize vient de la faire.
+  // \\?\ coupe la normalisation systeme: LocalNormalize l'a deja faite.
   if (Length(norm) >= 2) and (norm[1] = '\') and (norm[2] = '\') then
     Result := '\\?\UNC\' + Copy(norm, 3, Length(norm) - 2)
   else if (Length(norm) >= 3) and (norm[2] = ':') and (norm[3] = '\') then
@@ -607,8 +556,6 @@ begin
   Result := LocalNormalize(APath);
 end;
 {$ENDIF}
-
-// --- Affichage ------------------------------------------------------------
 
 function DisplaySafeName(const S: string): string;
 var
@@ -665,7 +612,7 @@ var
 begin
   if AIndex < 1 then AIndex := 1;
   suffix := Format(' (%d)', [AIndex]);
-  // Dernier point, jamais celui d'un « .bashrc »: celui-la ouvre le nom.
+  // Dernier point, sauf celui qui ouvre un « .bashrc ».
   dot := Length(AName);
   while (dot > 1) and (AName[dot] <> '.') do Dec(dot);
   if (dot > 1) and (AName[dot] = '.') then
@@ -674,8 +621,6 @@ begin
   else
     Result := AName + suffix;
 end;
-
-// --- Modes POSIX ----------------------------------------------------------
 
 function ModeIsDir(AMode: LongWord): Boolean;
 begin
@@ -694,8 +639,7 @@ end;
 
 function ModeIsSpecial(AMode: LongWord): Boolean;
 begin
-  // Un mode a zero veut dire « non envoye », pas « special »: sans ce cas, tout
-  // un listing passerait pour des peripheriques.
+  // 0 = « non envoye », sinon tout le listing passe pour des peripheriques.
   if (AMode and S_IFMT) = 0 then Exit(False);
   Result := not (ModeIsDir(AMode) or ModeIsLink(AMode) or ModeIsRegular(AMode));
 end;

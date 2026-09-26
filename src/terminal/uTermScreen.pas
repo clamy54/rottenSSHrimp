@@ -2,9 +2,8 @@ unit uTermScreen;
 
 {$mode objfpc}{$H+}
 
-// Stockage de l'ecran terminal: grille active (principale ou alternate),
-// scrollback en anneau borne en lignes ET en octets.
-// Purement mecanique: le decodage et les modes vivent dans uTermEmulator.
+// Grille et scrollback, borne en lignes ET en octets. Les modes vivent dans
+// uTermEmulator.
 
 interface
 
@@ -19,7 +18,7 @@ type
     FAlt: array of TTermLine;
     FOnAlt: Boolean;
     FScrollback: array of TTermLine; // anneau
-    FSbHead: Integer;                // index du plus ancien
+    FSbHead: Integer;                // plus ancien
     FSbCount: Integer;
     FSbMax: Integer;
     FSbBytes: Int64;
@@ -33,12 +32,12 @@ type
     property Cols: Integer read FCols;
     property Rows: Integer read FRows;
     property OnAlt: Boolean read FOnAlt;
-    // borne en octets de l'anneau, exposee pour le fuzzing
+    // expose pour le fuzzing
     property ScrollbackBytes: Int64 read FSbBytes;
 
     function GetCell(X, Y: Integer): TTermCell;
     procedure SetCell(X, Y: Integer; const ACell: TTermCell);
-    // acces direct pour le rendu (ne pas conserver la reference)
+    // Pour le rendu. Ne PAS garder la reference.
     function LineRef(Y: Integer): TTermLine;
 
     procedure UseAlt(AOn: Boolean; const ABlank: TTermCell);
@@ -51,7 +50,7 @@ type
     procedure FillScreen(const ACell: TTermCell);
     procedure Resize(ANewCols, ANewRows: Integer; var ACursorY: Integer);
 
-    // Scrollback (ecran principal seulement)
+    // Ecran principal seulement
     function ScrollbackCount: Integer;
     function ScrollbackLine(I: Integer): TTermLine; // 0 = plus ancien
     procedure ClearScrollback;
@@ -146,8 +145,7 @@ begin
     for y := 0 to FRows - 1 do
       FAlt[y] := NewBlankLine(ABlank)
   else
-    // Rendre l'ecran alterne en QUITTANT: son contenu ne resservira pas, et le
-    // garder retenait Cols x Rows cellules par session ayant lance un vim.
+    // Libere en QUITTANT: sinon chaque session qui a vu un vim garde son ecran.
     for y := 0 to FRows - 1 do
       FAlt[y] := nil;
 end;
@@ -158,7 +156,6 @@ var
 begin
   if FSbMax = 0 then
     Exit;
-  // budget octets: evince les plus anciens
   FSbBytes := FSbBytes + LineBytes(ALine);
   while (FSbCount > 0) and (FSbBytes > TERM_SCROLLBACK_BYTES) do
   begin
@@ -335,13 +332,12 @@ begin
     Exit;
   blank := BlankCell(DefaultColor, DefaultColor);
 
-  // reduction en lignes: pousse le haut de l'ecran principal dans le
-  // scrollback pour garder la ligne du curseur visible
+  // Le haut part au scrollback, le curseur reste a l'ecran.
   if ANewRows < FRows then
   begin
     excess := FRows - ANewRows;
     if ACursorY < ANewRows then
-      keep := 0 // le curseur reste visible sans decaler
+      keep := 0
     else
       keep := ACursorY - ANewRows + 1;
     if keep > excess then

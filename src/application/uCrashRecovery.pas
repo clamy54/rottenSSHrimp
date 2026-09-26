@@ -2,8 +2,7 @@ unit uCrashRecovery;
 
 {$mode objfpc}{$H+}
 
-// Copies de travail orphelines laissees par un processus mort (dossier d'instance
-// « mort » = verrou libre, uAppPaths). La reprise n'ecrase jamais l'original.
+// Instance « morte » = verrou libre (uAppPaths). La reprise n'ecrase JAMAIS l'original.
 
 interface
 
@@ -19,7 +18,7 @@ type
   end;
   TRecoveryItems = array of TRecoveryItem;
 
-// Recense les orphelines des instances mortes; fait aussi le menage au passage.
+// Effet de bord: fait le menage au passage.
 function ScanOrphanRecoveries: TRecoveryItems;
 
 procedure DiscardRecovery(const AItem: TRecoveryItem);
@@ -102,9 +101,8 @@ begin
   end;
 end;
 
-// SaveTo serialise la base EN CLAIR dans <uuid>.seal.tmp avant de la chiffrer:
-// un crash laisse ce SQLite nu, sans enveloppe donc irrecuperable. On le
-// supprime, on ne le propose pas. Instances MORTES uniquement.
+// .seal.tmp = la base EN CLAIR d'avant chiffrement. Irrecuperable, donc au feu.
+// Instances MORTES uniquement.
 procedure SweepCleartextTemps(const ADir: string);
 var
   sr: TSearchRec;
@@ -132,12 +130,12 @@ begin
     repeat
       if (sr.Name = '.') or (sr.Name = '..') then Continue;
       if (sr.Attr and faDirectory) = 0 then Continue;
-      if sr.Name = self_ then Continue;           // notre propre instance
+      if sr.Name = self_ then Continue;
       sub := root + PathDelim + sr.Name;
-      if not InstanceDirIsDead(sub) then Continue; // instance encore vivante
+      if not InstanceDirIsDead(sub) then Continue;
       CollectFromDir(sub, Result);
-      SweepCleartextTemps(sub);  // efface les residus en clair d'un crash
-      RemoveEmptyDeadDir(sub);   // menage: dossier mort sans copie de travail
+      SweepCleartextTemps(sub);
+      RemoveEmptyDeadDir(sub);
     until FindNext(sr) <> 0;
     FindClose(sr);
   end;

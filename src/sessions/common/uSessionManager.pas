@@ -2,8 +2,7 @@ unit uSessionManager;
 
 {$mode objfpc}{$H+}
 
-// Recensement des sessions distantes: toute session vit ici, pas de
-// thread detache sans proprietaire. L'onglet concret derive de TManagedSession.
+// Toute session vit ici: pas de thread detache sans proprietaire.
 
 interface
 
@@ -11,7 +10,6 @@ uses
   SysUtils, Classes, SyncObjs, uSessionState;
 
 const
-  // plafond global par defaut
   MAX_SESSIONS_DEFAULT = 32;
 
 type
@@ -36,13 +34,12 @@ type
     destructor Destroy; override;
 
     function CanOpen: Boolean;
-    // leve ESessionLimitError si le plafond est atteint
     procedure RegisterSession(ASession: TManagedSession);
     procedure UnregisterSession(ASession: TManagedSession);
 
     function Count: Integer;
     function ActiveCount: Integer;
-    // demande l'arret de toutes les sessions; ne libere rien
+    // demande l'arret, ne libere rien
     procedure ShutdownAll;
 
     property Items[AIndex: Integer]: TManagedSession read GetItem; default;

@@ -2,11 +2,7 @@ unit uGroupDashboard;
 
 {$mode objfpc}{$H+}
 
-// « Ou en sont mes machines »: une ligne par connexion du sous-arbre, avec ce
-// que l'arbre ne montre pas (session ouverte, derniere tentative, verdict).
-//
-// Non modale, et ne POSSEDE ni le document ni le modele: elle les emprunte le
-// temps d'un rafraichissement. L'appelant doit la fermer avant le document.
+// N'emprunte que le modele, ne le POSSEDE pas: Detach AVANT de fermer le document.
 
 interface
 
@@ -24,7 +20,7 @@ type
     FList: TListView;
     FSummary: TLabel;
     FModel: TRshModel;
-    FUuids: TStringList;   // aligne sur l'index de ligne, refait dans Refresh
+    FUuids: TStringList;   // aligne sur l'index de ligne
     FGroupUuid: string;
     FGroupName: string;
     FOnSessionState: TDashSessionState;
@@ -39,7 +35,7 @@ type
     property OnSessionState: TDashSessionState read FOnSessionState
       write FOnSessionState;
     property OnConnect: TDashConnect read FOnConnect write FOnConnect;
-    // le document se ferme: plus une seule touche au modele apres ca
+    // apres ca, plus une seule touche au modele
     procedure Detach;
     destructor Destroy; override;
   end;
@@ -80,7 +76,7 @@ begin
   FSummary.Align := alClient;
   FSummary.BorderSpacing.Around := 10;
   FSummary.Layout := tlCenter;
-  // sans couleur explicite le label reste sombre sur fond sombre
+  // sinon sombre sur fond sombre
   FSummary.Font.Color := clAppFg;
   FSummary.ParentFont := False;
 
@@ -124,8 +120,7 @@ begin
   FSummary.Caption := 'Document closed.';
 end;
 
-// LastConnectedMs = 0 veut dire « jamais tentee »: LastResult n'a alors aucun
-// sens et ne doit surtout pas se lire comme un echec
+// LastConnectedMs = 0: jamais tentee, LastResult ne veut rien dire (PAS un echec)
 function TGroupDashboard.DescribeLast(AEntry: TRshQuickEntry): string;
 var
   whenUtc: TDateTime;
@@ -134,7 +129,7 @@ begin
   if AEntry.LastConnectedMs <= 0 then
     Exit('never');
   whenUtc := UnixToDateTime(AEntry.LastConnectedMs div 1000);
-  // UTC de bout en bout: comparer a Now decalerait l'ecart du fuseau local
+  // UTC de bout en bout: Now decalerait du fuseau local
   mins := (NowUtcMs - AEntry.LastConnectedMs) div (60 * 1000);
   if mins < 0 then mins := 0;
   if mins < 1 then

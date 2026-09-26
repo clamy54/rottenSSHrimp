@@ -2,9 +2,8 @@ unit uSshKnownHosts;
 
 {$mode objfpc}{$H+}
 
-// Magasin TOFU des cles d'hote, table ssh_known_hosts. Il constate,
-// il ne decide pas: accepter appartient a l'UI. Les empreintes y vivent en clair,
-// couvertes par le content_mac et non par un AEAD par champ.
+// TOFU des cles d'hote. Constate, ne decide pas: accepter, c'est l'UI.
+// Empreintes en clair, couvertes par le content_mac (pas d'AEAD par champ).
 
 interface
 
@@ -38,7 +37,7 @@ type
       const AKeyType, AFingerprint: string;
       out AExisting: TKnownHostEntry): TKnownHostVerdict;
 
-    // marque le document dirty: l'empreinte n'est durable qu'apres un Save
+    // MarkDirty: rien n'est acquis avant le Save
     procedure Remember(const AHostname: string; APort: Integer;
       const AKeyType, AFingerprint: string; const ABlob: TBytes);
 
@@ -47,8 +46,7 @@ type
     procedure Forget(const AHostname: string; APort: Integer;
       const AKeyType: string);
 
-    // contraint la negociation: sinon un type non enregistre degrade
-    // une cle modifiee en hote inconnu
+    // Borne la negociation: sinon une cle changee passe pour un hote inconnu.
     function KnownKeyTypes(const AHostname: string;
       APort: Integer): TStringArray;
 
@@ -198,8 +196,7 @@ procedure TSshKnownHosts.TouchSeen(const AUuid: string);
 var
   st: TSqliteStmt;
 begin
-  // Toute ecriture ici DOIT etre transactionnelle: le content_mac n'est
-  // re-scelle qu'au Commit, et un MAC perime = document declare altere.
+  // Transaction OBLIGATOIRE: le content_mac ne se rescelle qu'au Commit.
   FDoc.Db.BeginImmediate;
   try
     st := FDoc.Db.Prepare(
@@ -216,8 +213,7 @@ begin
     FDoc.Db.Rollback;
     raise;
   end;
-  // PAS de MarkDirty: last_seen n'est pas une modification de l'utilisateur, et
-  // salir le document lui reclamerait un enregistrement apres chaque session.
+  // PAS de MarkDirty: sinon « enregistrer ? » a chaque deconnexion.
 end;
 
 procedure TSshKnownHosts.Forget(const AHostname: string; APort: Integer;

@@ -2,8 +2,7 @@ unit uPodCmd;
 
 {$mode objfpc}{$H+}
 
-// Composition de la commande kubectl d'un pod. Unite PURE, donc
-// testable: c'est ici que se joue la defense contre l'injection.
+// Unite PURE: toute la defense contre l'injection shell se joue ici.
 
 interface
 
@@ -15,8 +14,8 @@ const
   POD_EXIT_NO_POD = 91;
   POD_EXIT_NO_CONTAINER = 92;
 
-// Echecs classes par CODE, jamais par texte: kubectl rend celui de la commande
-// distante et sa sortie est localisee. Les trois noms DOIVENT etre deja valides.
+// Echec lu au CODE de sortie: le texte de kubectl est localise. Les trois noms
+// DOIVENT etre deja valides.
 function BuildPodCommand(const ANamespace, APodName, AContainerName: string;
   AShell: TContainerShell): string;
 

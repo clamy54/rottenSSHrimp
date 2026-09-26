@@ -2,9 +2,7 @@ unit uPodDialog;
 
 {$mode objfpc}{$H+}
 
-// Proprietes d'un pod Kubernetes, jumeau de uContainerDialog: ni hote, ni
-// port, ni identifiants -- un parent SSH ou kubectl vit, un namespace, un pod,
-// un container, un mode.
+// Jumeau de uContainerDialog: ni hote ni identifiants, tout vient du parent SSH.
 
 interface
 
@@ -88,9 +86,8 @@ begin
   ParentCombo.Items.Clear;
   ParentUuids.Clear;
   sel := -1;
-  // Filtre sur les hotes marques « Offer this host ». Table absente (document
-  // ancien) => pas de filtre, sinon liste vide. Le parent DEJA choisi reste
-  // visible meme non marque.
+  // Table absente (vieux document) => pas de filtre, sinon liste vide.
+  // Le parent DEJA choisi reste visible meme non marque.
   offers := TStringList.Create;
   try
     offers.Sorted := True;
@@ -141,8 +138,7 @@ var
     Result.Left := EDIT_X;
     Result.Top := f.Y;
     Result.Style := csDropDownList;
-    // sous LCL Cocoa un csDropDownList s'ajuste a son contenu et ignore Width:
-    // seules les contraintes figent la largeur
+    // Cocoa ignore Width sur un csDropDownList: seules les contraintes tiennent
     Result.AutoSize := False;
     Result.Width := EDIT_W;
     Result.Constraints.MinWidth := EDIT_W;
@@ -212,7 +208,7 @@ begin
   Result := f;
 end;
 
-// False = invalide, le message a deja ete affiche. Seul le pod est obligatoire.
+// False: message deja affiche
 function ReadForm(f: TPodForm; out AName: string;
   out ACfg: TPodConfig): Boolean;
 var

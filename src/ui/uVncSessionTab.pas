@@ -2,9 +2,8 @@ unit uVncSessionTab;
 
 {$mode objfpc}{$H+}
 
-// Onglet de session VNC. Le transport emet TOUS ses evenements
-// depuis son thread: toucher un widget LCL de la est un crash differe, jamais
-// une erreur nette. Tout remonte donc par Application.QueueAsyncCall.
+// Le transport emet TOUT depuis son thread: un widget LCL touche de la = crash
+// differe, jamais net. Tout remonte par Application.QueueAsyncCall.
 
 interface
 
@@ -408,8 +407,8 @@ end;
 procedure TVncSessionTab.AsyncState(Data: PtrInt);
 begin
   FState := TRemoteSessionState(Data);
-  // Ligne de base, PAS un renvoi: sans elle le premier sondage expedierait au
-  // serveur ce qui etait copie avant la session -- un mot de passe, en clair.
+  // Ligne de base, PAS un renvoi: sinon le premier sondage offre au serveur
+  // ce qui etait copie avant. Un mot de passe, en clair, par exemple.
   if FState = rssConnected then
   begin
     FEverConnected := True;
@@ -455,7 +454,6 @@ begin
     FClipLock.Release;
   end;
   if txt = '' then Exit;
-  // Le pont note la provenance autour de l'ecriture et l'oublie si elle rate.
   FClipBridge.NoteRemote(txt, @WriteLocalClipboard);
 end;
 
@@ -540,8 +538,8 @@ begin
     FTransport.SendClipboard(AText);
 end;
 
-// Onglet visible seulement: VNC pousse le texte entier, pas une annonce, donc
-// un onglet cache enverrait ce que le serveur A vient de deposer.
+// VNC pousse le texte entier: un onglet cache enverrait a B ce que A vient de
+// deposer.
 function TVncSessionTab.ClipForeground: Boolean;
 begin
   Result := (PageControl <> nil) and (PageControl.ActivePage = Self);

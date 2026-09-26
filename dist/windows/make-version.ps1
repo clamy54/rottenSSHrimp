@@ -1,5 +1,4 @@
-# Extrait RSSH_VERSION de src\util\uVersion.pas et genere version.iss.
-# Lance par rottensshrimp.iss a la compilation, comme make-notices.ps1.
+# uVersion.pas -> version.iss, lance par rottensshrimp.iss a la compilation.
 $ErrorActionPreference = 'Stop'
 
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path

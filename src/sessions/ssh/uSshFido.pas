@@ -2,17 +2,10 @@ unit uSshFido;
 
 {$mode objfpc}{$H+}
 
-// Dialogue avec une cle de securite FIDO2: enrolement d'une nouvelle cle SSH et
-// signature d'un defi. AUCUNE dependance a la LCL -- les evenements sont
-// appeles sur le thread appelant (thread de session, ou worker d'enrolement),
-// c'est a l'appelant de les faire remonter a l'interface.
-//
-// Un seul token, une seule operation a la fois: un verrou global serialise tout
-// (une connexion par rebond en demande deux, un cluster en demande N). Sans lui,
-// deux threads se disputeraient le meme peripherique USB.
-//
-// La bibliotheque est OPTIONNELLE: rien ici ne suppose qu'elle est chargee, et
-// FidoAvailable doit etre teste avant de proposer quoi que ce soit.
+// Enrolement et signature FIDO2. Pas de LCL: les evenements tombent sur le
+// thread appelant, a lui de les remonter a l'UI.
+// Verrou global: un rebond veut deux signatures, un cluster N, et l'USB un seul.
+// libfido2 OPTIONNELLE: FidoAvailable d'abord.
 
 interface
 
@@ -20,10 +13,8 @@ uses
   SysUtils, SyncObjs, uSecureBytes, uSshSkKeyGen;
 
 type
-  // AActive=True a l'entree dans l'attente du geste, False a la sortie. Le nom
-  // sert a designer le peripherique quand il y en a plusieurs.
   TFidoTouchEvent = procedure(AActive: Boolean; const ADeviceName: string) of object;
-  // False = l'utilisateur a renonce. APin appartient a l'appele apres retour.
+  // False = abandon. APin appartient a l'appele apres retour.
   TFidoPinEvent = function(const AReason: string; out APin: TSecureBytes): Boolean of object;
 
   TFidoEnrollment = record
@@ -32,8 +23,7 @@ type
     KeyHandle: TBytes;
     Flags: Byte;
     DeviceName: string;
-    // True = la cle a ete creee DANS la machine (TPM Windows Hello) et non sur
-    // un token amovible: elle ne suivra pas le document sur un autre poste.
+    // TPM Windows Hello: la cle ne suivra pas le document sur un autre poste
     PlatformBound: Boolean;
   end;
 
@@ -49,17 +39,17 @@ type
   private
     FDev: Pointer;
     FDevLock: TCriticalSection;
-    FCancelled: LongInt;      // 0/1, Interlocked: ecrit par l'UI, lu ici
+    FCancelled: LongInt;      // Interlocked: ecrit par l'UI
     FOnTouch: TFidoTouchEvent;
     FOnPin: TFidoPinEvent;
     FDeviceName: string;
     procedure SetDev(ADev: Pointer);
     function Cancelled: Boolean; inline;
     procedure Touch(AActive: Boolean);
-    // Rend False si l'utilisateur renonce; APinBuf est NUL-terminee.
+    // APinBuf NUL-terminee
     function AskPin(ACode: Integer; out APinBuf: TSecureBytes): Boolean;
     function DescribeDevice(ADevInfo: Pointer): string;
-    // AKeyHandle vide = enrolement (premier token FIDO2 venu).
+    // AKeyHandle vide = enrolement, premier token FIDO2 venu
     function OpenDevice(const AApplication: string; const AKeyHandle: TBytes;
       out AErr: string): Boolean;
     procedure CloseDevice;
@@ -67,7 +57,7 @@ type
   public
     constructor Create;
     destructor Destroy; override;
-    // Interrompt l'operation en cours, depuis n'importe quel thread.
+    // tout thread
     procedure Cancel;
     function Enroll(const AApplication, AUserName: string; ARequireUv: Boolean;
       out AResult: TFidoEnrollment; out AErr: string): Boolean;
@@ -79,11 +69,9 @@ type
     property DeviceName: string read FDeviceName;
   end;
 
-// True si libfido2 est chargeable. Ne leve jamais.
+// Ne leve jamais.
 function FidoAvailable: Boolean;
-// Message pret a afficher quand elle ne l'est pas: dit quoi installer.
 function FidoUnavailableMessage: string;
-// Traduit un code libfido2 en phrase utile a quelqu'un qui tient la cle.
 function FidoDescribeError(ACode: Integer; const AContext: string): string;
 
 implementation
@@ -92,8 +80,7 @@ uses
   ctypes, uFido2Api, uSodiumApi;
 
 const
-  // Le token attend le doigt: large, c'est l'utilisateur qui decide. Le budget
-  // reseau de la session est re-arme apres le geste, il ne compte pas ici.
+  // le doigt humain, pas le reseau: le budget session est rearme apres
   FIDO_TIMEOUT_MS = 60000;
   FIDO_PROBE_TIMEOUT_MS = 5000;   // assertion muette: aucun geste attendu
   MAX_PIN_TRIES = 3;
@@ -102,7 +89,6 @@ const
   ED25519_SIG_LEN = 64;
 
 var
-  // Un token physique, une operation: tout le monde fait la queue.
   GFidoLock: TCriticalSection;
 
 function FidoAvailable: Boolean;
@@ -168,10 +154,8 @@ begin
     Result := AContext + ': ' + s;
 end;
 
-// AAGUID des authentificateurs PLATEFORME de Windows: une cle creee par eux vit
-// dans le TPM du poste, pas sur la cle de securite. Windows laisse l'utilisateur
-// choisir dans sa boite de dialogue et libfido2 ne fixe pas
-// dwAuthenticatorAttachment: on ne peut donc que constater apres coup.
+// libfido2 ne fixe pas dwAuthenticatorAttachment et Windows laisse choisir:
+// le TPM ne se constate qu'apres coup, par l'AAGUID.
 function IsPlatformAaguid(AGuid: PByte; ALen: csize_t): Boolean;
 const
   // 08987058-cadc-4b81-b6e1-30de50dcbe96  Windows Hello Hardware Authenticator
@@ -225,8 +209,7 @@ end;
 
 function TFidoOperation.Cancelled: Boolean;
 begin
-  // Lecture Interlocked: la barriere qui va avec l'ecriture de Cancel, sans
-  // compter sur celle, incidente, des verrous traverses entre-temps.
+  // barriere assortie a Cancel, pas celle, fortuite, d'un verrou croise
   Result := InterlockedCompareExchange(FCancelled, 0, 0) <> 0;
 end;
 
@@ -235,8 +218,7 @@ var
   d: Pointer;
 begin
   InterlockedExchange(FCancelled, 1);
-  // Sous verrou: le thread de l'operation peut fermer le peripherique au meme
-  // instant, et fido_dev_cancel sur un pointeur libere serait fatal.
+  // Sous verrou: CloseDevice concurrent, et fido_dev_cancel sur du libere.
   FDevLock.Acquire;
   try
     d := FDev;
@@ -275,8 +257,7 @@ begin
   end;
   try
     if (raw = nil) or (raw.Len = 0) then Exit;
-    // libfido2 lit le PIN comme une chaine C et TSecureBytes fait pile la
-    // taille demandee (garde sodium juste apres): copie avec un octet de plus.
+    // Chaine C pour libfido2; TSecureBytes finit pile sur la garde sodium: +1 pour le NUL.
     APinBuf := TSecureBytes.Create(raw.Len + 1);
     Move(raw.Data^, APinBuf.Data^, raw.Len);
     Result := True;
@@ -323,10 +304,8 @@ begin
   if Assigned(fido_dev_free) then fido_dev_free(@d);
 end;
 
-// Essai muet: on demande une assertion sans exiger le doigt. Un token qui
-// DETIENT la cle repond FIDO_OK ou « il faut toucher / il faut le PIN » -- dans
-// tous ces cas c'est le bon. Un token qui ne l'a pas repond NO_CREDENTIALS et
-// on passe au suivant, sans l'avoir fait clignoter.
+// Assertion sans presence: « touchez » ou « PIN » veut dire OUI, NO_CREDENTIALS
+// veut dire non, et aucun token n'a clignote pour rien.
 function DeviceHoldsCredential(ADev: Pointer; const AApplication: string;
   const AKeyHandle: TBytes): Boolean;
 var
@@ -395,9 +374,7 @@ begin
       if path = nil then Continue;
       spath := string(AnsiString(path));
       {$IFDEF WINDOWS}
-      // L'acces HID direct exige les droits administrateur depuis Windows 1903:
-      // seul le peripherique virtuel Windows Hello est utilisable tel quel, et
-      // c'est lui qui presente la boite « touchez » et demande le PIN.
+      // HID direct = administrateur depuis 1903: Windows Hello ou rien.
       if spath <> FIDO_WINHELLO_PATH then Continue;
       {$ENDIF}
       Inc(seen);
@@ -408,17 +385,14 @@ begin
         fido_dev_free(@dev);
         Continue;
       end;
-      // Publie AVANT le sondage: Cancel ne peut interrompre que ce qu'il
-      // voit, et un token defaillant peut retenir fido_dev_get_assert jusqu'au
-      // delai. Le sondage n'attend aucun geste: un delai court lui suffit, le
-      // delai complet n'est arme que pour le token retenu.
+      // Publie AVANT le sondage: Cancel n'interrompt que ce qu'il voit.
+      // Delai court au sondage, le long pour le token retenu.
       SetDev(dev);
       if Assigned(fido_dev_set_timeout) then
         fido_dev_set_timeout(dev, FIDO_PROBE_TIMEOUT_MS);
 
       if Length(AKeyHandle) = 0 then
       begin
-        // Enrolement: n'importe quel token FIDO2 fait l'affaire.
         if fido_dev_is_fido2(dev) then
         begin
           FDeviceName := DescribeDevice(di);
@@ -427,12 +401,8 @@ begin
           Exit(True);
         end;
       end
-      // Windows Hello: PAS de sondage. WebAuthn n'a pas d'assertion muette --
-      // toute demande passe par la boite systeme et exige l'utilisateur, un
-      // essai « sans toucher » y est refuse et ferait croire que la cle n'est
-      // pas la. OpenSSH fait pareil: il ouvre windows://hello et laisse Windows
-      // trouver la bonne cle a partir de la liste autorisee. Il n'y a de toute
-      // facon qu'un seul peripherique de ce cote.
+      // Windows Hello: PAS de sondage. WebAuthn n'a pas d'assertion muette, le
+      // refus ferait croire la cle absente. OpenSSH fait pareil.
       else if (Assigned(fido_dev_is_winhello) and fido_dev_is_winhello(dev)) or
               DeviceHoldsCredential(dev, AApplication, AKeyHandle) then
       begin
@@ -442,7 +412,7 @@ begin
         Exit(True);
       end;
 
-      SetDev(nil);   // sous verrou: Cancel ne doit plus le voir
+      SetDev(nil);   // Cancel ne doit plus le voir
       fido_dev_close(dev);
       fido_dev_free(@dev);
     end;
@@ -466,9 +436,8 @@ begin
       'Insert the key this credential was enrolled with';
 end;
 
-// EdDSA quand le token l'annonce: cle plus courte et signature brute, sans
-// detour par le DER. Windows Hello est ecarte, son support d'EdDSA n'est pas
-// fiable et l'enrolement echouerait apres le geste de l'utilisateur.
+// EdDSA si annonce (pas de DER). Pas sous Windows Hello: il l'annonce, puis
+// echoue APRES que l'utilisateur a touche.
 procedure TFidoOperation.PreferredAlg(out AAlg: TSkAlg);
 var
   ci: Pfido_cbor_info_t;
@@ -520,14 +489,12 @@ var
     if fido_cred_set_rp(cred, PAnsiChar(app), 'RottenSSHrimp') <> FIDO_OK then Exit;
     if fido_cred_set_user(cred, @uid[0], USER_ID_LEN, PAnsiChar(uname),
       PAnsiChar(uname), nil) <> FIDO_OK then Exit;
-    // Pas de cle residente: le key handle vit dans le document, le token n'a
-    // aucune place a consommer et rien a lister s'il est perdu.
+    // Non residente: le key handle vit dans le document; token perdu, rien a lister.
     if fido_cred_set_rk(cred, FIDO_OPT_OMIT) <> FIDO_OK then Exit;
     if ARequireUv then
     begin
       if fido_cred_set_uv(cred, FIDO_OPT_TRUE) <> FIDO_OK then Exit;
-      // credProtect: le token refusera de s'en servir sans verification, meme
-      // si un client oubliait de la demander.
+      // credProtect: le token exige l'UV meme d'un client distrait
       if Assigned(fido_cred_set_prot) then
         fido_cred_set_prot(cred, FIDO_CRED_PROT_UV_REQUIRED);
     end;
@@ -544,8 +511,7 @@ begin
     Exit;
   end;
 
-  // FCancelled n'est JAMAIS remis a zero ici: un Cancel recu pendant
-  // l'attente du verrou (un autre onglet tient le token) doit compter.
+  // FCancelled JAMAIS remis a zero: un Cancel pendant l'attente du verrou compte.
   GFidoLock.Acquire;
   try
     if Cancelled then
@@ -596,8 +562,7 @@ begin
               Touch(False);
             end;
 
-            // Un token dont le PIN est configure l'exige des l'enrolement, meme
-            // sans verification demandee.
+            // PIN configure = PIN exige, meme sans UV demandee
             if (r = FIDO_ERR_PIN_REQUIRED) or (r = FIDO_ERR_PIN_INVALID) or
                (r = FIDO_ERR_PIN_AUTH_INVALID) or (r = FIDO_ERR_UV_INVALID) then
             begin
@@ -616,8 +581,7 @@ begin
               Continue;
             end;
 
-            // EdDSA annonce mais refuse: on retombe sur ECDSA plutot que de
-            // renvoyer l'utilisateur avec une erreur qu'il ne peut pas corriger.
+            // EdDSA annonce puis refuse: repli ECDSA
             if (r <> FIDO_OK) and (not triedEcdsa) and
                ((r = FIDO_ERR_UNSUPPORTED_ALGORITHM) or
                 (r = FIDO_ERR_UNSUPPORTED_OPTION) or
@@ -767,15 +731,13 @@ begin
               AErr := 'cannot prepare the signature request';
               Exit;
             end;
-            // Windows Hello demande la verification de lui-meme: la reclamer en
-            // plus ferait echouer la requete.
+            // Windows Hello verifie de lui-meme; la reclamer fait echouer
             if wantUv and (pin = nil) and (not isHello) then
               fido_assert_set_uv(a, FIDO_OPT_TRUE)
             else
               fido_assert_set_uv(a, FIDO_OPT_FALSE);
 
             if pin <> nil then pinPtr := PAnsiChar(pin.Data) else pinPtr := nil;
-            // Windows Hello affiche sa propre boite: la notre ferait doublon.
             if not isHello then Touch(True);
             try
               r := fido_dev_get_assert(FDev, a, pinPtr);
@@ -788,8 +750,7 @@ begin
             begin
               Inc(tries);
               FreeAndNil(pin);
-              // Sous Windows Hello, le PIN est saisi dans la boite du systeme:
-              // en redemander un ici n'aurait aucun effet.
+              // Windows Hello: le PIN se tape dans SA boite
               if (tries > MAX_PIN_TRIES) or isHello then
               begin
                 AErr := FidoDescribeError(r, '');

@@ -2,9 +2,8 @@ unit uFreeRdpApi;
 
 {$mode objfpc}{$H+}
 
-// Binding dynamique FreeRDP 3: chemins absolus, symboles
-// verifies, structs lues par offset nomme -- releves par offsetof() contre les
-// vrais en-tetes, verifies par uRdpTests.
+// FreeRDP 3, structs par offset nomme: releves par offsetof() sur les vrais
+// en-tetes, verifies par uRdpTests.
 
 interface
 
@@ -50,16 +49,16 @@ const
   CTX_OFF_PUBSUB = 144;
 
   DISP_DVC_NAME = 'Microsoft::Windows::RDS::DisplayControl';
-  // GFX: a brancher sur la GDI logicielle a sa connexion, sinon ecran noir
+  // a brancher sur la GDI logicielle a la connexion, sinon ecran noir
   RDPGFX_DVC_NAME = 'Microsoft::Windows::RDS::Graphics';
   CHANEVT_OFF_NAME = 16;         // ChannelConnectedEventArgs.name
   CHANEVT_OFF_INTERFACE = 24;    // .pInterface (le DispClientContext)
   DISP_OFF_SENDLAYOUT = 24;      // DispClientContext.SendMonitorLayout
   DISPLAY_CONTROL_MONITOR_PRIMARY = $01;
 
-  // cliprdr: canal STATIQUE, charge par load_addins au preconnect
+  // canal STATIQUE, charge par load_addins au preconnect
   CLIPRDR_SVC_NAME = 'cliprdr';
-  CLIPRDR_OFF_CUSTOM = 8;         // ou l'on range le lien retour vers le transport
+  CLIPRDR_OFF_CUSTOM = 8;         // lien retour vers le transport
   CLIPRDR_OFF_SERVER_CAPABILITIES = 16;
   CLIPRDR_OFF_CLIENT_CAPABILITIES = 24;
   CLIPRDR_OFF_MONITOR_READY = 32;
@@ -89,8 +88,7 @@ const
   CB_CAPSTYPE_GENERAL = 1;
   CB_CAPS_VERSION_2 = 2;
   CB_USE_LONG_FORMAT_NAMES = 2;
-  // Copier-coller de fichiers en flux (FileContents), sans chemins CF_HDROP:
-  // rien du poste ne se lit par un chemin envoye du serveur.
+  // Fichiers en flux, JAMAIS de chemins CF_HDROP: le serveur ne designe rien du poste.
   CB_STREAM_FILECLIP_ENABLED = 4;
   CB_FILECLIP_NO_FILE_PATHS = 8;
   FILECONTENTS_SIZE = 1;
@@ -107,8 +105,7 @@ const
   UPD_OFF_ENDPAINT = 80;
   UPD_OFF_DESKTOPRESIZE = 104;
 
-  // Region invalidee gdi->primary->hdc->hwnd->invalid: le hdc de
-  // primary, pas gdi->hdc. BITMAP_OFF_HDC suit l'ARCHITECTURE, pas la version.
+  // gdi->primary->hdc (PAS gdi->hdc)->hwnd->invalid. Depend de l'ARCHITECTURE.
   {$IFDEF DARWIN}
   BITMAP_OFF_HDC = 288;   // macOS arm64
   {$ELSE}
@@ -142,7 +139,7 @@ const
   FreeRDP_Username = 21;
   FreeRDP_Password = 22;
   FreeRDP_Domain = 23;
-  // base du SPN Kerberos: ServerHostname=127.0.0.1 (rebond SSH) casserait l'auth
+  // SPN Kerberos: via rebond SSH, ServerHostname vaut 127.0.0.1 et l'auth casse
   FreeRDP_UserSpecifiedServerName = 29;
   FreeRDP_DesktopWidth = 129;
   FreeRDP_DesktopHeight = 130;
@@ -204,7 +201,7 @@ const
   PTR_XFLAGS_DOWN = $8000;
 
   KBD_FLAGS_EXTENDED = $0100;
-  // TS_SYNC_EVENT: etat des verrous du clavier LOCAL
+  // TS_SYNC_EVENT: verrous du clavier LOCAL
   KBD_SYNC_SCROLL_LOCK = $01;
   KBD_SYNC_NUM_LOCK = $02;
   KBD_SYNC_CAPS_LOCK = $04;
@@ -235,7 +232,7 @@ const
 type
   EFreeRdpError = class(Exception);
 
-  // opaques: jamais dereferences autrement que par offset nomme
+  // opaques: offset nomme ou rien
   PFreeRdp = Pointer;
   PRdpContext = Pointer;
   PRdpSettings = Pointer;
@@ -253,7 +250,7 @@ type
   TpRdpClientStop = function(context: PRdpContext): cint; cdecl;
   TpConnectCallback = function(instance: PFreeRdp): cint; cdecl;
   TpPostDisconnect = procedure(instance: PFreeRdp); cdecl;
-  // BeginPaint/EndPaint/DesktopResize recoivent le contexte, pas l'instance
+  // le contexte, PAS l'instance
   TpContextCallback = function(context: PRdpContext): cint; cdecl;
   TpVerifyCertificateEx = function(instance: PFreeRdp; host: PAnsiChar;
     port: cuint16; common_name, subject, issuer, fingerprint: PAnsiChar;
@@ -329,8 +326,7 @@ type
   end;
   PCliprdrFormatDataResponse = ^TCliprdrFormatDataResponse;
 
-  // CLIPRDR_FILE_CONTENTS_REQUEST: tous les champs font 4 octets, aucun
-  // bourrage a reproduire.
+  // tout en 4 octets: aucun bourrage a reproduire
   TCliprdrFileContentsRequest = packed record
     common: TCliprdrHeader;
     streamId: cuint32;
@@ -353,7 +349,7 @@ type
   PCliprdrFileContentsResponse = ^TCliprdrFileContentsResponse;
 
   TCliprdrFn = function(context: Pointer; msg: Pointer): cuint32; cdecl;
-  // variadique en C: 'varargs' obligatoire sur arm64 (meme piege que sqlite3)
+  // variadique: 'varargs' obligatoire sur arm64 (cf. sqlite3)
   TPubSub_Subscribe = function(pubSub: Pointer;
     eventName: PAnsiChar): cint; cdecl; varargs;
 
@@ -420,7 +416,7 @@ var
   freerdp_settings_set_uint32: Tfreerdp_settings_set_uint32 = nil;
   freerdp_settings_get_bool: Tfreerdp_settings_get_bool = nil;
   freerdp_settings_get_uint32: Tfreerdp_settings_get_uint32 = nil;
-  // Optionnel (non-fatal si absent): chargement clavier par locale sous Unix.
+  // Optionnel
   freerdp_detect_keyboard_layout_from_system_locale:
     Tfreerdp_detect_keyboard_layout_from_system_locale = nil;
   freerdp_input_send_keyboard_event: Tfreerdp_input_send_keyboard_event = nil;
@@ -450,7 +446,7 @@ function CtxGdi(AContext: PRdpContext): PRdpGdi; inline;
 function CtxInput(AContext: PRdpContext): PRdpInput; inline;
 function CtxSettings(AContext: PRdpContext): PRdpSettings; inline;
 function CtxLastError(AContext: PRdpContext): cuint32; inline;
-// a valider par UpdateLayoutValid avant toute ECRITURE des rappels de peinture
+// UpdateLayoutValid AVANT d'y ecrire le moindre rappel
 function CtxUpdate(AContext: PRdpContext): Pointer; inline;
 
 function RdpContextOf(AInstance: PFreeRdp): PRdpContext; inline;
@@ -473,29 +469,28 @@ function GdiTakeInvalid(AGdi: PRdpGdi; out AX, AY, AW, AH: Integer): Boolean;
 // a appeler depuis BeginPaint
 procedure GdiResetInvalid(AGdi: PRdpGdi);
 
-// Shim C (bindings/freerdp/shim): compile contre les vrais en-tetes, il PRIME
-// sur les offsets; absent, repli sur eux sous la garde des temoins.
+// Le shim C PRIME sur les offsets; absent, offsets sous garde des temoins.
 function RdpShimActive: Boolean;
-// sous-estimer sizeof(rdpContext) ecraserait ce que le transport range apres
+// sous-estime, le transport se fait ecraser ce qu'il range apres
 function RdpContextSizeBytes: PtrUInt;
 function RdpEntryPointsSize: PtrUInt;
-// False si shim absent (l'appelant remplit par offsets) ou tampon trop court
+// False: pas de shim (remplir par offsets) ou tampon trop court
 function RdpEpInit(ABuf: Pointer; ALen, ACtxSize: PtrUInt): Boolean;
 function RdpEpSetClientNew(ABuf: Pointer; ALen: PtrUInt; ACb: Pointer): Boolean;
 function RdpEpSetClientFree(ABuf: Pointer; ALen: PtrUInt; ACb: Pointer): Boolean;
 
-// Temoins: la bibliotheque vient de la MACHINE, pas de nos en-tetes. Un offset
-// faux en lecture = ecran noir; en ECRITURE il ecrase la memoire d'autrui.
+// La lib vient de la MACHINE, pas de nos en-tetes. Offset faux: en lecture,
+// ecran noir; en ECRITURE, la memoire d'autrui.
 
-// A verifier AVANT d'ecrire le moindre rappel dans l'instance. Temoins:
-// aller-retour instance->context et RELECTURE du ContextSize qu'on a choisi.
+// AVANT tout rappel dans l'instance: aller-retour instance->context, et
+// RELECTURE du ContextSize pose.
 function RdpInstanceLayoutValid(AInstance: PFreeRdp; AContext: PRdpContext;
   AExpectedCtxSize: PtrUInt): Boolean;
 
-// aller-retour update->context: exige AVANT d'ecrire les rappels de peinture
+// aller-retour update->context, AVANT les rappels de peinture
 function UpdateLayoutValid(AContext: PRdpContext; AUpdate: Pointer): Boolean;
 function GdiLayoutValid(AGdi: PRdpGdi; AExpectW, AExpectH: Integer): Boolean;
-// des offsets faux traversent cette chaine sans planter: d'ou la vraisemblance
+// Des offsets faux traversent la chaine sans planter: on juge la vraisemblance.
 function GdiInvalidChainValid(AGdi: PRdpGdi): Boolean;
 
 procedure UpdSetBeginPaint(AUpdate: Pointer; ACb: TpContextCallback); inline;
@@ -509,9 +504,7 @@ function DispSendLayoutFn(ADisp: Pointer): Tdisp_send_layout; inline;
 
 function CtxChannels(AContext: PRdpContext): Pointer; inline;
 
-// Rappels du RdpgfxClientContext que le transport enveloppe. Le shim les
-// designe par nom; sans lui, decalages du struct s_rdpgfx_client_context de
-// FreeRDP 3 (handle, custom, puis les pointeurs de fonction dans l'ordre).
+// Shim: par nom. Sans lui: rang dans s_rdpgfx_client_context apres handle, custom.
 const
   GFX_SLOT_CREATE_SURFACE = 0;
   GFX_SLOT_DELETE_SURFACE = 1;
@@ -519,12 +512,12 @@ const
   GFX_SLOT_EVICT_CACHE_ENTRY = 3;
 
 type
-  // (context, pdu) -> UINT; tous les rappels rdpgfx ont cette forme
+  // forme commune a tous les rappels rdpgfx
   TGfxPduFn = function(AGfx, APdu: Pointer): cuint32; cdecl;
 
 procedure GfxSetHandler(AGfx: Pointer; ASlot: cuint32; ACb: Pointer); inline;
 function GfxHandler(AGfx: Pointer; ASlot: cuint32): TGfxPduFn; inline;
-// rdpContext proprietaire, via gfx->custom (le rdpGdi) puis gdi->context
+// gfx->custom (rdpGdi) puis gdi->context
 function GfxRdpContext(AGfx: Pointer): Pointer; inline;
 
 procedure CliprdrSetCustom(ACtx, AData: Pointer); inline;
@@ -546,11 +539,9 @@ var
   GVersion: string = '';
   GInitLock: TRTLCriticalSection;
 
-// ---- shim ----
 const
-  // Contrat binding<->shim; autre version = shim ignore, offsets en dur.
-  // 2: poseurs rssh_instance_set_*. 3: poseurs rssh_ep_set_client_new/_free.
-  // 4: emplacements rdpgfx. 5: emplacements cliprdr FileContents.
+  // Autre version = shim ignore, offsets en dur. 2: rssh_instance_set_*.
+  // 3: rssh_ep_set_client_*. 4: slots rdpgfx. 5: slots cliprdr FileContents.
   RSSH_SHIM_ABI = 5;
 
 type
@@ -618,11 +609,11 @@ var
   sh_gfx_call: Tsh_slot_get = nil;
   sh_gfx_rdp_context: Tsh_ptr_of_ptr = nil;
 
-// chemin relatif = dylibs cherchees dans le repertoire courant
+// relatif = dylibs cherchees dans le cwd
 function AbsCandidateDir(const P: string): Boolean;
 begin
   {$IFDEF WINDOWS}
-  // 'C:chemin' est relatif au repertoire courant du lecteur
+  // 'C:chemin' est relatif au cwd du lecteur
   Result := ((Length(P) >= 3) and (P[2] = ':') and
              ((P[3] = '\') or (P[3] = '/'))) or
             ((Length(P) >= 2) and (P[1] = '\') and (P[2] = '\'));
@@ -733,8 +724,7 @@ begin
     MustSym(GLibClient, 'freerdp_client_context_free');
   Pointer(freerdp_client_load_addins) :=
     MustSym(GLibClient, 'freerdp_client_load_addins');
-  // winpr3.dll ne reexporte pas WaitForMultipleObjects sous Windows: kernel32
-  // natif (les handles FreeRDP y sont de vrais handles Windows)
+  // winpr3.dll ne le reexporte pas; les handles FreeRDP sont de vrais handles
   {$IFDEF WINDOWS}
   Pointer(WaitForMultipleObjects) :=
     MustSym(GetModuleHandle('kernel32.dll'), 'WaitForMultipleObjects');
@@ -745,8 +735,8 @@ begin
   Pointer(PubSub_Subscribe) := MustSym(GLibWinpr, 'PubSub_Subscribe');
 end;
 
-// Temoins d'ABI au chargement: refus propre plutot que corruption en session.
-// Seuls les offsets atteignables sans connexion sont couverts.
+// Refus propre au chargement plutot que corruption en session. Ne couvre que
+// ce qui s'atteint sans connexion.
 procedure CheckFreeRdpStructLayout;
 var
   ep: array[0..EP_CHECK_BUF_BYTES - 1] of Byte;
@@ -758,7 +748,7 @@ begin
   ctxSize := RdpContextSizeBytes + SizeOf(Pointer);
   if RdpShimActive then
   begin
-    // le shim fait AUTORITE: son refus n'autorise pas le repli sur les offsets
+    // le shim fait AUTORITE: son refus ne rouvre pas le repli sur les offsets
     if RdpEntryPointsSize > PtrUInt(SizeOf(ep)) then
       raise EFreeRdpError.CreateFmt('Incompatible FreeRDP (%s): entry points ' +
         'are %d bytes, buffer holds %d. RDP is disabled with this library.',
@@ -795,8 +785,6 @@ begin
 end;
 
 
-// ---- chargement du shim ----
-
 function ShimNames: TStringArray;
 begin
   {$IFDEF DARWIN}
@@ -815,7 +803,7 @@ var
   exeDir: string;
 begin
   exeDir := IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0)));
-  // chemins ABSOLUS a cote de l'exe, jamais le PATH
+  // ABSOLUS, jamais le PATH
   Result := [
     exeDir + 'lib' + PathDelim,
     exeDir,
@@ -824,7 +812,7 @@ begin
   ];
 end;
 
-// toute anomalie desactive le shim en entier: jamais un shim a moitie lie
+// Tout ou rien: jamais un shim a moitie lie.
 procedure LoadRdpShim(AMajor, AMinor: Integer);
 var
   dir, path: string;
@@ -886,8 +874,7 @@ begin
     GShim := NilHandle;
     Exit;
   end;
-  // MINEURE exigee a l'identique: des offsets bougent d'une mineure a l'autre
-  // (BITMAP_OFF_HDC); rebatir via scripts/build-rdp-shim.sh pour le reactiver.
+  // MINEURE identique: des offsets bougent entre mineures. build-rdp-shim.sh.
   if bMin <> AMinor then
   begin
     LogWarning(Format('rdp: shim built for FreeRDP %d.%d, loaded %d.%d ' +
@@ -1025,10 +1012,8 @@ begin
   try
   if GReady then Exit;
   names := LibNames;
-  // On retient au passage le repertoire le PLUS complet: sous Debian les trois
-  // sonames viennent de trois paquets distincts et libfreerdp3-3 n'entraine pas
-  // libfreerdp-client3-3. Deux fichiers sur trois, et le diagnostic est
-  // « introuvable » -- un message qui envoie chercher au mauvais endroit.
+  // Debian: trois paquets, libfreerdp3-3 n'entraine pas le client. On garde le
+  // dossier le plus complet pour dire CE QUI manque, pas « introuvable ».
   bestDir := '';
   bestHits := 0;
   for dir in CandidateSets do
@@ -1079,7 +1064,7 @@ begin
 
   BindSymbols;
 
-  // autre majeure = corruption memoire silencieuse: on refuse
+  // autre majeure = corruption memoire silencieuse
   Pointer(getVer) := MustSym(GLibRdp, 'freerdp_get_version');
   Pointer(getVerStr) := MustSym(GLibRdp, 'freerdp_get_version_string');
   GVersion := string(AnsiString(getVerStr()));
@@ -1091,7 +1076,7 @@ begin
     raise EFreeRdpError.CreateFmt(
       'FreeRDP: incompatible major version %d (expected %d)',
       [maj, FREERDP_MIN_VERSION_MAJOR]);
-  // shim charge AVANT les temoins: ils empruntent le meme chemin que la session
+  // shim AVANT les temoins: meme chemin que la session
   LoadRdpShim(maj, min_);
   CheckFreeRdpStructLayout;
   GReady := True;
@@ -1273,7 +1258,7 @@ begin
   end;
   rgn := GdiInvalidRgn(AGdi);
   if rgn = nil then Exit;
-  // sans cette remise a zero, la region grossit: tout l'ecran a chaque frame
+  // sinon la region grossit jusqu'a repeindre tout l'ecran a chaque frame
   pcint32(PByte(rgn) + RGN_OFF_NULL)^ := 1;
   prim := PPointer(PByte(AGdi) + GDI_OFF_PRIMARY)^;
   hdc := PPointer(PByte(prim) + BITMAP_OFF_HDC)^;
@@ -1297,7 +1282,7 @@ begin
   end;
   rgn := GdiInvalidRgn(AGdi);
   if rgn = nil then Exit;
-  // 'null' vaut TRUE quand la region ne contient rien
+  // 'null' TRUE = region vide
   if pcint32(PByte(rgn) + RGN_OFF_NULL)^ <> 0 then Exit;
   AX := pcint32(PByte(rgn) + RGN_OFF_X)^;
   AY := pcint32(PByte(rgn) + RGN_OFF_Y)^;
@@ -1331,16 +1316,15 @@ begin
 
   if GShimOk then
   begin
-    // relire aux offsets Pascal rejetterait a tort une lib saine: on confirme
-    // seulement ContextSize, par le shim
+    // les offsets Pascal rejetteraient une lib saine: ContextSize seul
     Result := sh_inst_ctx_size(AInstance) = AExpectedCtxSize;
     Exit;
   end;
 
   if PPtrUInt(PByte(AInstance) + RDP_OFF_CONTEXTSIZE)^ <> AExpectedCtxSize then
     Exit;
-  // ContextNew/Free: fenetre aveugle reduite a une insertion entre 272 et 384;
-  // les offsets d'ECRITURE, eux, se prouvent par scripts/gen-rdp-offsets.c (CI)
+  // Angle mort: une insertion entre 272 et 384. Les offsets d'ECRITURE se
+  // prouvent en CI (gen-rdp-offsets.c).
   if PPointer(PByte(AInstance) + RDP_OFF_CONTEXTNEW)^ = nil then Exit;
   if PPointer(PByte(AInstance) + RDP_OFF_CONTEXTFREE)^ = nil then Exit;
   Result := True;
@@ -1358,7 +1342,7 @@ begin
   if (AGdi = nil) or (AExpectW <= 0) or (AExpectH <= 0) then Exit;
   if GdiWidth(AGdi) <> cint32(AExpectW) then Exit;
   if GdiHeight(AGdi) <> cint32(AExpectH) then Exit;
-  // 4 octets par pixel: on demande PIXEL_FORMAT_BGRX32 a gdi_init.
+  // BGRX32 demande a gdi_init
   if GdiStride(AGdi) < cuint32(AExpectW) * 4 then Exit;
   if GdiPrimaryBuffer(AGdi) = nil then Exit;
   Result := True;
@@ -1377,7 +1361,7 @@ begin
   end;
   rgn := GdiInvalidRgn(AGdi);
   if rgn = nil then Exit;
-  // 'null' est un booleen GDI: toute autre valeur signe une lecture a cote.
+  // booleen GDI: toute autre valeur signe une lecture a cote
   nul := pcint32(PByte(rgn) + RGN_OFF_NULL)^;
   if (nul <> 0) and (nul <> 1) then Exit;
   x := pcint32(PByte(rgn) + RGN_OFF_X)^;
@@ -1484,7 +1468,7 @@ begin
   Result := PPointer(PByte(gdi) + GDI_OFF_CONTEXT)^;
 end;
 
-// decalage -> slot nomme du shim (enum rssh_cliprdr_slot); False hors table
+// enum rssh_cliprdr_slot du shim
 function ClipSlotOfOffset(AOffset: Integer; out ASlot: cuint32): Boolean;
 begin
   Result := True;
@@ -1532,7 +1516,7 @@ var
 begin
   if GShimOk then
   begin
-    // slot inconnu: on n'ecrit rien plutot qu'un pointeur au hasard
+    // slot inconnu: rien plutot qu'un pointeur au hasard
     if ClipSlotOfOffset(AOffset, slot) then
       sh_cliprdr_set_handler(ACtx, slot, ACb);
     Exit;
@@ -1579,6 +1563,6 @@ initialization
   InitCriticalSection(GInitLock);
 
 finalization
-  // pas de dechargement (comme libssh2): des threads de session tournent encore
+  // pas de dechargement: des threads de session tournent encore
   DoneCriticalSection(GInitLock);
 end.

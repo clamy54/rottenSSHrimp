@@ -2,8 +2,8 @@ unit uSshTransport;
 
 {$mode objfpc}{$H+}
 
-// Transport SSH: un thread par session, aucun pointeur libssh2 ne sort d'ici,
-// aucune LCL, aucun secret dans les messages. Seule la boucle shell est non bloquante: clavier, annulation.
+// Un thread par session. Aucun pointeur libssh2 ne sort, aucune LCL n'entre,
+// aucun secret dans les messages.
 
 interface
 
@@ -14,9 +14,7 @@ uses
 type
   ESshTransportError = class(Exception);
 
-  // sakFidoKey: la cle privee est dans un token; libssh2 nous rappelle pour
-  // chaque signature, ce qui suppose un geste de l'utilisateur en plein milieu
-  // de l'authentification.
+  // sakFidoKey: un doigt humain en plein milieu de l'authentification
   TSshAuthKind = (sakPassword, sakKey, sakAgent, sakPrompt, sakFidoKey);
 
   TSshHostKeyVerdictKind = (hkUnknown, hkMatch, hkChanged);
@@ -33,13 +31,12 @@ type
     KnownFingerprint: string;
   end;
 
-  // Instantane pris sur le thread UI: le thread reseau ne touche pas TRshModel.
+  // Instantane UI: le thread reseau ne touche pas TRshModel.
   TSshConnectParams = class
   public
     Host: string;
     Port: Integer;
-    // Rebond: la SOCKET vise le tunnel local, la cle d'hote reste
-    // celle de la cible -- sinon le TOFU se ferait sous 127.0.0.1. Vides = direct.
+    // Rebond: la SOCKET vise le tunnel, le TOFU la cible (pas 127.0.0.1). Vides = direct.
     ConnectHost: string;
     ConnectPort: Integer;
     Username: string;
@@ -58,8 +55,6 @@ type
     ExecCommand: string;
     RequestPty: Boolean;
     KnownKeyTypes: array of string;
-    // Tunnels locaux (-L) a ouvrir une fois le shell en place. Vide pour
-    // tout ce qui n'est pas le terminal d'un hote SSH.
     Forwards: TSshForwardSpecs;
     constructor Create;
     destructor Destroy; override;
@@ -70,10 +65,9 @@ type
   TSshStateEvent = procedure(AState: TRemoteSessionState) of object;
   TSshErrorEvent = procedure(const AMessage: string) of object;
   TSshFinishedEvent = procedure(AExitCode: Integer) of object;
-  // Etat de CHAQUE tunnel apres la mise en place, livre une fois.
   TSshForwardReportEvent = procedure(
     const AReport: TSshForwardReport) of object;
-  // Tunnel en place qui echoue a l'usage: au plus une fois par tunnel.
+  // au plus une fois par tunnel
   TSshForwardProblemEvent = procedure(const ASpec: TSshForwardSpec;
     const AMessage: string) of object;
   TSshHostKeyEvent = procedure(const AInfo: TSshHostKeyInfo;
@@ -84,22 +78,18 @@ type
     out AKnownFingerprint: string) of object;
   TSshHostKeySave = procedure(const AInfo: TSshHostKeyInfo) of object;
 
-  // « Touchez votre cle »: NON modal, l'utilisateur doit pouvoir renoncer et la
-  // session continuer a vivre. AActive=False ferme l'avis.
+  // NON modal: renoncer ne doit pas geler la session.
   TSshSkNoticeEvent = procedure(AActive: Boolean; const AText: string) of object;
-  // PIN du token: modal, sur le thread UI. ACancelled=True si l'utilisateur
-  // renonce -- l'authentification s'arrete alors sans message d'echec.
+  // Modal. ACancelled: l'auth s'arrete sans message d'echec.
   TSshSkPinEvent = procedure(const APrompt: string; out APin: TSecureBytes;
     var ACancelled: Boolean) of object;
 
-  // Socle commun au transport shell et au tunnel: pin du
-  // type de cle, TOFU, auth. Duplique, le tunnel restait en retrait, en silence.
+  // Commun shell/tunnel: duplique, le tunnel prenait du retard sans le dire.
   TSshChannelBase = class(TThread)
   protected
     FParams: TSshConnectParams;   // possede
     FSession: Pointer;
-    // Ecrit par le thread de session, lu par le thread UI (Shutdown): publie et
-    // depublie UNIQUEMENT sous FSockLock, sinon on vise un descripteur referme.
+    // Lu par l'UI (Shutdown): UNIQUEMENT sous FSockLock, sinon fd recycle.
     FSock: cint;
     FSockLock: TCriticalSection;
 
@@ -110,8 +100,7 @@ type
     FOnHostKeyLookup: TSshHostKeyLookup;
     FOnHostKeySave: TSshHostKeySave;
 
-    // Cle de securite. FSkOp est publie sous FSockLock, comme le descripteur:
-    // Shutdown vient de l'UI et doit pouvoir annuler l'operation en cours.
+    // sous FSockLock aussi: Shutdown (UI) doit pouvoir l'annuler
     FSkOp: TObject;
     FSkEvent: TEvent;
     FSkPrompt: string;
@@ -121,15 +110,13 @@ type
     FSkNoticeText: string;
     FOnSkNotice: TSshSkNoticeEvent;
     FOnSkPin: TSshSkPinEvent;
-    // Message d'echec d'authentification plus precis que « refuse »: la cause
-    // vient du token ou de libssh2, pas du serveur.
+    // cause cote token ou libssh2, mieux que « refuse »
     FAuthDetail: string;
 
-    // Publie une connexion ABOUTIE seulement: un candidat en essai reste local.
+    // connexion ABOUTIE seulement
     procedure PublishSock(AFd: cint);
-    // Rend le descripteur a fermer (-1 si aucun): on ferme apres, jamais avant.
+    // depublie; fermer APRES
     function TakeSock: cint;
-    // shutdown() sur le descripteur publie, appelable depuis le thread UI.
     procedure ShutdownSock;
 
     procedure ReportError(const AMessage: string); virtual; abstract;
@@ -152,10 +139,10 @@ type
     procedure DoHostKeyLookup;
     procedure AskHostKey;
     procedure DoHostKeySave;
-    // Tous trois s'executent sur le thread UI, postes par Queue.
+    // thread UI, via Queue
     procedure DoSkNotice;
     procedure AskSkPin;
-    // Appelees depuis le thread de session (et depuis la callback libssh2).
+    // thread de session (callback libssh2 comprise)
     procedure SkNotice(AActive: Boolean; const AText: string);
     function WaitSkPin(const AReason: string; out APin: TSecureBytes): Boolean;
     procedure SkCancel;
@@ -175,7 +162,7 @@ type
 
     FOutLock: TCriticalSection;
     FOutBuf: RawByteString;
-    FOutOverflow: Boolean;   // file sortante saturee: la session se ferme
+    FOutOverflow: Boolean;   // saturee: la session se ferme
 
     FPendingCols, FPendingRows: Integer;
     FResizeWanted: Boolean;
@@ -193,9 +180,8 @@ type
     FOnError: TSshErrorEvent;
     FOnFinished: TSshFinishedEvent;
 
-    // Tunnels: vivent dans CE thread, comme la session qui les porte.
-    FForwarder: TSshLocalForwarder;
-    // Rapports vers l'UI, sous FErrLock: poses ici, lus par Queue.
+    FForwarder: TSshLocalForwarder;   // CE thread, comme la session
+    // sous FErrLock
     FFwdReport: TSshForwardReport;
     FFwdProblems: array of TSshForwardStatus;
     FOnForwardReport: TSshForwardReportEvent;
@@ -227,7 +213,7 @@ type
     constructor Create(AParams: TSshConnectParams);
     destructor Destroy; override;
 
-    // Appelables depuis le thread UI.
+    // thread UI
     procedure SendData(const AData: RawByteString);
     procedure RequestResize(ACols, ARows: Integer);
     procedure Shutdown;
@@ -257,15 +243,13 @@ uses
   Sockets, uSockCompat, uLibssh2Api, uSshKnownHosts, uNetResolve, uSshFido, uSshSkKeyGen,
   uLog;
 
-// Terminate n'interrompt ni un handshake bloque en lecture ni une auth en cours:
-// couper la socket est le seul levier.
+// Terminate n'interrompt ni handshake ni auth: couper la socket, seul levier.
 
 const
   READ_CHUNK = 16384;
-  // latence max avant qu'une frappe parte: a 100 ms, Backspace maintenu saccadait
+  // latence max d'une frappe; a 100 ms, Backspace maintenu saccadait
   SHELL_POLL_MS = 16;
   HOSTKEY_ANSWER_TIMEOUT_MS = 5 * 60 * 1000;
-  // Saisie d'un PIN: meme patience que pour une cle d'hote.
   SK_ANSWER_TIMEOUT_MS = 5 * 60 * 1000;
   CONNECT_POLL_MS = 200;
   SHUTDOWN_GRACE_MS = 3000;
@@ -306,7 +290,7 @@ constructor TSshChannelBase.Create(ACreateSuspended: Boolean);
 begin
   inherited Create(ACreateSuspended);
   FreeOnTerminate := False;
-  // -1 avant tout: 0, defaut d'un entier, est un descripteur valide (stdin).
+  // 0 est un fd valide (stdin)
   FSock := -1;
   FSockLock := TCriticalSection.Create;
   FHostKeyEvent := TEvent.Create(nil, True, False, '');
@@ -315,7 +299,7 @@ end;
 
 destructor TSshChannelBase.Destroy;
 begin
-  inherited Destroy;   // TThread joint le thread AVANT qu'on libere ses vivres
+  inherited Destroy;   // joint le thread AVANT de lui couper les vivres
   FHostKeyEvent.Free;
   FSkEvent.Free;
   FSkPin.Free;
@@ -415,18 +399,13 @@ end;
 
 function TSshChannelBase.ErrSkRejectedBeforeSign: string;
 begin
-  // Le serveur a refuse la cle AVANT de demander une signature: la cle de
-  // securite n'a meme pas clignote. Deux causes, et l'utilisateur ne peut pas
-  // les distinguer sans qu'on les nomme.
   Result := 'The server rejected the security key before asking for a ' +
     'signature: either it runs OpenSSH older than 8.2, which knows nothing ' +
     'of sk- keys, or this key is not in authorized_keys.';
 end;
 
-// --- Cle de securite: plomberie thread de session <-> interface -------------
-// Meme motif que la validation de cle d'hote: Queue (jamais Synchronize, une
-// modale ouverte ailleurs viderait la file et libererait d'autres onglets),
-// puis attente reveillable bornee.
+// Queue, JAMAIS Synchronize: une modale ailleurs viderait la file et
+// libererait d'autres onglets. Puis attente bornee, reveillable.
 
 procedure TSshChannelBase.DoSkNotice;
 begin
@@ -475,7 +454,7 @@ begin
       Break;
   end;
   if Terminated or FSkPinCancelled then Exit;
-  APin := FSkPin;      // la propriete passe a l'appelant
+  APin := FSkPin;      // a l'appelant de liberer
   FSkPin := nil;
   Result := APin <> nil;
 end;
@@ -484,10 +463,8 @@ procedure TSshChannelBase.SkCancel;
 begin
   FSkPinCancelled := True;
   FSkEvent.SetEvent;
-  // Cancel SOUS le verrou: TryFidoKey depublie FSkOp sous ce meme verrou
-  // avant de liberer l'objet. Relacher entre la lecture et l'appel laisserait
-  // le thread de session le detruire sous nos pieds. Cancel ne bloque pas
-  // (un drapeau et fido_dev_cancel), tenir le verrou ne coute rien.
+  // SOUS le verrou, sinon TryFidoKey libere FSkOp sous nos pieds.
+  // Cancel ne bloque pas: le tenir ne coute rien.
   FSockLock.Acquire;
   try
     if FSkOp <> nil then
@@ -604,8 +581,7 @@ begin
     FOnForwardReport(rep);
 end;
 
-// Vide TOUTE la file: plusieurs Queue peuvent se suivre, le premier livre
-// tout et les suivants trouvent la file vide.
+// Vide TOUT: le premier Queue livre, les suivants trouvent vide.
 procedure TSshTransport.PublishForwardProblems;
 var
   items: array of TSshForwardStatus;
@@ -623,14 +599,13 @@ begin
       FOnForwardProblem(items[i].Spec, items[i].Detail);
 end;
 
-// Thread de session: appelee par le forwarder, au plus une fois par tunnel.
 procedure TSshTransport.ForwardProblem(AIndex: Integer;
   const AMessage: string);
 var
   n: Integer;
 begin
   if (AIndex < 0) or (AIndex > High(FParams.Forwards)) then Exit;
-  // hotes et ports: en confidentiel, on ne trace que le fait
+  // hotes et ports: pas en mode confidentiel
   if LogIsConfidential then
     LogWarning('tunnel: problem (details hidden in confidential mode)')
   else
@@ -650,8 +625,7 @@ begin
     Queue(@PublishForwardProblems);
 end;
 
-// Apres l'ouverture du shell: un tunnel n'a de sens que dans une session
-// etablie, et un hote qui refuse le shell ne doit pas garder de port ouvert.
+// APRES le shell: un hote qui le refuse ne garde pas de port ouvert.
 procedure TSshTransport.StartForwards;
 var
   rep: TSshForwardReport;
@@ -708,10 +682,8 @@ begin
     Result := Format('%s (%d)', [AContext, rc]);
 end;
 
-// File BORNEE. Le terminal repond seul a certaines requetes du serveur
-// (position du curseur, identification): un serveur qui les enchaine sans
-// jamais lire la socket faisait grossir cette file sans fin. Au-dela du
-// plafond, on cesse d'accumuler et le thread coupe la session.
+// BORNEE: le terminal repond seul aux requetes DSR/DA; un serveur qui en
+// mitraille sans jamais lire gonflerait la file sans fin. Au plafond, on coupe.
 procedure TSshTransport.SendData(const AData: RawByteString);
 const
   OUT_MAX = 4 * 1024 * 1024;
@@ -749,8 +721,7 @@ begin
   Terminate;
   FHostKeyDecision := hkdReject;
   FHostKeyEvent.SetEvent;
-  // Un token qui attend le doigt ne regarde pas la socket: il faut lui dire
-  // d'abandonner, sinon le thread reste bloque jusqu'au bout du delai.
+  // un token qui attend le doigt ignore la socket
   SkCancel;
   ShutdownSock;
 end;
@@ -777,8 +748,7 @@ begin
     SockSetAdd(FSock, rfds);
   if (dir and LIBSSH2_SESSION_BLOCK_OUTBOUND) <> 0 then
     SockSetAdd(FSock, wfds);
-  // les clients des tunnels reveillent la boucle aussi: sans eux, une frappe
-  // dans un client tunnele attendrait la fin de la tranche
+  // les clients des tunnels reveillent la boucle aussi
   maxFd := FSock;
   if FForwarder <> nil then
     FForwarder.AddWaitFds(rfds, wfds, maxFd);
@@ -792,8 +762,7 @@ begin
   Result := Terminated;
 end;
 
-// Tranche d'attente de l'etablissement non bloquant, False = abandonner (decision
-// 0016): sous WinSock, shutdown() ne reveille ni un recv bloque ni un select.
+// False = abandonner. WinSock: shutdown() ne reveille ni recv ni select (decision 0016).
 function TSshChannelBase.SetupWait(ADeadline: QWord): Boolean;
 begin
   Result := False;
@@ -823,8 +792,7 @@ begin
     hostStr := FParams.Host;
     portStr := IntToStr(FParams.Port);
   end;
-  // Resolution ANNULABLE: getaddrinfo n'est pas interruptible et
-  // le destructeur de l'onglet JOINT ce thread -- 40 s d'UI gelee sinon.
+  // ANNULABLE: l'onglet JOINT ce thread, getaddrinfo gelerait l'UI 40 s.
   if not ResolveCancellable(AnsiString(hostStr), AnsiString(portStr),
        @IsAborted, res, resErr) then
   begin
@@ -836,7 +804,7 @@ begin
     ai := res;
     while (ai <> nil) and (not Terminated) do
     begin
-      // candidat LOCAL: publie plus tot, Shutdown viserait un fd deja referme
+      // fd LOCAL: publie a l'essai, Shutdown viserait un fd referme
       fd := fpSocket(ai^.ai_family, ai^.ai_socktype, ai^.ai_protocol);
       if fd < 0 then
       begin
@@ -850,8 +818,7 @@ begin
         connected := True
       else if SockErrIsInProgress(SockLastError) then
       begin
-        // par TRANCHES: un select unique ignore Terminated, et l'onglet JOINT ce
-        // thread -- 300 s pour le fermer
+        // par TRANCHES: l'onglet JOINT ce thread, un seul select = 300 s pour fermer
         waited := 0;
         while waited < FParams.ConnectTimeoutS * 1000 do
         begin
@@ -873,7 +840,7 @@ begin
       if connected then
       begin
         SockSetNonBlocking(fd, False);
-        SockSetNoDelay(fd);   // interactif: pas de Nagle sur la socket SSH
+        SockSetNoDelay(fd);
         PublishSock(fd);
         Exit(True);
       end;
@@ -903,8 +870,8 @@ begin
   libssh2_session_set_blocking(FSession, 0);
   libssh2_session_set_timeout(FSession, FParams.ConnectTimeoutS * 1000);
 
-  // Hote connu: n'accepter que les types enregistres, sinon un serveur hostile en
-  // presente un autre et sa cle modifiee passe pour un hote inconnu.
+  // Types enregistres SEULEMENT: sinon un MITM presente un autre type et passe
+  // pour un hote inconnu.
   if Length(FParams.KnownKeyTypes) > 0 then
     libssh2_session_method_pref(FSession, LIBSSH2_METHOD_HOSTKEY,
       PAnsiChar(AnsiString(Libssh2HostKeyPref(FParams.KnownKeyTypes))));
@@ -935,8 +902,8 @@ begin
       FHostKeyInfo.Verdict, FHostKeyInfo.KnownFingerprint);
 end;
 
-// Thread UI. La modale de FOnHostKey vide QueueAsyncCall dans sa boucle: elle
-// libere d'AUTRES onglets, jamais celui-ci -- le SetEvent frapperait un mort.
+// Thread UI. La modale vide QueueAsyncCall: elle libere d'AUTRES onglets,
+// jamais celui-ci, sinon le SetEvent frapperait un mort.
 procedure TSshChannelBase.AskHostKey;
 begin
   try
@@ -996,12 +963,10 @@ begin
   if FHostKeyInfo.Verdict = hkMatch then
     Exit(True);
 
-  // Non strict leve le TOFU pour un hote INCONNU, jamais pour une cle MODIFIEE:
-  // avaler un changement de cle, c'est taire le seul signal de MITM qu'on ait.
+  // Non strict: hote INCONNU oui, cle MODIFIEE jamais (seul signal de MITM).
   if (not FParams.StrictHostKey) and (FHostKeyInfo.Verdict <> hkChanged) then
     Exit(True);
 
-  // inconnu ou modifie: l'utilisateur tranche
   FHostKeyDecision := hkdReject;
   FHostKeyEvent.ResetEvent;
   Queue(@AskHostKey);
@@ -1033,10 +998,8 @@ begin
   end;
 end;
 
-// --- Signature par cle de securite ------------------------------------------
-// libssh2 lit le fichier de cle privee sk (qui ne contient aucun secret, juste
-// le key handle), puis nous rappelle pour chaque signature. C'est lui qui
-// fabrique ensuite le blob SSH « string sig || byte flags || uint32 counter ».
+// Cle sk: le fichier ne porte que le key handle. libssh2 rappelle pour signer
+// et batit lui-meme « string sig || byte flags || uint32 counter ».
 
 {$IFDEF WINDOWS}
 // MEME CRT que libssh2: c'est son free() qui liberera sig_r/sig_s.
@@ -1047,13 +1010,13 @@ function c_malloc(ASize: PtrUInt): Pointer; cdecl; external 'c' name 'malloc';
 {$ENDIF}
 
 type
-  // Passe a libssh2 par le parametre « abstract », qui nous le repasse tel quel.
+  // voyage par le « abstract » de libssh2
   TSshSkContext = class
     Owner: TSshChannelBase;
     Op: TFidoOperation;
     Alg: TSkAlg;
-    Invoked: Boolean;        // la callback a-t-elle ete appelee au moins une fois
-    GestureTick: QWord;      // date du dernier geste, pour re-armer le budget
+    Invoked: Boolean;        // False: refuse avant meme de signer
+    GestureTick: QWord;      // rearme le budget reseau
     ErrorText: string;
     function TouchToNotice(AActive: Boolean; const ADevice: string): string;
     procedure OnTouch(AActive: Boolean; const ADevice: string);
@@ -1079,8 +1042,7 @@ end;
 function TSshSkContext.OnPin(const AReason: string;
   out APin: TSecureBytes): Boolean;
 begin
-  // L'avis « touchez » disparait pendant la saisie: deux fenetres a la fois
-  // pour une seule action, c'est une de trop.
+  // deux fenetres pour une action, c'est une de trop
   Owner.SkNotice(False, '');
   Result := Owner.WaitSkPin(AReason, APin);
 end;
@@ -1109,7 +1071,6 @@ begin
   if (abstract_ = nil) or (abstract_^ = nil) or (sig_info = nil) then Exit;
   ctx := TSshSkContext(abstract_^);
   ctx.Invoked := True;
-  // « algorithm » vient du type lu dans la cle privee, pas d'un choix a nous.
   case algorithm of
     LIBSSH2_HOSTKEY_TYPE_ED25519: alg := skaEd25519;
     LIBSSH2_HOSTKEY_TYPE_ECDSA_256: alg := skaEcdsaP256;
@@ -1125,8 +1086,7 @@ begin
   if handle_len > 0 then
     Move(key_handle^, handle[0], handle_len);
 
-  // application, data et key_handle appartiennent a libssh2: on copie, on ne
-  // libere rien.
+  // application, data, key_handle: a libssh2, on ne libere rien
   if not ctx.Op.Sign(string(AnsiString(application)), handle, Byte(flags),
     data, data_len, alg, sig, err) then
   begin
@@ -1157,8 +1117,7 @@ begin
   end;
   Result := 0;
   finally
-    // Notre copie du key handle; libssh2 garde la sienne le temps de
-    // l'authentification, hors de notre portee.
+    // notre copie; celle de libssh2 est hors de portee
     WipeBytes(handle);
   end;
 end;
@@ -1217,8 +1176,7 @@ var
     Result := False;
     if (FParams.PrivateKey = nil) or (FParams.PrivateKey.Len = 0) then
       Exit;
-    // libssh2 lit la passphrase comme une chaine C, et TSecureBytes fait pile la
-    // taille du secret (garde sodium juste apres): copie +1 octet, ou ca crashe
+    // Chaine C; TSecureBytes finit pile sur la garde sodium: +1 ou crash.
     pass := nil;
     passNul := nil;
     try
@@ -1269,8 +1227,7 @@ var
       ctx.Op := TFidoOperation.Create;
       ctx.Op.OnTouch := @ctx.OnTouch;
       ctx.Op.OnPin := @ctx.OnPin;
-      // Publie pour que Shutdown, qui vient du thread UI, puisse annuler
-      // l'attente du geste.
+      // pour que Shutdown (UI) puisse annuler l'attente du doigt
       FSockLock.Acquire;
       try
         FSkOp := ctx.Op;
@@ -1286,9 +1243,8 @@ var
             nil, 0,
             PAnsiChar(FParams.PrivateKey.Data), FParams.PrivateKey.Len,
             nil, @SkSignCallback, @abs);
-          // Le temps passe le doigt en l'air n'est pas du temps reseau: sans ce
-          // reglage, un utilisateur qui reflechit dix secondes ferait expirer
-          // une connexion parfaitement saine.
+          // Le doigt en l'air n'est pas du temps reseau: l'hesitation ne doit
+          // pas tuer une connexion saine.
           if ctx.GestureTick <> seenGesture then
           begin
             seenGesture := ctx.GestureTick;
@@ -1361,7 +1317,7 @@ begin
 
   if libssh2_userauth_authenticated(FSession) <> 0 then
   begin
-    FParams.WipeSecrets;   // on sort avant celui d'en bas
+    FParams.WipeSecrets;   // on sort avant celui du bas
     Exit(True);
   end;
 
@@ -1381,8 +1337,6 @@ begin
 
   if not Result then
   begin
-    // Un echec de cle de securite a une cause precise (token absent, PIN
-    // refuse, serveur trop ancien): « authentification refusee » la perdrait.
     if FAuthDetail <> '' then
       ReportError(FAuthDetail)
     else
@@ -1461,7 +1415,7 @@ begin
     Exit;
   end;
 
-  // tapee dans le shell distant, jamais executee localement
+  // tapee dans le shell distant, JAMAIS executee ici
   if FParams.StartupCommand <> '' then
   begin
     cmd := AnsiString(FParams.StartupCommand) + #13;
@@ -1492,8 +1446,7 @@ begin
     deadMs := QWord(FParams.KeepaliveS)
       * QWord(FParams.KeepaliveMaxFailures + 1) * 1000;
   if FParams.KeepaliveS > 0 then
-    // want_reply=1: le serveur DOIT repondre, et la sonde est indiscernable du
-    // trafic SSH -- aucun pare-feu ne la filtre.
+    // want_reply=1: reponse OBLIGATOIRE, et aucun pare-feu ne la distingue du trafic
     libssh2_keepalive_config(FSession, 1, FParams.KeepaliveS);
 
   StartForwards;
@@ -1504,13 +1457,8 @@ begin
   begin
     idle := True;
 
-    // La demande reste posee tant que libssh2 repond EAGAIN: effacee avant
-    // l'appel, un redimensionnement tombe sur une socket pleine etait perdu.
-    // Et apres EAGAIN, libssh2 garde le paquet deja construit: l'appel
-    // suivant TERMINE ce paquet-la, quelles que soient les dimensions qu'on
-    // lui repasse. L'operation en cours garde donc ses propres dimensions
-    // jusqu'au bout; si l'utilisateur a change d'avis entre-temps, la
-    // demande reste posee et repart ensuite avec les nouvelles.
+    // Apres EAGAIN, libssh2 finit le paquet DEJA construit, quelles que soient
+    // les dimensions repassees. Les nouvelles attendent le tour suivant.
     if not resizeInFlight then
     begin
       FOutLock.Acquire;
@@ -1529,7 +1477,6 @@ begin
         rc := libssh2_channel_request_pty_size_ex(FChannel, cols, rows, 0, 0);
       if rc <> LIBSSH2_ERROR_EAGAIN then
       begin
-        // reussi, ou refus definitif: on n'insiste pas avec ces dimensions
         resizeInFlight := False;
         FOutLock.Acquire;
         try
@@ -1541,9 +1488,7 @@ begin
       end;
     end;
 
-    // Contrat libssh2: apres EAGAIN, le prochain appel repasse le MEME tampon.
-    // Le tampon en cours reste donc a part; ce qui arrive entre-temps attend
-    // dans FOutBuf et n'y est pris que lorsqu'il est vide.
+    // Apres EAGAIN, le MEME tampon: FOutBuf attend que pending soit vide.
     FOutLock.Acquire;
     try
       if pending = '' then
@@ -1599,8 +1544,7 @@ begin
     if libssh2_channel_eof(FChannel) <> 0 then
       Break;
 
-    // Apres le shell: un envoi du terminal reste prioritaire, et un envoi de
-    // tunnel en suspens est rejoue ici a chaque tour (contrat libssh2).
+    // Apres le shell: le terminal passe d'abord.
     if FForwarder <> nil then
     begin
       if FForwarder.Pump(fwdRx) then
@@ -1622,7 +1566,7 @@ begin
     end;
 
     if idle then
-      // rearmer sur la LECTURE seule: le noyau du pair ACKe meme SSH gele
+      // LECTURE seule: le noyau d'en face ACKe meme pour un sshd gele
       if WaitSocketEx(SHELL_POLL_MS, readable) and readable then
         lastRxMs := GetTickCount64;
 
@@ -1638,9 +1582,7 @@ procedure TSshTransport.Cleanup;
 var
   sockToClose: cint;
 begin
-  // Ecoutes fermees AVANT l'adieu SSH: un client qui arrive maintenant
-  // tomberait sur une session qui s'en va. Les canaux, eux, partent avec la
-  // session (session_free): on ne les touche plus.
+  // Ecoutes fermees AVANT l'adieu; les canaux partent avec session_free.
   if FForwarder <> nil then
     FForwarder.CloseAll;
   if FChannel <> nil then
@@ -1663,7 +1605,7 @@ begin
     FSession := nil;
   end;
   FreeAndNil(FForwarder);
-  // Depublier AVANT de fermer: Shutdown ne doit pas viser un descripteur mourant.
+  // depublier AVANT de fermer
   sockToClose := TakeSock;
   if sockToClose >= 0 then
     CloseSocket(sockToClose);
@@ -1678,8 +1620,7 @@ begin
       SetState(rssConnecting);
       if not ResolveAndConnect then
         Exit;
-      // PAS de keepalive TCP: un pare-feu strict jette ses sondes et le noyau
-      // declare mort un pair bien vivant.
+      // PAS de keepalive TCP: un pare-feu strict jette les sondes, pair vivant declare mort.
       if Terminated then
         Exit;
       if not Handshake then
@@ -1710,7 +1651,7 @@ begin
       Cleanup;
     except
       on E: Exception do
-        ;   // deja en train de fermer: rien de plus a tenter
+        ;   // deja en train de mourir
     end;
     FStates.TryTransitionTo(rssDisconnecting);
     FStates.TryTransitionTo(rssDisconnected);

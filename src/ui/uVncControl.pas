@@ -2,9 +2,8 @@ unit uVncControl;
 
 {$mode objfpc}{$H+}
 
-// Affichage VNC, meme discipline que le controle RDP: rien de libvncclient ici.
-// RFB impose deux ecarts -- souris en MASQUE des boutons tenus (un bouton
-// oublie reste enfonce la-bas), texte par UTF8KeyPress et non par les VK.
+// Rien de libvncclient ici. RFB: souris en MASQUE des boutons tenus (un oubli
+// reste enfonce la-bas), texte par UTF8KeyPress et non par les VK.
 
 interface
 
@@ -402,10 +401,8 @@ begin
   Result := 0;
   if not ((ssCtrl in AShift) or (ssAlt in AShift) or (ssMeta in AShift)) then
     Exit;
-  // SAUF sous AltGr physique: le caractere compose (@ sur la touche 0
-  // d'azerty) arrive par UTF8KeyPress, et envoyer ici le keysym du chiffre,
-  // avec Key := 0 chez l'appelant, le supprimerait. Un vrai Ctrl+Alt+lettre
-  // (touches gauches) doit continuer d'atteindre le bureau distant.
+  // SAUF AltGr physique: le @ d'azerty arrive par UTF8KeyPress, et le keysym
+  // du chiffre (Key := 0 ensuite) le mangerait.
   if ShiftIsAltGr(AShift) then
     Exit;
   case AKey of

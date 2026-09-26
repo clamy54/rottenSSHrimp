@@ -2,13 +2,10 @@ unit uPodConnect;
 
 {$mode objfpc}{$H+}
 
-// Comme un conteneur: un pod n'est pas un protocole reseau, c'est la session
-// SSH du noeud PARENT plus une commande forcee (kubectl exec ou logs). Tout
-// vient du parent -- identifiants ET rebond unique.
-//
-// SECURITE: namespace, pod et container sont valides a la saisie (RFC 1123) ET
-// quotes en simple dans uPodCmd, donc sans metacaractere shell; la commande
-// passe par 'exec', jamais par un shell de login.
+// Un pod = la session SSH du PARENT + kubectl force. Identifiants et rebond
+// viennent du parent.
+// SECURITE: noms valides RFC 1123 ET quotes dans uPodCmd; 'exec', jamais de
+// shell de login.
 
 interface
 
@@ -16,7 +13,7 @@ uses
   ComCtrls, uRshDocument, uRshModel, uSessionManager, uSshSessionTab,
   uSessionTabBase;
 
-// nil avec AErr vide = annulation utilisateur (cle d'hote du parent refusee...)
+// nil avec AErr vide = annulation utilisateur
 function StartPodSession(APages: TPageControl; ADoc: TRshDocument;
   AModel: TRshModel; AManager: TSessionManager; const AConnUuid: string;
   ANotice: TSessionNoticeEvent; out AErr: string): TSshSessionTab;
@@ -68,7 +65,7 @@ begin
   finally
     node.Free;
   end;
-  // la cle d'hote sera verifiee contre l'hote du PARENT (params.Host)
+  // cle d'hote verifiee contre le PARENT
   if not BuildSshConnectParams(ADoc, AModel, cfg.ParentUuid, params,
     parentDisplay, AErr) then
     Exit;
@@ -77,7 +74,7 @@ begin
       cfg.ContainerName, cfg.Shell);
     params.RequestPty := cfg.Shell <> csLog;   // log = flux sans PTY
 
-    // rebond du PARENT: un seul saut, le pod n'en ajoute aucun
+    // un seul saut: celui du parent
     jumpUuid := AModel.ResolveJumpVia(cfg.ParentUuid);
     if jumpUuid <> '' then
     begin
@@ -97,8 +94,8 @@ begin
     tun := nil;
     broker := nil;
     tab.SetCaptionSuffix('Pod');
-    // log = lecture seule stricte, et l'onglet survit a la fin du flux: les
-    // derniers journaux d'un pod qui meurt sont ceux qui interessent
+    // l'onglet survit au flux: les dernieres lignes d'un pod mourant sont
+    // les seules qui comptent
     tab.SetLogMode(cfg.Shell = csLog);
     hostLabel := parentDisplay;
     tab.AddExitMessage(POD_EXIT_NO_KUBECTL, Format(

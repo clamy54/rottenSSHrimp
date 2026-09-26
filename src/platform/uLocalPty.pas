@@ -2,12 +2,9 @@ unit uLocalPty;
 
 {$mode objfpc}{$H+}
 
-// Pseudo-terminal local. Darwin/Linux: fork/exec du shell sur un pty maitre.
-// Windows: PowerShell sur une pseudo-console ConPTY (10 1809+), memes sequences
-// VT. Le lecteur pousse par TThread.Queue; aucun appel LCL ici.
-// Les ecritures passent par un thread et une file BORNEE: un shell qui ne lit
-// plus son entree (tampon plein) bloquait le thread UI sur un gros collage,
-// et avec lui tous les autres onglets. Au-dela de la borne, on jette.
+// Unix: fork/exec sur un pty. Windows: PowerShell sous ConPTY (10 1809+).
+// Ecritures par thread et file BORNEE: un shell sourd ne gele plus l'UI sur un
+// gros collage. Au-dela de la borne, on jette.
 
 interface
 
@@ -66,13 +63,11 @@ type
     {$ENDIF}
     procedure DrainData;
     procedure NotifyExit;
-    // Thread lecteur seulement. Attend une place dans la file de lecture;
-    // False = arret demande pendant l'attente.
+    // Thread lecteur. False = arret demande pendant l'attente.
     function WaitReadRoom(AReader: TThread): Boolean;
-    // Thread lecteur seulement. Empile et ne reveille l'interface que si
-    // rien n'attendait deja: un drainage vide TOUTE la file d'un coup.
+    // Thread lecteur. Un seul Queue en vol: un drainage vide TOUTE la file.
     procedure PushData(AReader: TThread; const ABuf; ACount: Integer);
-    // Thread ecrivain seulement. False = tube ferme ou arret demande.
+    // Thread ecrivain. False = tube ferme ou arret demande.
     function WriteBlocking(const AData: RawByteString): Boolean;
     procedure StartWriter;
     procedure StopWriter;
@@ -91,12 +86,9 @@ type
 implementation
 
 const
-  // File d'ecriture au plus: un collage de 300 Mo dans un shell sourd ne doit
-  // ni grossir la memoire ni bloquer; l'excedent est perdu, jamais l'interface.
+  // l'excedent est perdu, jamais l'interface
   PTY_WRITE_QUEUE_MAX = 4 * 1024 * 1024;
-  // File de LECTURE au plus: au-dela, le lecteur attend que l'interface ait
-  // draine, et le fils bloque sur son ecriture comme devant un vrai terminal
-  // qu'on ne lit pas. Un « yes » lance dans un onglet cache ne grossit plus.
+  // au-dela, le fils bloque comme devant un vrai terminal: « yes » n'enfle plus
   PTY_READ_QUEUE_MAX = 4 * 1024 * 1024;
 
 constructor TPtyReaderThread.Create(AOwner: TLocalPty);
@@ -106,8 +98,7 @@ begin
   FreeOnTerminate := False;
 end;
 
-// Suspendu: le thread lit FOwner.FWriter, qui doit etre assigne avant qu'il
-// ne tourne, sinon il se croit orphelin et s'arrete des la premiere ecriture.
+// Suspendu: FOwner.FWriter doit etre assigne avant, sinon il se croit orphelin.
 constructor TPtyWriterThread.Create(AOwner: TLocalPty);
 begin
   inherited Create(True);
@@ -121,7 +112,7 @@ var
 begin
   while not Terminated do
   begin
-    // Delai borne: un SetEvent perdu entre deux tours ne gele pas la file.
+    // borne: un SetEvent perdu ne gele pas la file
     RTLEventWaitFor(FOwner.FWriteEvent, 200);
     if Terminated then Break;
     repeat
@@ -145,7 +136,6 @@ begin
   FWriter.Start;
 end;
 
-// La file tombe avec le thread: ce qui n'a pas pu partir ne partira pas.
 procedure TLocalPty.WriteData(const AData: RawByteString);
 begin
   if (not FRunning) or (FWriter = nil) or (AData = '') then
@@ -218,9 +208,8 @@ begin
     if n <= 0 then Break;
     FOwner.PushData(Self, buf, n);
   end;
-  // Jamais de waitpid bloquant: un fils qui ferme son terminal, reste vivant
-  // et ignore SIGHUP y retenait ce thread, et Stop attendait ce thread. On
-  // sonde; des qu'un arret est demande, delai borne puis SIGKILL.
+  // Jamais de waitpid bloquant: un fils sourd a SIGHUP retiendrait Stop.
+  // On sonde; a l'arret, delai borne puis SIGKILL.
   status := 0;
   if FOwner.FChildPid > 0 then
   begin
@@ -571,10 +560,8 @@ begin
   Result := True;
 end;
 
-// select puis petits blocs, jamais un write qui pourrait attendre: le maitre
-// se dit ecrivable a partir de 256 octets libres (Linux), donc un bloc de cette
-// taille passe sans bloquer et Terminated est relu toutes les 100 ms. select
-// et pas poll: sous macOS poll ne sait pas surveiller un peripherique.
+// Le maitre se dit ecrivable a 256 octets libres (Linux): un bloc de 256 ne
+// bloque jamais. select, pas poll: sous macOS poll ignore les peripheriques.
 function TLocalPty.WriteBlocking(const AData: RawByteString): Boolean;
 const
   CHUNK = 256;
@@ -647,8 +634,7 @@ begin
   FRunning := False;
   if (FChildPid > 0) and (not FExited) then
     FpKill(FChildPid, SIGHUP);
-  // Joindre lecteur ET ecrivain AVANT de fermer le maitre: leurs select ont
-  // besoin du fd.
+  // Joindre AVANT de fermer le maitre: leurs select tiennent le fd.
   if Assigned(FReader) then
   begin
     FReader.Terminate;
@@ -828,9 +814,7 @@ begin
   Result := True;
 end;
 
-// WriteFile sur un tube plein ne rend pas la main: CancelSynchronousIo le
-// reveille, en boucle, car l'annulation lancee AVANT l'entree dans WriteFile
-// ne compte pas.
+// En boucle: un CancelSynchronousIo tire AVANT l'entree dans WriteFile ne compte pas.
 procedure TLocalPty.StopWriter;
 begin
   if FWriter = nil then Exit;
@@ -864,8 +848,7 @@ begin
     FReader.WaitFor;
     FreeAndNil(FReader);
   end;
-  // L'ecrivain avant CloseHandle(FInWrite): fermer un tube sous un WriteFile
-  // en cours n'est pas defini.
+  // Fermer un tube sous un WriteFile en cours: comportement indefini.
   StopWriter;
   // Avant ClosePseudoConsole: elle bloque sur un tube que plus personne ne vide.
   if FOutRead <> 0 then
@@ -878,7 +861,7 @@ begin
     CloseHandle(FInWrite);
     FInWrite := 0;
   end;
-  // L'equivalent du SIGHUP: la console du shell disparait.
+  // le SIGHUP de Windows
   GClosePseudoConsole(FPty);
   FPty := nil;
   if FProcess <> 0 then

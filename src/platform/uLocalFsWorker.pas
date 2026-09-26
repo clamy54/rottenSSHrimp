@@ -1,20 +1,7 @@
-{ Thread des operations LOCALES du panneau de gauche.
-
-  Il existe pour une seule raison, et elle est suffisante: un partage reseau
-  hors ligne, un lecteur BitLocker verrouille ou une cle USB retiree font
-  bloquer un simple listing pendant le timeout du systeme -- des dizaines de
-  secondes. Fait sur le thread de l'interface, c'est l'application entiere qui
-  parait plantee; fait sur le thread de transport, c'est un transfert en cours
-  qui s'arrete.
-
-  Ce thread-ci ne fait donc que du disque local, et il est distinct des deux
-  autres. Son annulation est cooperative: on ne peut pas interrompre un appel
-  systeme deja parti, mais on cesse d'en emettre, et l'onglet ne l'attend pas
-  pour se fermer.
-
-  Ses resultats partent dans une file, un objet par resultat, comme ceux du
-  transport: deux listings finis avant que l'interface ait lu le premier ne
-  s'ecrasent pas.
+{ Disque LOCAL du panneau de gauche, sur son propre thread: un partage hors
+  ligne ou une cle arrachee gele un listing des dizaines de secondes, et ni
+  l'interface ni un transfert n'ont a payer. Un appel systeme parti ne
+  s'annule pas; on cesse juste d'en emettre.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -42,7 +29,7 @@ type
     FWake: TEvent;
     FOps: TFPList;
 
-    FPub: TFPList;               // resultats en attente, dans l'ordre
+    FPub: TFPList;               // un objet par resultat: rien ne s'ecrase
     FPubLock: TCriticalSection;
 
     FOnListed: TLocalListEvent;
@@ -60,7 +47,7 @@ type
     constructor Create(AFs: TLocalFileSystem);
     destructor Destroy; override;
 
-    // Rend le numero de la demande: l'appelant ignore ce qui ne le porte pas.
+    // L'appelant ignore toute reponse qui ne porte pas ce numero.
     function RequestList(const APath: string): Int64;
     procedure RequestVolumes;
     procedure RequestMkdir(const APath: string);
@@ -82,8 +69,7 @@ type
   TLocalOp = class
     Kind: TLocalOpKind;
     Arg1, Arg2: string;
-    // Numero rendu avec la reponse: un chemin ne suffit pas, car aller en A,
-    // en B, puis revenir en A ferait prendre la premiere reponse pour la seconde.
+    // Pas le chemin: A, B, puis A confondrait les deux reponses de A.
     Serial: Int64;
   end;
 
@@ -129,8 +115,6 @@ end;
 procedure TLocalFsWorker.Shutdown;
 begin
   Terminate;
-  // L'annulation cooperative sort le listing de sa boucle: elle n'interrompt
-  // pas l'appel deja parti, elle empeche le suivant.
   FFs.Cancel;
   FWake.SetEvent;
 end;
@@ -251,7 +235,7 @@ begin
     end;
     if op = nil then
     begin
-      // Attente bornee: meme si l'evenement se perd, Terminated est revu.
+      // bornee: un evenement perdu ne cache pas Terminated
       FWake.WaitFor(200);
       Continue;
     end;
@@ -308,8 +292,7 @@ begin
       except
         on E: Exception do
         begin
-          // La reponse doit etre de la sorte ATTENDUE: un listing qui repondrait
-          // « fait » laisserait le panneau sur « Reading... » pour toujours.
+          // Du type ATTENDU, sinon le panneau reste sur « Reading... » a vie.
           r := TLocalResult.Create;
           if op.Kind = lokList then
           begin

@@ -2,8 +2,7 @@ unit uSshSessionTab;
 
 {$mode objfpc}{$H+}
 
-// Onglet de session SSH: le terminal local, alimente par le reseau au lieu d'un
-// pty. Cles d'hote lues et ecrites sur le thread UI: le modele n'est pas thread-safe.
+// Cles d'hote lues et ecrites sur le thread UI: le modele n'est pas thread-safe.
 
 interface
 
@@ -56,8 +55,6 @@ type
     FExitMsgs: array of string;
     // Avis « touchez votre cle », pose et retire par le thread de session.
     FSkNotice: TObject;
-    // Tunnels: bandeau des echecs, et ports effectivement tenus par CET
-    // onglet (pour dire qui occupe un port quand un autre onglet echoue).
     FBanner: TNoticeBanner;
     FListenPorts: array of Integer;
 
@@ -86,7 +83,7 @@ type
     procedure RequestClose;
     procedure ShowFailureInTerminal;
   public
-    // Prend possession de AParams. ADoc sert au magasin de cles d'hote.
+    // Prend possession de AParams.
     constructor CreateSession(APages: TPageControl; ADoc: TRshDocument;
       AManager: TSessionManager; const ADisplayName, AConnUuid: string;
       AParams: TSshConnectParams);
@@ -120,8 +117,7 @@ uses
   uHostKeyDialog, uFidoPrompt;
 
 var
-  // Onglets SSH vivants, thread UI seulement: sert a nommer l'onglet qui
-  // tient deja un port local quand un autre echoue a l'ecouter.
+  // Thread UI seulement: nommer qui tient deja le port d'un tunnel rate.
   GSshTabs: TList = nil;
 
 const
@@ -167,7 +163,6 @@ begin
   FManager := AManager;
   FKnownHosts := TSshKnownHosts.Create(ADoc);
 
-  // Bandeau des tunnels en tete, cache tant qu'il n'a rien a dire.
   FBanner := TNoticeBanner.Create(Self);
   FBanner.Parent := Self;
   FBanner.Align := alTop;
@@ -231,8 +226,7 @@ begin
   end;
   // La fin de session a pu deposer un DeferredClose: il tirerait a vide.
   Application.RemoveAsyncCalls(Self);
-  // L'avis « touchez votre cle » survivrait a l'onglet: le transport est deja
-  // arrete, plus personne ne viendra le fermer.
+  // transport arrete: plus personne ne fermera l'avis a notre place
   FreeAndNil(FSkNotice);
   if FTunnel <> nil then
   begin
@@ -324,9 +318,7 @@ begin
     FTransport.RequestResize(ACols, ARows);
 end;
 
-// Cle de securite: l'avis est NON modal, la session tourne toujours derriere.
-// Annuler ferme la session -- c'est la seule facon d'arreter une signature en
-// cours, et l'utilisateur qui clique Cancel ne veut pas se connecter.
+// Avis NON modal. Annuler ferme la session: seul moyen d'arreter une signature.
 procedure TSshSessionTab.SkNotice(AActive: Boolean; const AText: string);
 begin
   if AActive then
@@ -364,9 +356,7 @@ begin
       Exit(True);
 end;
 
-// UN message pour tous les tunnels qui n'ont pas pu ecouter, et pas un par
-// tunnel. Un port pris par un autre onglet de l'appli est nomme: c'est le cas
-// le plus courant (deux terminaux sur le meme hote).
+// Port pris par un autre onglet: on le nomme, c'est le cas le plus courant.
 procedure TSshSessionTab.ForwardReport(const AReport: TSshForwardReport);
 var
   i, j, ok: Integer;
@@ -426,8 +416,7 @@ procedure TSshSessionTab.TransportData(const AData: RawByteString);
 var
   s: RawByteString;
 begin
-  // Sans PTY, `docker logs` sort des LF nus: l'emulateur descend sans revenir
-  // en colonne 0, d'ou l'escalier. Passage par LF pour ne pas doubler un CR.
+  // Sans PTY, LF nus: escalier garanti. Normalise en LF d'abord, pas de CR double.
   if FReadOnly then
   begin
     s := StringReplace(AData, #13#10, #10, [rfReplaceAll]);
@@ -462,7 +451,6 @@ var
   i: Integer;
 begin
   FState := FTransport.State;
-  // la session est finie, ses ecoutes aussi: le port redevient libre
   FListenPorts := nil;
   UpdateCaption;
   if FErrorMsg = '' then

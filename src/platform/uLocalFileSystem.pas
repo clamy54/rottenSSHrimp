@@ -1,9 +1,5 @@
-{ Systeme de fichiers LOCAL de l'onglet Scp, derriere le contrat uScpBackend.
-
-  Il repond aux particularites qui font trebucher ce genre d'outil: API W et
-  prefixe \\?\ sous Windows, repertoire courant du PROCESSUS jamais deplace,
-  volumes enumeres SANS etre sondes, temporaires crees en exclusif sous un nom
-  imprevisible, et remplacement atomique reel.
+{ Disque LOCAL de l'onglet Scp. Le cwd du PROCESSUS ne bouge jamais, les
+  volumes ne sont pas sondes, les temporaires sont exclusifs et imprevisibles.
 
   Copyright (C) 2024 - 2026 Cyril LAMY
   SPDX-License-Identifier: GPL-3.0-or-later }
@@ -23,8 +19,8 @@ type
     lvkRamDisk, lvkHome, lvkRoot, lvkOther);
 
   TLocalVolume = record
-    Path: string;        // racine a ouvrir
-    Caption: string;     // ce qui s'affiche dans le selecteur
+    Path: string;
+    Caption: string;
     Kind: TLocalVolumeKind;
   end;
 
@@ -32,8 +28,7 @@ type
 
   TLocalFileSystem = class(TScpFileSystem)
   private
-    // Ecrit par le fil qui annule, lu par celui qui travaille: acces atomiques.
-    FCancelFlag: LongInt;
+    FCancelFlag: LongInt;   // inter-threads: acces atomiques
     {$IFDEF WINDOWS}
     function EmptyDirByHandle(ADir: THandle; const APath: string;
       ADepth: Integer; out AErr: TScpError): Boolean;
@@ -88,10 +83,8 @@ type
       out AErr: TScpError): Boolean; override;
     function SetMode(AHandle: TScpFileHandle; AMode: LongWord;
       out AErr: TScpError): Boolean; override;
-    // Suppression recursive ANCREE: une fois le dossier ouvert, ses enfants sont
-    // ouverts et retires relativement a lui. Un dossier remplace par un lien en
-    // cours de route n'envoie pas la suppression dans sa cible. Un lien, meme
-    // vers un dossier, part seul.
+    // ANCREE: enfants retires relativement au dossier ouvert. Un dossier
+    // remplace par un lien en route n'y entraine pas le rm. Un lien part seul.
     function RemoveTree(const APath: string; out AErr: TScpError): Boolean;
     function CopyProtectionFrom(const ASourcePath, ATargetPath: string;
       out AErr: TScpError): Boolean; override;
@@ -112,9 +105,7 @@ type
     function CollisionKey(const AName: string): string; override;
   end;
 
-// Lecteurs et volumes, SANS interroger le moindre peripherique. Un partage
-// hors ligne y figure avec son type et ne fige rien: c'est a l'ouverture que
-// l'erreur survient.
+// SANS sonder: un partage hors ligne ne fige rien ici, il echouera a l'ouverture.
 function EnumerateLocalVolumes: TLocalVolumeArray;
 function LocalHomePath: string;
 
@@ -125,12 +116,10 @@ uses
 
 const
   {$IFDEF WINDOWS}
-  // Absent de l'unite Windows de FPC 3.2, valeur de winbase.h: l'appel n'aboutit
-  // qu'une fois l'operation SUR LE SUPPORT, ce qui la fait survivre a une coupure.
+  // Absents de l'unite Windows de FPC 3.2.
   MOVEFILE_WRITE_THROUGH_ = $00000008;
   FILE_TYPE_DISK_ = $0001;
   FILE_FLAG_OPEN_REPARSE_POINT_ = $00200000;
-  // Ouvertures relatives a un dossier (ntdll) et suppression par poignee.
   DELETE_ = $00010000;
   READ_CONTROL_ = $00020000;
   WRITE_DAC_ = $00040000;
@@ -165,8 +154,7 @@ const
   {$ENDIF}
   {$ENDIF}
   {$IFDEF LINUX}
-  // renameat2 n'est pas enveloppe par FPC 3.2: numero d'appel par architecture.
-  // Sans numero connu, la reservation exclusive prend le relais.
+  // renameat2 absent de FPC 3.2. Archi inconnue: reservation exclusive.
   {$IF DEFINED(CPUX86_64)}
   SYSCALL_RENAMEAT2 = 316; {$DEFINE RSSH_RENAMEAT2}
   {$ELSEIF DEFINED(CPUAARCH64)}
@@ -180,16 +168,12 @@ const
   RENAME_NOREPLACE_ = 1;
   {$ENDIF}
   {$IFDEF DARWIN}
-  // renamex_np n'est pas enveloppe par FPC 3.2: drapeau de <sys/stdio.h>.
-  RENAME_EXCL_ = 4;
+  RENAME_EXCL_ = 4;   // renamex_np, <sys/stdio.h>
   {$ENDIF}
 
-  // Prefixe des temporaires, reconnaissable a l'oeil: un partiel laisse par un
-  // plantage doit se comprendre sans explication.
   TEMP_PREFIX = '.rssh-';
   TEMP_SUFFIX = '.part';
-  // Assez d'aleas pour que le nom soit imprevisible, donc impossible a devancer
-  // par un lien.
+  // imprevisible: personne ne pose de lien sur un nom qu'il ne devine pas
   TEMP_RANDOM_BYTES = 12;
 
 type
@@ -230,7 +214,6 @@ type
     CreationTime, LastAccessTime, LastWriteTime, ChangeTime: Int64;
     FileAttributes: DWORD;
   end;
-  // FILE_ID_BOTH_DIR_INFO de winbase.h.
   TFileIdBothDirInfo = record
     NextEntryOffset: DWORD;
     FileIndex: DWORD;
@@ -247,8 +230,7 @@ type
   PFileIdBothDirInfo = ^TFileIdBothDirInfo;
 {$PACKRECORDS DEFAULT}
 
-// Absents de l'unite Windows de FPC 3.2. NtOpenFile est le seul moyen d'ouvrir
-// un nom RELATIVEMENT a une poignee de dossier.
+// NtOpenFile: seul moyen d'ouvrir RELATIVEMENT a une poignee de dossier.
 function NtOpenFile(FileHandle: PHandle; DesiredAccess: DWORD;
   ObjectAttributes: Pointer; IoStatusBlock: Pointer; ShareAccess: ULONG;
   OpenOptions: ULONG): LongInt; stdcall; external 'ntdll' name 'NtOpenFile';
@@ -273,19 +255,15 @@ function ConvertStringSecurityDescriptorToSecurityDescriptorW(
 const
   SDDL_REVISION_1_ = 1;
 
-// Un mode que les « autres » ne peuvent pas lire est PRIVE. Windows n'a pas de
-// groupe a qui donner les bits du milieu: les donner a tous elargirait, les
-// retirer ne fait que restreindre.
+// PRIVE = « autres » sans lecture. Pas de groupe sous Windows: donner ses bits
+// a tous elargirait, les ignorer ne fait que restreindre.
 function ModeIsPrivate(AMode: LongWord): Boolean;
 begin
   Result := (AMode and LongWord(&0004)) = 0;
 end;
 
-// Descripteur d'un fichier ou d'un dossier PRIVE: l'utilisateur courant,
-// SYSTEM et les administrateurs, heritage du parent coupe -- le plus proche
-// d'un 0700, root compris. Pose A LA CREATION, par CreateFileW ou
-// CreateDirectoryW: pas d'instant ou le parent decide. nil s'il n'a pas pu
-// etre construit; a liberer par LocalFree.
+// Utilisateur, SYSTEM, admins, heritage coupe: le 0700 local, root compris. Pose A LA
+// CREATION, jamais apres. nil en cas d'echec; LocalFree.
 function PrivateSecurityDescriptor(AInheritable: Boolean): Pointer;
 var
   token: THandle;
@@ -321,7 +299,7 @@ begin
     Result := nil;
 end;
 {$ELSE}
-// Non enveloppes par FPC 3.2: appel direct sous Linux, libc ailleurs.
+// Absents de FPC 3.2: syscall sous Linux, libc ailleurs.
 {$IFDEF LINUX}
 function OpenDirAt(ADir: cint; const AName: string): cint;
 begin
@@ -348,7 +326,7 @@ end;
 
 function FUTimens(AFd: cint; ATimes: Pointer): cint;
 begin
-  // utimensat sans chemin agit sur le descripteur: c'est futimens.
+  // utimensat sans chemin = futimens
   Result := do_syscall(syscall_nr_utimensat, TSysParam(AFd), TSysParam(nil),
     TSysParam(ATimes), TSysParam(0));
 end;
@@ -387,11 +365,8 @@ begin
 end;
 {$ENDIF}
 
-// Le nom designe-t-il ENCORE le dossier qu'on a vide? Rouvert et compare par
-// peripherique et inode juste avant unlinkat: un dossier vide glisse a sa
-// place serait sinon supprime. Cela resserre la fenetre sans la fermer --
-// POSIX ne retire pas un dossier par son descripteur, contrairement a la
-// suppression par poignee de Windows.
+// Le nom designe-t-il ENCORE le dossier vide? Resserre la fenetre sans la
+// fermer: POSIX ne retire pas un dossier par son descripteur.
 function SameDirAt(ADir: cint; const AName: string; const AWant: Stat): Boolean;
 var
   fd: cint;
@@ -415,7 +390,7 @@ var
   b: array[0..TEMP_RANDOM_BYTES - 1] of Byte;
   i: Integer;
 begin
-  // Le generateur du projet: un Random() de la RTL rouvrirait la course.
+  // Pas Random(): previsible, il rouvrirait la course.
   SodiumEnsureLoaded;
   randombytes_buf(@b[0], TEMP_RANDOM_BYTES);
   SetLength(Result, TEMP_RANDOM_BYTES * 2);
@@ -443,9 +418,8 @@ begin
   Result := W(LocalNativePath(APath));
 end;
 
-// Ce qu'une copie sur place reprend de sa source, et rien d'autre: ni
-// compression, ni chiffrement, ni point de reanalyse. Zero s'ecrit NORMAL,
-// sinon FILE_BASIC_INFO laisserait les attributs herites en place.
+// Ni compression, ni chiffrement, ni reparse. 0 s'ecrit NORMAL: FILE_BASIC_INFO
+// ignore un zero et garderait les attributs herites.
 function CopiedAttributes(AAttrs: DWORD): DWORD;
 begin
   Result := AAttrs and (FILE_ATTRIBUTE_READONLY or FILE_ATTRIBUTE_HIDDEN or
@@ -486,15 +460,13 @@ begin
   Result.dwHighDateTime := LongWord(v shr 32);
 end;
 
-// Attributs Win32 -> entree. Le mode Unix est SYNTHETISE: il n'existe pas ici,
-// mais la colonne doit dire quelque chose de vrai.
+// Mode Unix SYNTHETISE: n'existe pas ici, mais la colonne ne doit pas mentir.
 procedure FillEntryFromAttrs(var AEntry: TScpEntry; AAttrs: LongWord;
   ASizeHigh, ASizeLow: LongWord; const AMTime: TFileTime);
 begin
   AEntry.IsDir := (AAttrs and FILE_ATTRIBUTE_DIRECTORY) <> 0;
   AEntry.IsLink := (AAttrs and FILE_ATTRIBUTE_REPARSE_POINT) <> 0;
-  // Win32 porte la nature de la cible sur le point de reanalyse LUI-MEME
-  // (une jonction vers un dossier EST un dossier): etabli sans second appel.
+  // Le point de reanalyse porte la nature de sa cible: pas de second appel.
   if AEntry.IsLink then
   begin
     AEntry.TargetIsDir := AEntry.IsDir;
@@ -587,8 +559,7 @@ end;
 function TLocalFileSystem.RealPath(const APath: string; out AResolved: string;
   out AErr: TScpError): Boolean;
 begin
-  // Resolution LEXICALE seulement: resoudre les liens donnerait un chemin
-  // meconnaissable dans la barre d'adresse, et le confinement suit la jointure.
+  // LEXICALE: resoudre les liens rendrait la barre d'adresse meconnaissable.
   AResolved := LocalNormalize(APath);
   AErr := NoScpError;
   Result := True;
@@ -616,9 +587,7 @@ begin
   AErr := NoScpError;
   n := 0;
   {$IFDEF WINDOWS}
-  // Separateur ajoute APRES la conversion native, qui retirerait un separateur
-  // final pose avant: le motif devenait « C:\dir* » et FindFirstFile listait le
-  // PARENT, le dossier devenant son propre enfant.
+  // '\' APRES NativeW, qui le mangerait: « C:\dir* » liste le PARENT.
   pattern := NativeW(APath);
   if (pattern <> '') and (pattern[Length(pattern)] <> '\') then
     pattern := pattern + '\';
@@ -639,7 +608,6 @@ begin
         Exit(False);
       end;
       name := U(UnicodeString(PWideChar(@fd.cFileName[0])));
-      // '.' et '..' ne doivent jamais devenir manipulables.
       if (name = '.') or (name = '..') or (name = '') then Continue;
       if n >= SCP_MAX_DIR_ENTRIES then
       begin
@@ -655,8 +623,7 @@ begin
         fd.nFileSizeHigh, fd.nFileSizeLow, fd.ftLastWriteTime);
       Inc(n);
     until not FindNextFileW(h, fd);
-    // FindNextFile rend aussi False sur une erreur d'E/S: sans ce test, un
-    // dossier lu a moitie passerait pour complet.
+    // False aussi sur erreur d'E/S: un dossier lu a moitie n'est pas complet.
     if GetLastError <> ERROR_NO_MORE_FILES then
     begin
       AErr := LastErr('Listing', APath);
@@ -681,7 +648,7 @@ begin
       de := fpReadDir(d^);
       if de = nil then
       begin
-        // readdir rend nil a la fin ET sur une erreur: seul errno les separe.
+        // nil a la fin ET sur erreur: seul errno les separe.
         if fpGetErrno <> 0 then
         begin
           AErr := LastErr('Listing', APath);
@@ -712,15 +679,14 @@ begin
         FillEntryFromStat(AEntries[n], st)
       else
       begin
-        // Une entree aux attributs illisibles reste VISIBLE et marquee: l'effacer
-        // serait mentir sur le contenu.
+        // Illisible mais VISIBLE: la cacher serait mentir sur le contenu.
         AEntries[n].AttrsUnknown := True;
         AEntries[n].Size := -1;
       end;
       if AEntries[n].IsLink then
       begin
         AEntries[n].LinkTarget := fpReadLink(full);
-        // Etabli dans les deux issues: casse est une reponse, pas une absence.
+        // Casse est une reponse, pas une inconnue.
         AEntries[n].TargetKnown := True;
         if fpStat(PChar(full), st) = 0 then
           AEntries[n].TargetIsDir := ModeIsDir(st.st_mode)
@@ -752,9 +718,7 @@ begin
   AErr := NoScpError;
   AEntry.Name := LocalBaseName(APath);
   {$IFDEF WINDOWS}
-  // Win32 n'a pas de lstat, mais GetFileAttributesEx ne suit pas un point de
-  // reparse pour l'attribut lui-meme. AFollowLink est donc sans effet, du cote
-  // prudent: on ne suit jamais.
+  // GetFileAttributesEx ne suit pas le reparse: AFollowLink ignore, cote prudent.
   if not GetFileAttributesExW(PWideChar(NativeW(APath)),
      GetFileExInfoStandard, @fad) then
   begin
@@ -802,8 +766,7 @@ begin
     Exit(True);
   end;
   code := Integer(GetLastError);
-  // « Absent » est une reponse, pas une panne: les confondre ferait ecraser une
-  // cible qu'on n'a pas su lire.
+  // Absent n'est pas illisible: confondre, c'est ecraser a l'aveugle.
   if (code = 2) or (code = 3) then Exit(True);
   AErr := MakeScpError(OsErrorToKind(code), 'Checking',
     DisplaySafeName(APath), Format('Windows error %d', [code]));
@@ -832,8 +795,7 @@ var
 begin
   AErr := NoScpError;
   {$IFDEF WINDOWS}
-  // Un mode ouvert herite de l'ACL du parent, comme tout dossier neuf ici; un
-  // mode prive nait avec une DACL privee. Sans elle on ne cree pas.
+  // Mode prive: DACL privee a la naissance, ou pas de dossier du tout.
   if not ModeIsPrivate(AMode) then
     Result := CreateDirectoryW(PWideChar(NativeW(APath)), nil)
   else
@@ -855,7 +817,7 @@ begin
     finally
       LocalFree(HLOCAL(sa.lpSecurityDescriptor));
     end;
-    // LocalFree a pu ecraser l'erreur que LastErr va lire.
+    // LocalFree a pu ecraser l'erreur.
     if not Result then SetLastError(code);
   end;
   {$ELSE}
@@ -880,20 +842,15 @@ var
 begin
   AErr := NoScpError;
   {$IFDEF WINDOWS}
-  // SANS MOVEFILE_REPLACE_EXISTING: ce Rename n'ecrase jamais. Le remplacement
-  // est ReplaceAtomic, demande explicitement.
+  // SANS REPLACE_EXISTING: n'ecrase jamais. Ecraser, c'est ReplaceAtomic.
   Result := MoveFileExW(PWideChar(NativeW(AFrom)), PWideChar(NativeW(ATo)), 0);
   {$ELSE}
   f := LocalNormalize(AFrom);
   t := LocalNormalize(ATo);
-  // rename() POSIX ecrase en silence, et verifier avant laisse une course.
-  // link() ECHOUE atomiquement si le nom existe: c'est le « ne pas ecraser »
-  // qu'on veut. Temporaire et cible sont dans le meme dossier, ce qu'il exige.
+  // rename() ecrase en silence; link() ECHOUE atomiquement si le nom existe.
   if fpLink(PChar(f), PChar(t)) = 0 then
   begin
-    // La cible EST ce fichier; le temporaire n'en est qu'un second nom. Si son
-    // retrait echoue, c'est un dechet, pas une cible fausse: publie, mais DIT,
-    // pour que l'appelant garde ce nom a nettoyer.
+    // Temporaire orphelin: un dechet, pas une cible fausse. Publie, mais DIT.
     if fpUnlink(PChar(f)) <> 0 then
       AErr := MakeScpError(sekAttrRefused, 'Renaming to', DisplaySafeName(ATo),
         'the temporary name could not be removed and was left behind');
@@ -906,9 +863,8 @@ begin
       DisplaySafeName(ATo), '');
     Exit(False);
   end;
-  // FAT et certains montages reseau ne font pas de lien dur. Alors seulement on
-  // cherche une autre primitive qui refuse d'ecraser -- jamais « verifier puis
-  // renommer », dont la fenetre ecraserait une cible apparue entre les deux.
+  // Pas de lien dur (FAT, certains montages): autre primitive qui refuse
+  // d'ecraser. JAMAIS « verifier puis renommer ».
   if (code <> ESysEPERM) and (code <> ESysEOPNOTSUPP) and
      (code <> ESysEMLINK) and (code <> ESysEXDEV) and
      (code <> ESysEACCES) then
@@ -917,8 +873,7 @@ begin
     Exit(False);
   end;
   {$IFDEF RSSH_RENAMEAT2}
-  // renameat2(RENAME_NOREPLACE): le rename qui refuse d'ecraser, tenu par le
-  // noyau depuis Linux 3.15. FPC 3.2 ne l'enveloppe pas: appel direct.
+  // Linux >= 3.15
   code := do_syscall(SYSCALL_RENAMEAT2, TSysParam(AT_FDCWD_),
     TSysParam(PChar(f)), TSysParam(AT_FDCWD_), TSysParam(PChar(t)),
     TSysParam(RENAME_NOREPLACE_));
@@ -937,8 +892,7 @@ begin
   end;
   {$ENDIF}
   {$IFDEF DARWIN}
-  // renamex_np(RENAME_EXCL): le rename qui refuse d'ecraser, depuis macOS
-  // 10.12, dossiers compris. Non enveloppe par FPC 3.2: appel direct.
+  // macOS >= 10.12, dossiers compris
   if renamex_np(PChar(f), PChar(t), RENAME_EXCL_) = 0 then Exit(True);
   code := fpGetErrno;
   if code = ESysEEXIST then
@@ -953,10 +907,8 @@ begin
     Exit(False);
   end;
   {$ENDIF}
-  // Sans primitive qui refuse d'ecraser, on REFUSE. Reserver le nom par une
-  // creation exclusive puis renommer par-dessus laissait une fenetre, entre
-  // les deux, ou un autre processus remplace la reservation -- et ne savait de
-  // toute facon pas renommer un dossier.
+  // Rien qui refuse d'ecraser: on REFUSE. Une reservation puis rename a sa
+  // fenetre, et ne sait pas renommer un dossier.
   AErr := MakeScpError(sekUnsupported, 'Renaming to', DisplaySafeName(ATo),
     'this file system offers no rename that refuses to overwrite');
   Result := False;
@@ -966,8 +918,7 @@ begin
 end;
 
 {$IFDEF WINDOWS}
-// Donne a ATo la DACL de AFrom, protection contre l'heritage comprise. False:
-// ACode dit l'erreur Windows, AReading si elle vient de la lecture.
+// Etat d'heritage compris. AReading: l'echec vient de la lecture.
 function CopyDaclRaw(const AFrom, ATo: string; out ACode: DWORD;
   out AReading: Boolean): Boolean;
 var
@@ -997,7 +948,7 @@ begin
   end;
   control := 0;
   revision := 0;
-  // Se tromper ici reactiverait l'heritage sur une cible qui l'avait coupe.
+  // Se tromper ici rouvre l'heritage sur une cible qui l'avait coupe.
   if not GetSecurityDescriptorControl(PSECURITY_DESCRIPTOR(@sd[0]), @control,
      @revision) then
   begin
@@ -1018,8 +969,7 @@ begin
   Result := True;
 end;
 
-// Un fichier prive remplace par un temporaire ne aux droits du dossier
-// deviendrait sinon lisible par tout ce que le dossier autorise.
+// Sinon un fichier prive renait avec les droits du dossier.
 function CopyDacl(const AFrom, ATo: string; out AErr: TScpError): Boolean;
 var
   code: DWORD;
@@ -1041,15 +991,9 @@ end;
 {$ENDIF}
 
 {$IFDEF WINDOWS}
-// La DACL est lue par une POIGNEE sur la source, point de reanalyse refuse:
-// c'est le dossier copie qui la donne, pas ce que son nom designerait devenu
-// jonction. Le dossier nait VIDE sous les droits herites du parent -- le
-// createur garde ainsi de quoi agir dessus -- puis recoit attributs et
-// protection de la source par une meme poignee AVANT tout contenu. Une DACL
-// de source qui ne nous accorde ni DELETE ni WRITE_ATTRIBUTES ne peut donc
-// plus laisser un dossier orphelin: posee en premier, elle interdisait
-// jusqu'au retrait. En cas d'echec tout repart par la poignee, et un residu
-// impossible a retirer est NOMME dans l'erreur.
+// DACL lue par POIGNEE (reparse refuse): celle du dossier, pas d'une jonction.
+// Copie nee VIDE sous les droits du parent, DACL source posee en DERNIER, tout
+// par la meme poignee; un residu non retirable est NOMME dans l'erreur.
 function TLocalFileSystem.MakeDirFromSource(const ASourcePath, APath: string;
   AMode: LongWord; out AErr: TScpError): Boolean;
 var
@@ -1062,8 +1006,7 @@ var
   revision: DWORD;
   secInfo: SECURITY_INFORMATION;
 
-  // Retrait par la poignee (droit DELETE demande a l'ouverture). False = le
-  // dossier reste, et le message doit le dire.
+  // False = le dossier reste, et le message doit le dire.
   function DropByHandle: Boolean;
   var
     disp: TFileDispositionInfo;
@@ -1095,8 +1038,7 @@ begin
     Exit;
   end;
   try
-    // Une E/S qui echoue (partage deconnecte) n'est pas « plus un dossier »:
-    // chaque cause garde son code, lu AVANT tout autre appel.
+    // Un partage coupe n'est pas « plus un dossier »: code lu AVANT tout appel.
     if not GetFileInformationByHandle(h, info) then
     begin
       AErr := LastErr('Duplicating', ASourcePath);
@@ -1109,7 +1051,7 @@ begin
         DisplaySafeName(ASourcePath), 'the source is not a folder any more');
       Exit;
     end;
-    // Le premier appel DOIT echouer faute de place, et seulement ainsi.
+    // Le premier appel DOIT echouer faute de place, et pour nulle autre raison.
     need := 0;
     if GetKernelObjectSecurity(h, DACL_SECURITY_INFORMATION, nil, 0, @need)
     then
@@ -1143,10 +1085,7 @@ begin
     AErr := LastErr('Creating folder', APath);
     Exit;
   end;
-  // Attributs et protection par une POIGNEE sur le dossier cree, et non par
-  // son nom: il est encore vide, et si quoi que ce soit ne tient pas il
-  // repart par cette meme poignee. WRITE_DAC en plus: la protection de la
-  // source se pose en DERNIER, quand plus rien ne peut echouer apres elle.
+  // Par POIGNEE, pas par nom: tout, retrait compris, vise ce dossier-la.
   h := CreateFileW(PWideChar(NativeW(APath)), DELETE_ or
     FILE_READ_ATTRIBUTES_ or FILE_WRITE_ATTRIBUTES_ or WRITE_DAC_,
     FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE_, nil,
@@ -1155,8 +1094,7 @@ begin
   if h = INVALID_HANDLE_VALUE then
   begin
     code := GetLastError;
-    // Cree VIDE et par nous a l'instant: le retrait par nom ne peut viser que
-    // lui, et RemoveDirectory retirerait une jonction sans la suivre.
+    // Vide et a nous; RemoveDirectory ne suivrait pas une jonction.
     if RemoveDirectoryW(PWideChar(NativeW(APath))) then
       AErr := MakeScpError(sekAttrRefused, 'Creating folder',
         DisplaySafeName(APath), Format('the new folder could not be opened ' +
@@ -1179,8 +1117,7 @@ begin
           [code, Residue(DropByHandle)]));
       Exit;
     end;
-    // Remplace entre la creation et l'ouverture: ce n'est PAS le notre, il ne
-    // se retire pas -- retirer detruirait ce qu'un autre vient de poser.
+    // Remplace entre-temps: PAS le notre, on n'y touche pas.
     if (made.dwFileAttributes and (FILE_ATTRIBUTE_DIRECTORY or
         FILE_ATTRIBUTE_REPARSE_POINT)) <> FILE_ATTRIBUTE_DIRECTORY then
     begin
@@ -1201,11 +1138,8 @@ begin
           [code, Residue(DropByHandle)]));
       Exit;
     end;
-    // La protection de la source en dernier: posee avant, une DACL qui ne
-    // nous accorde ni DELETE ni WRITE_ATTRIBUTES aurait interdit les etapes
-    // precedentes -- et le retrait lui-meme, d'ou les dossiers orphelins.
-    // Comme CopyDaclRaw: se tromper de drapeau reactiverait l'heritage sur
-    // une source qui l'avait coupe.
+    // En DERNIER: une DACL sans DELETE pour nous interdirait jusqu'au retrait.
+    // Drapeau d'heritage: meme piege que CopyDaclRaw.
     control := 0;
     revision := 0;
     if not GetSecurityDescriptorControl(PSECURITY_DESCRIPTOR(@sd[0]),
@@ -1239,8 +1173,8 @@ begin
   Result := True;
 end;
 
-// Par les poignees: la source est celle qu'on a lue, le temporaire celui
-// qu'on a ecrit. Lecture seule comprise: DeleteTemp saura la lever.
+// Par poignees: la source lue, le temporaire ecrit. Lecture seule comprise:
+// DeleteTemp sait la lever.
 function TLocalFileSystem.CopyAttributesFrom(ASource, ATarget: TScpFileHandle;
   out AErr: TScpError): Boolean;
 var
@@ -1274,9 +1208,8 @@ begin
   Result := True;
 end;
 
-// Un temporaire en lecture seule refuse DeleteFileW. On ne leve l'attribut que
-// sur ce qu'une poignee ouverte sans suivre de lien montre etre un fichier en
-// lecture seule, et on le retire par cette meme poignee.
+// Lecture seule: DeleteFileW refuse. Attribut leve et retrait par une meme
+// poignee, sans suivre de lien.
 function TLocalFileSystem.DeleteTemp(const APath: string;
   out AErr: TScpError): Boolean;
 var
@@ -1337,8 +1270,7 @@ begin
       Format('the permissions of the source could not be given to the copy ' +
         '(Windows error %d)', [code]));
   {$ELSE}
-  // Les modes suffisent: le moteur les a deja poses a la creation.
-  Result := True;
+  Result := True;   // les modes sont poses a la creation
   {$ENDIF}
 end;
 
@@ -1352,13 +1284,9 @@ var
 begin
   AErr := NoScpError;
   {$IFDEF WINDOWS}
-  // Le mode POSIX n'existe pas ici: « garde ses droits » veut dire garder la
-  // DACL, recopiee sur le temporaire AVANT qu'il prenne la place. Sans elle,
-  // la cible n'est pas remplacee.
+  // DACL recopiee AVANT la publication, ou pas de remplacement.
   if not CopyDacl(ATo, AFrom, AErr) then Exit(False);
-  // Les attributs aussi: cache, systeme, lecture seule. Une cible en lecture
-  // seule refuse d'etre remplacee; on lui retire le temps du rename, et le
-  // nouveau contenu le porte a son tour.
+  // Lecture seule levee le temps du rename; le nouveau contenu la reprend.
   tattrs := GetFileAttributesW(PWideChar(NativeW(ATo)));
   if tattrs = INVALID_FILE_ATTRIBUTES then
   begin
@@ -1373,8 +1301,6 @@ begin
     FILE_ATTRIBUTE_SYSTEM or FILE_ATTRIBUTE_ARCHIVE or
     FILE_ATTRIBUTE_NOT_CONTENT_INDEXED_);
   if keep = 0 then keep := FILE_ATTRIBUTE_NORMAL;
-  // Chaque refus arrete AVANT la publication: le nouveau contenu ne prend
-  // pas la place de l'ancien sans ses attributs.
   if not SetFileAttributesW(PWideChar(NativeW(AFrom)), keep) then
   begin
     code := GetLastError;
@@ -1392,20 +1318,18 @@ begin
       DisplaySafeName(ATo),
       Format('the existing file is read-only and the attribute could not ' +
         'be lifted (Windows error %d); it was left untouched', [code]));
-    // En lecture seule, le temporaire ne s'effacerait plus.
+    // sinon le temporaire ne s'efface plus
     SetFileAttributesW(PWideChar(NativeW(AFrom)), FILE_ATTRIBUTE_NORMAL);
     Exit(False);
   end;
-  // MOVEFILE_REPLACE_EXISTING sur un meme volume NTFS: pas d'etat
-  // intermediaire. WRITE_THROUGH attend le support avant de rendre la main.
+  // WRITE_THROUGH: rend la main une fois SUR LE SUPPORT.
   Result := MoveFileExW(PWideChar(NativeW(AFrom)), PWideChar(NativeW(ATo)),
     MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH_);
   if not Result then
   begin
     AErr := LastErr('Replacing', ATo);
     SetFileAttributesW(PWideChar(NativeW(AFrom)), FILE_ATTRIBUTE_NORMAL);
-    // La cible est restee, mais sans sa lecture seule si on ne peut la
-    // lui rendre: cela se dit.
+    // Cible intacte mais peut-etre plus en lecture seule: cela se dit.
     if readOnly and (not SetFileAttributesW(PWideChar(NativeW(ATo)), tattrs))
     then
       AErr.Detail := AErr.Detail + Format('; the existing file could not ' +
@@ -1462,10 +1386,8 @@ begin
   h := TLocalHandle.Create;
   h.Path := APath;
   {$IFDEF WINDOWS}
-  // FILE_SHARE_READ seul: ne pas lire ce qu'un autre processus reecrit.
-  // FILE_FLAG_OPEN_REPARSE_POINT: le lstat du moteur repondait avant cette
-  // ouverture, et le nom a pu changer de fichier entre les deux. Ouvrir le
-  // point de reanalyse LUI-MEME fait echouer au lieu de lire ailleurs.
+  // SHARE_READ seul: pas de lecture pendant qu'un autre reecrit.
+  // OPEN_REPARSE_POINT: un nom devenu lien echoue au lieu de lire ailleurs.
   h.H := CreateFileW(PWideChar(NativeW(APath)), GENERIC_READ,
     FILE_SHARE_READ, nil, OPEN_EXISTING,
     FILE_ATTRIBUTE_NORMAL or FILE_FLAG_OPEN_REPARSE_POINT_, 0);
@@ -1475,9 +1397,7 @@ begin
     h.Free;
     Exit(False);
   end;
-  // Ce qui a ete OUVERT est-il ordinaire? Le lstat repondait pour un chemin,
-  // ceci repond pour la poignee: un tube ou un peripherique glisse a la place
-  // ne se lit pas comme un fichier.
+  // On juge ce qui a ete OUVERT, pas le chemin.
   if (GetFileType(h.H) <> FILE_TYPE_DISK_) or
      (not GetFileInformationByHandle(h.H, info)) or
      ((info.dwFileAttributes and (FILE_ATTRIBUTE_DIRECTORY or
@@ -1490,9 +1410,8 @@ begin
     Exit(False);
   end;
   {$ELSE}
-  // O_NOFOLLOW: seule l'ouverture peut refuser un lien sans course, et elle ne
-  // protege que le DERNIER composant. O_NONBLOCK: un tube nomme a la place du
-  // fichier ferait attendre un ecrivain, donc pour toujours.
+  // O_NOFOLLOW ne couvre que le DERNIER composant. O_NONBLOCK: une FIFO
+  // glissee la attendrait un ecrivain jusqu'a la fin des temps.
   h.Fd := fpOpen(PChar(LocalNormalize(APath)),
     O_RDONLY or O_NOFOLLOW or O_NONBLOCK);
   if h.Fd < 0 then
@@ -1501,7 +1420,6 @@ begin
     h.Free;
     Exit(False);
   end;
-  // fstat sur la poignee: on juge ce qui a ete ouvert, pas le chemin.
   if (fpFStat(h.Fd, st) <> 0) or (not fpS_ISREG(st.st_mode)) then
   begin
     fpClose(h.Fd);
@@ -1534,9 +1452,7 @@ begin
   APath := '';
   AErr := NoScpError;
   {$IFDEF WINDOWS}
-  // Un temporaire PRIVE le reste pendant la copie et apres une interruption:
-  // sa DACL nait avec lui. Celui qui remplace une cible (demande en 0600)
-  // recoit la DACL de la cible juste avant de prendre sa place.
+  // PRIVE des la naissance; ReplaceAtomic lui donnera la DACL de la cible.
   psa := nil;
   sa.lpSecurityDescriptor := nil;
   if ModeIsPrivate(AMode) then
@@ -1562,8 +1478,7 @@ begin
     h := TLocalHandle.Create;
     h.Path := candidate;
     {$IFDEF WINDOWS}
-    // CREATE_NEW echoue si QUOI QUE CE SOIT existe sous ce nom, lien compris:
-    // c'est ce qui interdit d'ecrire a travers un lien pose d'avance.
+    // CREATE_NEW echoue sur QUOI QUE CE SOIT, lien compris.
     h.H := CreateFileW(PWideChar(NativeW(candidate)), GENERIC_WRITE,
       0, psa, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, 0);
     if h.H <> INVALID_HANDLE_VALUE then
@@ -1576,7 +1491,6 @@ begin
     h.Free;
     if AErr.Kind <> sekAlreadyExists then Exit(False);
     {$ELSE}
-    // Le mode demande passe par l'umask: seul moment ou le systeme le restreint.
     h.Fd := fpOpen(PChar(LocalNormalize(candidate)),
       O_WRONLY or O_CREAT or O_EXCL, AMode and LongWord(&0777));
     if h.Fd >= 0 then
@@ -1617,12 +1531,9 @@ begin
   AErr := NoScpError;
   h := TLocalHandle.Create;
   h.Path := APath;
-  // Jamais a travers un lien: un partiel devenu lien entre la coupure et la
-  // reprise ferait ecrire ailleurs. Lecture ET ecriture, parce que le moteur
-  // relit le prefixe par cette poignee, ce qui lie la verification au FICHIER.
+  // Jamais a travers un lien: un partiel devenu lien ferait ecrire ailleurs.
+  // Lecture aussi: le prefixe se relit par CETTE poignee.
   {$IFDEF WINDOWS}
-  // FILE_FLAG_OPEN_REPARSE_POINT: sur un lien, l'ecriture echoue au lieu de
-  // traverser.
   h.H := CreateFileW(PWideChar(NativeW(APath)), GENERIC_READ or GENERIC_WRITE,
     0, nil, OPEN_EXISTING,
     FILE_ATTRIBUTE_NORMAL or FILE_FLAG_OPEN_REPARSE_POINT_, 0);
@@ -1632,8 +1543,6 @@ begin
     h.Free;
     Exit(False);
   end;
-  // Meme controle qu'a l'ouverture en lecture: ce qui a ete OUVERT est-il un
-  // fichier ordinaire? Le lstat du moteur repondait pour un chemin.
   if (GetFileType(h.H) <> FILE_TYPE_DISK_) or
      (not GetFileInformationByHandle(h.H, info)) or
      ((info.dwFileAttributes and (FILE_ATTRIBUTE_DIRECTORY or
@@ -1646,7 +1555,7 @@ begin
     Exit(False);
   end;
   {$ELSE}
-  // O_NONBLOCK: un tube nomme a la place du partiel bloquerait l'ouverture.
+  // O_NONBLOCK: contre une FIFO a la place du partiel.
   h.Fd := fpOpen(PChar(LocalNormalize(APath)),
     O_RDWR or O_NOFOLLOW or O_NONBLOCK);
   if h.Fd < 0 then
@@ -1668,8 +1577,7 @@ begin
     fpFcntl(h.Fd, F_SETFL, flags and (not O_NONBLOCK));
   {$ENDIF}
   AHandle := h;
-  // Offset confirme ET troncature: des octets non confirmes sont des octets
-  // dont on ne sait rien.
+  // Tronque: au-dela de l'offset confirme, on ne sait rien.
   if not Seek(h, AOffset, AErr) then
   begin
     Close(h, err);
@@ -1782,8 +1690,7 @@ begin
   lo := LongInt(AOffset and $FFFFFFFF);
   hi := LongInt(AOffset shr 32);
   rc := SetFilePointer(h.H, lo, @hi, FILE_BEGIN);
-  // INVALID_SET_FILE_POINTER n'est un echec que si GetLastError le confirme:
-  // un offset dont les 32 bits bas valent 0xFFFFFFFF rend la meme valeur.
+  // Un offset dont les 32 bits bas valent $FFFFFFFF rend la meme valeur.
   if (rc = INVALID_SET_FILE_POINTER) and (GetLastError <> NO_ERROR) then
   begin
     AErr := LastErr('Seeking in', h.Path);
@@ -1807,8 +1714,7 @@ begin
   AErr := NoScpError;
   h := TLocalHandle(AHandle);
   {$IFDEF WINDOWS}
-  // Un disque plein se revele souvent ICI et pas a l'ecriture: conclure sans
-  // vider remplacerait une cible valide par un fichier tronque.
+  // Le disque plein se revele souvent ICI, pas a l'ecriture.
   Result := FlushFileBuffers(h.H);
   {$ELSE}
   Result := fpfsync(h.Fd) = 0;
@@ -1859,8 +1765,7 @@ begin
     AErr := MakeScpError(sekAttrRefused, 'Setting the timestamp of',
       DisplaySafeName(h.Path), Format('Windows error %d', [GetLastError]));
   {$ELSE}
-  // La date d'ACCES n'est pas touchee: UTIME_OMIT la laisse telle quelle,
-  // sans avoir a la relire ni a l'inventer.
+  // atime: UTIME_OMIT, ni relue ni inventee
   times[0].tv_sec := 0;
   times[0].tv_nsec := UTIME_OMIT_;
   times[1].tv_sec := AMTimeUtc;
@@ -1881,8 +1786,7 @@ var
 begin
   AErr := NoScpError;
   {$IFDEF WINDOWS}
-  // Aucun mode POSIX a poser. Les ACL, elles, sont recopiees par ReplaceAtomic,
-  // le seul moment ou l'on sait de quel fichier elles viennent.
+  // Pas de mode ici: les ACL passent par ReplaceAtomic.
   Result := True;
   {$ELSE}
   h := TLocalHandle(AHandle);
@@ -1893,12 +1797,8 @@ begin
   {$ENDIF}
 end;
 
-// --- Suppression recursive ------------------------------------------------
-
 {$IFDEF WINDOWS}
-// Vide un dossier par sa POIGNEE: chaque enfant est ouvert relativement a
-// elle, jamais par un chemin que ce dossier, devenu lien entre-temps, ferait
-// resoudre ailleurs. Le chemin ne sert qu'aux messages.
+// Enfants ouverts relativement a la POIGNEE. APath ne sert qu'aux messages.
 function TLocalFileSystem.EmptyDirByHandle(ADir: THandle; const APath: string;
   ADepth: Integer; out AErr: TScpError): Boolean;
 var
@@ -1930,8 +1830,7 @@ begin
   SetLength(buf, 64 * 1024);
   names := TStringList.Create;
   try
-    // Les noms d'abord, les suppressions ensuite: retirer pendant qu'on enumere
-    // fait sauter des entrees.
+    // Enumerer PUIS supprimer: l'inverse saute des entrees.
     first := True;
     while True do
     begin
@@ -1993,10 +1892,8 @@ begin
       oa.ObjectName := @us;
       oa.Attributes := OBJ_CASE_INSENSITIVE_;
       child := 0;
-      // FILE_OPEN_REPARSE_POINT: un lien ou une jonction est ouvert LUI-MEME,
-      // et n'a alors aucun contenu a nos yeux; il partira seul. Le droit de
-      // lister n'est demande que s'il est accorde: un fichier illisible se
-      // supprime quand meme, par son dossier.
+      // Un lien est ouvert LUI-MEME et part seul. Sans droit de lister, on
+      // retente sans: un fichier illisible se supprime quand meme.
       st := NtOpenFile(@child, DELETE_ or SYNCHRONIZE_ or
         FILE_READ_ATTRIBUTES_ or FILE_LIST_DIRECTORY_, @oa, @iosb,
         FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE_,
@@ -2011,7 +1908,7 @@ begin
       if st < 0 then
       begin
         code := RtlNtStatusToDosError(st);
-        // Le listing a vieilli: une entree partie entre-temps n'est pas un echec.
+        // le listing a vieilli
         if (code = ERROR_FILE_NOT_FOUND) or (code = ERROR_PATH_NOT_FOUND) then
           Continue;
         AErr := MakeScpError(OsErrorToKind(Integer(code)), 'Deleting',
@@ -2046,8 +1943,8 @@ begin
   Result := True;
 end;
 {$ELSE}
-// Meme principe par descripteur: openat et unlinkat n'agissent que DANS le
-// dossier ouvert. Le listing par chemin ne fournit que des noms.
+// openat/unlinkat: tout DANS le dossier ouvert. Le listing par chemin ne
+// fournit que des noms.
 function TLocalFileSystem.EmptyDirByFd(ADir: cint; const APath: string;
   ADepth: Integer; out AErr: TScpError): Boolean;
 var
@@ -2082,8 +1979,7 @@ begin
         '');
       Exit;
     end;
-    // O_DIRECTORY et O_NOFOLLOW: un dossier s'ouvre, tout le reste -- fichier,
-    // lien, tube -- est refuse avec un errno qui dit lequel, et part par unlink.
+    // Seul un vrai dossier s'ouvre; le reste (fichier, lien, tube) part par unlink.
     child := OpenDirAt(ADir, name);
     if child >= 0 then
     begin
@@ -2115,8 +2011,7 @@ begin
     end;
     code := fpGetErrno;
     if code = ESysENOENT then Continue;       // le listing a vieilli
-    // EACCES: un fichier qu'on ne peut pas lire se supprime quand meme, par
-    // son dossier; un dossier qu'on ne peut pas lire, lui, reste et le dit.
+    // EACCES: fichier illisible, supprime quand meme; un dossier, lui, le dira.
     if (code <> ESysENOTDIR) and (code <> ESysELOOP) and (code <> ESysEACCES)
     then
     begin
@@ -2149,8 +2044,7 @@ var
 begin
   Result := False;
   if not Stat(APath, False, e, AErr) then Exit;
-  // Un lien vers un dossier se supprime LUI: y descendre effacerait sa cible.
-  // Sous Windows une jonction est un dossier, et part comme tel.
+  // Un lien part LUI-MEME: y descendre effacerait sa cible.
   if e.IsLink and e.IsDir then Exit(DeleteDir(APath, AErr));
   if e.IsLink or (not e.IsDir) then Exit(DeleteFile(APath, AErr));
   {$IFDEF WINDOWS}
@@ -2165,8 +2059,7 @@ begin
     Exit;
   end;
   try
-    // Ce qui est OUVERT est-il encore un dossier, et pas un lien? La poignee
-    // repond pour elle-meme, la ou le lstat repondait pour un chemin.
+    // Ce qui est OUVERT, pas ce que le lstat a vu.
     if (not GetFileInformationByHandle(h, attrs)) or
        ((attrs.dwFileAttributes and (FILE_ATTRIBUTE_DIRECTORY or
          FILE_ATTRIBUTE_REPARSE_POINT)) <> FILE_ATTRIBUTE_DIRECTORY) then
@@ -2187,8 +2080,7 @@ begin
     CloseHandle(h);
   end;
   {$ELSE}
-  // La racine aussi est ouverte et retiree RELATIVEMENT a son parent: un
-  // renommage concurrent ne fait pas viser un autre dossier.
+  // Racine aussi RELATIVE a son parent: un rename concurrent ne deroute rien.
   base := LocalBaseName(APath);
   parentFd := fpOpen(PChar(LocalNormalize(LocalParent(APath))),
     O_RDONLY or O_DIRECTORY or O_CLOEXEC_);
@@ -2269,12 +2161,10 @@ begin
   Result := LocalCollisionKey(AName);
 end;
 
-// --- Volumes --------------------------------------------------------------
-
 function LocalHomePath: string;
 begin
   {$IFDEF WINDOWS}
-  // Qualifie: l'unite Windows en expose un autre, qui masque celui de SysUtils.
+  // Qualifie: celui de l'unite Windows masque celui de SysUtils.
   Result := SysUtils.GetEnvironmentVariable('USERPROFILE');
   if Result = '' then
     Result := SysUtils.GetEnvironmentVariable('HOMEDRIVE') +
@@ -2303,8 +2193,7 @@ begin
   begin
     if (mask and (LongWord(1) shl i)) = 0 then Continue;
     root := Chr(Ord('A') + i) + ':\';
-    // GetDriveType lit une table en memoire; GetVolumeInformation interroge le
-    // volume et bloque sur un partage hors ligne. D'ou le TYPE et pas le nom.
+    // Le TYPE, pas le nom: GetVolumeInformation bloque sur un partage hors ligne.
     dt := GetDriveTypeW(PWideChar(UnicodeString(root)));
     case dt of
       DRIVE_REMOVABLE: begin kind := lvkRemovable; typeName := 'Removable'; end;
@@ -2353,7 +2242,7 @@ var
   end;
 
   {$IFDEF LINUX}
-  // /proc/mounts vient du noyau: aucune entree/sortie, aucun blocage.
+  // /proc/mounts vient du noyau: ne bloque jamais.
   procedure ScanProcMounts;
   var
     sl: TStringList;

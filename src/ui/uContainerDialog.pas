@@ -2,10 +2,6 @@ unit uContainerDialog;
 
 {$mode objfpc}{$H+}
 
-// Proprietes d'un hote conteneur, a l'ecart du dialogue multi-protocole: un
-// conteneur n'a ni hote, ni port, ni identifiants -- juste un parent SSH, un
-// moteur, un nom, un mode.
-
 interface
 
 uses
@@ -89,9 +85,8 @@ begin
   ParentCombo.Items.Clear;
   ParentUuids.Clear;
   sel := -1;
-  // Filtre sur les hotes marques « Offer this host ». Table absente (document
-  // ancien) => pas de filtre, sinon liste vide. Le parent DEJA choisi reste
-  // visible meme non marque: le perdre en silence a l'edition serait pire.
+  // Table absente (vieux document): pas de filtre, sinon liste vide. Le parent
+  // deja choisi reste, marque ou non: le perdre en silence serait pire.
   offers := TStringList.Create;
   try
     offers.Sorted := True;
@@ -141,8 +136,7 @@ var
     Result.Left := EDIT_X;
     Result.Top := f.Y;
     Result.Style := csDropDownList;
-    // sous LCL Cocoa un csDropDownList s'ajuste a son contenu et ignore Width:
-    // seules les contraintes figent la largeur
+    // Cocoa: csDropDownList ignore Width, seules les contraintes tiennent
     Result.AutoSize := False;
     Result.Width := EDIT_W;
     Result.Constraints.MinWidth := EDIT_W;
@@ -209,7 +203,7 @@ begin
   Result := f;
 end;
 
-// False = invalide, le message a deja ete affiche a l'utilisateur
+// False: message deja affiche
 function ReadForm(f: TContainerForm; out AName: string;
   out ACfg: TContainerConfig): Boolean;
 var
@@ -250,7 +244,7 @@ begin
   Result := '';
   cfg := Default(TContainerConfig);
   cfg.Engine := ceDocker;
-  cfg.Shell := csSh;   // /bin/sh: present dans plus d'images que bash
+  cfg.Shell := csSh;   // sh: bash manque aux images minimales
   f := BuildForm(AModel, 'New Container', '', 'container', cfg);
   try
     repeat

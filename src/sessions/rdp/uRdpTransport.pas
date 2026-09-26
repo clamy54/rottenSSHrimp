@@ -2,8 +2,7 @@ unit uRdpTransport;
 
 {$mode objfpc}{$H+}
 
-// Transport RDP: un thread par session, FreeRDP confine avec
-// uFreeRdpApi, secrets en memoire seulement, defauts surs.
+// Un thread par session, FreeRDP confine derriere uFreeRdpApi.
 
 interface
 
@@ -23,7 +22,7 @@ type
     Subject: string;
     Issuer: string;
     Fingerprint: string;
-    OldFingerprint: string;  // selon FreeRDP; la verite reste le magasin du document
+    OldFingerprint: string;  // selon FreeRDP; seul le magasin du document fait foi
     Changed: Boolean;
     Mismatch: Boolean;       // le NOM ne correspond pas
     Gateway: Boolean;
@@ -38,7 +37,7 @@ type
     ConnectPort: Integer;
     Username: string;
     DomainName: string;
-    Password: TSecureBytes;   // possede; efface des la connexion faite
+    Password: TSecureBytes;   // possede
     Width, Height: Integer;
     ColorDepth: Integer;
     VerifyCertificate: Boolean;
@@ -49,7 +48,7 @@ type
     MaxReconnectAttempts: Integer;
     GatewayHostname: string;
     GatewayPort: Integer;
-    // A renseigner SUR LE THREAD UI: Text Input Services de macOS crashe ailleurs.
+    // SUR LE THREAD UI: Text Input Services de macOS crashe ailleurs.
     KeyboardKlid: LongWord;
     constructor Create;
     destructor Destroy; override;
@@ -63,13 +62,12 @@ type
   TRdpResizeEvent = procedure(AWidth, AHeight: Integer) of object;
   TRdpCertEvent = procedure(const AInfo: TRdpCertInfo;
     var ADecision: TRdpCertDecision) of object;
-  // Tous publies sur le thread UI via Queue. AVerdict: 0=inconnu, 1=idem, 2=change.
+  // Tous sur le thread UI. AVerdict: 0=inconnu, 1=idem, 2=change.
   TRdpCertLookup = procedure(const AHost: string; APort: Integer;
     const AFingerprint: string; out AVerdict: Integer;
     out AKnownFingerprint: string) of object;
   TRdpCertSave = procedure(const AInfo: TRdpCertInfo) of object;
   TRdpClipboardEvent = procedure(const AText: UnicodeString) of object;
-  // Chemins locaux (dossier temporaire) des fichiers arrives du serveur.
   TRdpClipFilesEvent = procedure(const APaths: TStringArray) of object;
   TRdpClipNoteEvent = procedure(const AText: string) of object;
   TRdpReconnectEvent = procedure(const AStatus: string; AActive: Boolean) of object;
@@ -82,53 +80,48 @@ type
 
     FContext: Pointer;
     FInstance: Pointer;
-    FDisp: Pointer;       // DispClientContext, nil avant negociation du canal
-    // Pipeline graphique: le RdpgfxClientContext relie au GDI, et ce que le
-    // serveur nous a fait allouer. Les surfaces du bureau sont plafonnees
-    // par RemoteSizeAcceptable; ici, le serveur cree autant de surfaces et
-    // d'entrees de cache qu'il veut, aux dimensions qu'il veut, et FreeRDP
-    // alloue sans compter. On compte, et l'on refuse au-dela d'un budget.
+    FDisp: Pointer;       // nil avant negociation du canal
+    // rdpgfx: le serveur cree ce qu'il veut, FreeRDP alloue sans compter.
+    // Nous, on compte.
     FGfx: Pointer;
-    FGfxGdi: Pointer;   // le rdpGdi relie au pipeline, garde pour le liberer
-                        // meme une fois FContext detache par Cleanup
+    FGfxGdi: Pointer;   // survit au detachement de FContext, pour le liberer
     FGfxOrig: array[0..3] of Pointer;     // rappels d'origine, par slot
-    FGfxSurfBytes: array[Word] of Cardinal;  // octets alloues par surfaceId
-    FGfxCacheBytes: array[Word] of Cardinal; // octets alloues par cacheSlot
+    FGfxSurfBytes: array[Word] of Cardinal;  // par surfaceId
+    FGfxCacheBytes: array[Word] of Cardinal; // par cacheSlot
     FGfxSurfTotal, FGfxCacheTotal: Int64;
     FLastSentW, FLastSentH: Integer;
 
-    FCliprdr: Pointer;            // CliprdrClientContext, nil tant qu'absent
-    FClipLock: TCriticalSection;  // protege les 3 champs texte + le drapeau
+    FCliprdr: Pointer;
+    FClipLock: TCriticalSection;  // les 3 champs texte + le drapeau
     FClipLocalText: UnicodeString;
     FClipIncoming: UnicodeString;
-    FClipAdvertise: Boolean;      // annonce en attente (marshalling UI->worker)
-    FClipReqFmt: cuint32;         // format demande au serveur, pour decoder la reponse
+    FClipAdvertise: Boolean;
+    FClipReqFmt: cuint32;         // pour decoder la reponse
 
-    // --- copier-coller de FICHIERS (cliprdr FileContents). Hors annonce et
-    // remise a l'UI, tout vit sur les threads du canal, sans verrou.
-    FClipFilesFmtId: cuint32;        // id local du format FileGroupDescriptorW
-    FClipLocalFiles: TStringArray;   // selection locale annoncee (sous FClipLock)
-    FClipServed: TRdpClipFileArray;  // ce que le dernier descripteur a annonce
-    FClipServedStream: TFileStream;  // fichier local ouvert cote envoi
+    // Fichiers: hors annonce et remise a l'UI, threads du canal, sans verrou.
+    FClipFilesFmtId: cuint32;        // id LOCAL de FileGroupDescriptorW
+    FClipLocalFiles: TStringArray;   // sous FClipLock
+    FClipServed: TRdpClipFileArray;
+    FClipServedStream: TFileStream;
     FClipServedIdx: Integer;
-    FClipReqIsFiles: Boolean;        // la demande en cours vise le descripteur
-    FClipFetch: TRdpClipFileArray;   // rapatriement en cours
+    FClipReqIsFiles: Boolean;
+    FClipFetch: TRdpClipFileArray;
     FClipFetchIdx: Integer;
     FClipFetchOff: Int64;
     FClipFetchStream: TFileStream;
-    FClipFetchDir: string;           // dossier du lot en cours
+    FClipFetchDir: string;
     FClipFetchStreamId: cuint32;
-    FClipFetchGot: Int64;            // octets recus du lot, pour le plafond
+    FClipFetchGot: Int64;            // pour le plafond
     FClipFetchActive: Boolean;
-    FClipTempRoot: string;           // racine temporaire, effacee a la fermeture
+    FClipTempRoot: string;
     FClipBatchSeq: Integer;
-    FClipFetchTops: TStringArray;    // tetes du lot en cours, cote worker
-    FClipIncomingFiles: TStringArray;   // remis a l'UI, sous FClipLock
-    FClipNotes: TStringList;            // messages vers l'UI, sous FClipLock
+    FClipFetchTops: TStringArray;
+    FClipIncomingFiles: TStringArray;   // sous FClipLock
+    FClipNotes: TStringList;            // sous FClipLock
 
-    // Reconnexion: drapeaux sous FCtxLock, poses par l'UI, faits par le worker.
+    // sous FCtxLock: poses par l'UI, executes par le worker
     FReconnecting: Boolean;
-    FReconnectInhibited: Boolean;  // document verrouille = plus rien
+    FReconnectInhibited: Boolean;  // document verrouille
     FWipePwRequested: Boolean;
     FReconnectMsg: string;
     FReconnectActive: Boolean;
@@ -143,20 +136,19 @@ type
     FStateQ: array of TRemoteSessionState;   // un champ unique sauterait les transitoires
     FStateLock: TCriticalSection;
     FResizeW, FResizeH: Integer;
-    FInvalidChainOk: Boolean;   // False = offsets douteux sur CETTE build de FreeRDP
+    FInvalidChainOk: Boolean;   // False: offsets douteux sur CETTE build de FreeRDP
     FLastFullBlitTick: QWord;
 
     FInputLock: TCriticalSection;
-    // Couvre la prise du pointeur et le comptage, PAS l'envoi:
-    // freerdp_input_send_* ecrit sur la socket, il part hors lock.
+    // Prise du pointeur et comptage, PAS l'envoi: il ecrit sur la socket.
     FCtxLock: TCriticalSection;
     FInputInFlight: Integer;      // sous FCtxLock
     FInputIdle: TEvent;           // signale tant que FInputInFlight = 0
     FPendingResizeW, FPendingResizeH: Integer;
     FResizeWanted: Boolean;
-    FResendBudget: Integer;            // nb de renvois restants (protege par FInputLock)
-    FLastResendTick: QWord;            // horloge du dernier renvoi (throttle)
-    FConfirmedW, FConfirmedH: Integer; // derniere taille confirmee par le serveur
+    FResendBudget: Integer;            // sous FInputLock
+    FLastResendTick: QWord;
+    FConfirmedW, FConfirmedH: Integer;
 
     FOnState: TRdpStateEvent;
     FOnError: TRdpErrorEvent;
@@ -209,7 +201,7 @@ type
     procedure SetState(ANext: TRemoteSessionState);
     procedure Fail(const AMessage: string);
     function LastErrorText: string;
-    function IsAborted: Boolean;   // pour ResolveCancellable (uNetResolve)
+    function IsAborted: Boolean;   // pour ResolveCancellable
 
     function BuildContext: Boolean;
     procedure ApplySettings;
@@ -229,15 +221,14 @@ type
     constructor Create(AParams: TRdpConnectParams; ASurface: TRemoteSurface);
     destructor Destroy; override;
 
-    // Tout ce bloc s'appelle depuis le thread UI.
+    // Thread UI.
     procedure SendMouse(AFlags: Integer; AX, AY: Integer);
     procedure SendExtendedMouse(AFlags: Integer; AX, AY: Integer);
     procedure SendScancode(AFlags: Integer; ACode: Integer);
     procedure SendUnicode(AFlags: Integer; ACode: Integer);
     procedure SendCtrlAltDel;
-    // Etat des verrous (KBD_SYNC_*) du clavier local. Le serveur demarre
-    // NumLock eteint et n'apprend rien tout seul: sans cet evenement, le pave
-    // numerique envoie Insert, Fin et des fleches, verrou allume ou non.
+    // KBD_SYNC_*. Le serveur demarre NumLock eteint et ne devine rien: sans
+    // ca, le pave numerique tape des fleches.
     procedure SendSynchronize(AFlags: Cardinal);
     procedure RequestResize(AWidth, AHeight: Integer);
     procedure AnnounceLocalClipboard(const AText: UnicodeString);
@@ -263,7 +254,7 @@ type
     property OnClipNote: TRdpClipNoteEvent read FOnClipNote
       write FOnClipNote;
     property OnReconnect: TRdpReconnectEvent read FOnReconnect write FOnReconnect;
-    procedure InhibitReconnect;   // definitif, pas de retour en arriere
+    procedure InhibitReconnect;   // definitif
   end;
 
 implementation
@@ -285,12 +276,12 @@ function RegisterClipboardFormatW(AName: PWideChar): LongWord;
 {$ENDIF}
 
 const
-  // Nom OBLIGE du format de fichiers du presse-papiers; l'id, lui, est local.
+  // Nom OBLIGE; l'id, lui, est local.
   CLIP_FILES_FMT: AnsiString = 'FileGroupDescriptorW';
-  // Un serveur peut demander la taille qu'il veut: on borne ce qu'on alloue.
+  // le serveur demande la taille qu'il veut, on alloue celle qu'on veut
   RDPCLIP_SERVE_MAX = 4 * 1024 * 1024;
 
-  FULL_BLIT_MIN_MS = 50;   // plancher entre deux recopies integrales
+  FULL_BLIT_MIN_MS = 50;
   EP_BUF_BYTES = 512;   // couvre les deux tailles d'entry points, shim ou non
 
   EVENT_POLL_MS = 100;
@@ -315,7 +306,7 @@ function TransportOf(AContext: Pointer): TRdpTransport;
 begin
   if AContext = nil then
     Exit(nil);
-  // MEME source de verite que BuildContext, sinon adresse inventee
+  // MEME offset que BuildContext, sinon adresse inventee
   Result := TRdpTransport(PPointer(PByte(AContext) + RdpContextSizeBytes)^);
 end;
 
@@ -326,26 +317,21 @@ begin
   Result := TransportOf(RdpContextOf(AInstance));
 end;
 
-// Tous les Cb* tournent sur le WORKER et aucune exception ne franchit la frontiere
-// C: d'ou les try vides. Cablage dans CbPostConnect, qui rejoue.
+// Cb*: sur le WORKER, et aucune exception ne traverse le C (d'ou les try
+// vides). Cablage dans CbPostConnect.
 function CbBeginPaint(context: PRdpContext): cint; cdecl; forward;
 function CbEndPaint(context: PRdpContext): cint; cdecl; forward;
 function CbDesktopResize(context: PRdpContext): cint; cdecl; forward;
 
 const
-  // Budgets du pipeline graphique, en OCTETS tels que FreeRDP les alloue:
-  // deux bureaux au plafond pour les surfaces, autant pour le cache. Un
-  // serveur legitime travaille avec une ou deux surfaces de la taille du
-  // bureau et un cache de tuiles bien plus petit; au-dela, c'est un serveur
-  // qui veut la memoire.
+  // OCTETS, deux bureaux au plafond chacun. Un serveur honnete en use bien
+  // moins; au-dela, il veut la memoire.
   GFX_SURFACE_BUDGET_BYTES = Int64(2) * REMOTE_MAX_PIXELS * 4;
   GFX_CACHE_BUDGET_BYTES = Int64(2) * REMOTE_MAX_PIXELS * 4;
   CHANNEL_RC_NO_MEMORY = 12;
 
-// Ce que FreeRDP alloue reellement: une surface a ses deux dimensions
-// arrondies a 16, une entree de cache a sa ligne arrondie a 16 octets.
-// Compter des pixels sous-estimait: 1 x 8192 fait 32 Kio de pixels et
-// 128 Kio de lignes.
+// Comme FreeRDP alloue: dimensions (ou ligne de cache) arrondies a 16.
+// 1 x 8192 = 32 Kio de pixels, 128 Kio reels.
 function GfxSurfaceBytes(AW, AH: Integer): Int64;
 begin
   Result := Int64((AW + 15) and (not 15)) * 4 * Int64((AH + 15) and (not 15));
@@ -356,16 +342,15 @@ begin
   Result := Int64((AW * 4 + 15) and (not 15)) * Int64(AH);
 end;
 
-// Une surface n'est pas un bureau: pas de minimum, seulement les plafonds.
+// pas de minimum: une surface n'est pas un bureau
 function GfxSurfaceSizeAcceptable(AW, AH: Integer): Boolean;
 begin
   Result := (AW > 0) and (AH > 0) and (AW <= REMOTE_MAX_WIDTH) and
     (AH <= REMOTE_MAX_HEIGHT) and (Int64(AW) * Int64(AH) <= REMOTE_MAX_PIXELS);
 end;
 
-// Les quatre rappels rdpgfx enveloppes. Ils tournent sur le thread du canal
-// dynamique, jamais en meme temps que l'init/uninit du pipeline, qui se font
-// sur la boucle d'evenements avec le canal ferme.
+// Rappels rdpgfx: thread du canal dynamique, jamais pendant init/uninit
+// (canal ferme a ce moment-la).
 function GfxTransport(AGfx: Pointer): TRdpTransport;
 begin
   Result := TransportOf(GfxRdpContext(AGfx));
@@ -501,10 +486,8 @@ procedure TRdpTransport.GfxAttach(AGdi, AGfx: Pointer);
 begin
   if (AGfx = nil) or (AGdi = nil) then Exit;
   if FGfx <> nil then GfxDetach;
-  // sans ce pont, un RDS moderne peint dans des surfaces qu'on ne lit pas.
-  // Un echec (codecs non prepares) laisse le contexte a moitie monte, verrous
-  // compris: rien a publier, rien a liberer plus tard, et la session ne peut
-  // pas continuer, le serveur va peindre dans le vide. On l'arrete net.
+  // Sans ce pont, un RDS moderne peint dans le vide. Echec = contexte a
+  // moitie monte: on arrete net, rien a liberer.
   if gdi_graphics_pipeline_init(AGdi, AGfx) = 0 then
   begin
     Fail('Cannot initialise the RDP graphics pipeline (codecs), ' +
@@ -519,7 +502,7 @@ begin
   FillChar(FGfxCacheBytes, SizeOf(FGfxCacheBytes), 0);
   FGfxSurfTotal := 0;
   FGfxCacheTotal := 0;
-  // les rappels du GDI restent derriere les notres, qui ne font que compter
+  // les notres comptent, puis passent la main a ceux du GDI
   FGfxOrig[GFX_SLOT_CREATE_SURFACE] :=
     Pointer(GfxHandler(AGfx, GFX_SLOT_CREATE_SURFACE));
   FGfxOrig[GFX_SLOT_DELETE_SURFACE] :=
@@ -531,7 +514,6 @@ begin
   if (FGfxOrig[0] = nil) or (FGfxOrig[1] = nil) or (FGfxOrig[2] = nil) or
      (FGfxOrig[3] = nil) then
   begin
-    // pas de rappel a envelopper: on ne saurait pas compter, on ne triche pas
     LogError('rdp: graphics pipeline callbacks not found, no memory guard');
     Exit;
   end;
@@ -541,11 +523,8 @@ begin
   GfxSetHandler(AGfx, GFX_SLOT_EVICT_CACHE_ENTRY, @CbGfxEvictCacheEntry);
 end;
 
-// A la fermeture du canal comme a la deconnexion: gdi_free ne libere pas ce
-// que le pipeline a ouvert (codecs, surfaces, cache, verrous).
-// Sur le rdpGdi garde a l'attache, pas sur FContext: Cleanup detache
-// FContext AVANT freerdp_disconnect, qui est justement le moment ou le
-// canal se ferme et ou cette liberation doit avoir lieu.
+// gdi_free ne libere pas le pipeline. Via FGfxGdi, pas FContext: Cleanup
+// detache FContext AVANT freerdp_disconnect, donc avant la fermeture du canal.
 procedure TRdpTransport.GfxDetach;
 begin
   if FGfx = nil then Exit;
@@ -586,7 +565,6 @@ begin
   end;
 end;
 
-// ChannelDisconnectedEventArgs a la meme forme (name, pInterface).
 procedure CbChannelDisconnected(context: PRdpContext; e: Pointer); cdecl;
 var
   t: TRdpTransport;
@@ -679,7 +657,7 @@ begin
       LogError('rdp: invalid-region layout not recognised, ' +
         'falling back to full-frame copy (slower but correct)');
     upd := CtxUpdate(ctx);
-    if UpdateLayoutValid(ctx, upd) then   // on va y ECRIRE des pointeurs de fonction
+    if UpdateLayoutValid(ctx, upd) then   // on y ECRIT des pointeurs de fonction
     begin
       if t.FInvalidChainOk then
         UpdSetBeginPaint(upd, @CbBeginPaint);
@@ -764,8 +742,7 @@ begin
     w := freerdp_settings_get_uint32(CtxSettings(context), FreeRDP_DesktopWidth);
     h := freerdp_settings_get_uint32(CtxSettings(context), FreeRDP_DesktopHeight);
     LogDebug(Format('rdp desktop resize recu: %dx%d', [w, h]));
-    // meme garde avant gdi_resize: ecreter PUIS le predicat,
-    // 8192x8192 passe l'ecretage et pese encore 256 Mio
+    // ecreter PUIS le predicat: 8192x8192 passe l'ecretage et pese 256 Mio
     if w > cuint32(REMOTE_MAX_WIDTH) then w := REMOTE_MAX_WIDTH;
     if h > cuint32(REMOTE_MAX_HEIGHT) then h := REMOTE_MAX_HEIGHT;
     if not RemoteSizeAcceptable(Integer(w), Integer(h)) then
@@ -852,7 +829,7 @@ begin
       rcdAcceptAndSave:
         begin
           t.Synchronize(@t.DoCertSave);
-          Result := CERT_ACCEPT_TEMPORARY;   // NOTRE magasin persiste, pas celui de FreeRDP
+          Result := CERT_ACCEPT_TEMPORARY;   // NOTRE magasin persiste, pas FreeRDP
         end;
     else
       Result := CERT_REJECT;
@@ -881,7 +858,7 @@ end;
 
 function CbClientNew(instance: PFreeRdp; context: PRdpContext): cint; cdecl;
 begin
-  // vide expres: appele avant qu'aucun offset ait pu etre valide, BuildContext suit
+  // vide expres: aucun offset n'est encore valide ici
   Result := 1;
 end;
 
@@ -889,7 +866,7 @@ procedure CbClientFree(instance: PFreeRdp; context: PRdpContext); cdecl;
 begin
 end;
 
-// cliprdr serveur->client, worker; toujours CHANNEL_RC_OK ou FreeRDP demonte le canal.
+// cliprdr: toujours CHANNEL_RC_OK, sinon FreeRDP demonte le canal.
 
 function CbClipMonitorReady(context: Pointer; msg: Pointer): cuint32; cdecl;
 var
@@ -948,7 +925,7 @@ function CbClipServerFileReq(context: Pointer; msg: Pointer): cuint32; cdecl;
 var
   t: TRdpTransport;
 begin
-  Result := 0;   // CHANNEL_RC_OK, toujours: une erreur demonterait le canal
+  Result := 0;   // CHANNEL_RC_OK
   try
     t := TRdpTransport(CliprdrCustom(context));
     if (t <> nil) and (msg <> nil) then
@@ -983,8 +960,6 @@ begin
   end;
 end;
 
-{ TRdpConnectParams }
-
 constructor TRdpConnectParams.Create;
 begin
   inherited Create;
@@ -992,8 +967,7 @@ begin
   Width := 1280;
   Height := 800;
   ColorDepth := 32;
-  // disques, imprimantes et audio n'ont meme pas de champ. Pas de
-  // champ, pas d'activation par megarde.
+  // disques, imprimantes, audio: pas de champ, pas d'activation par megarde
   VerifyCertificate := True;
   NlaEnabled := True;
   ClipboardText := True;
@@ -1014,8 +988,6 @@ begin
   inherited Destroy;
 end;
 
-{ TRdpTransport }
-
 constructor TRdpTransport.Create(AParams: TRdpConnectParams;
   ASurface: TRemoteSurface);
 begin
@@ -1032,15 +1004,11 @@ begin
   FInputIdle := TEvent.Create(nil, True, True, '');   // manuel, SIGNALE au depart
   FClipNotes := TStringList.Create;
   FClipServedIdx := -1;
-  // Pour les noms de dossiers temporaires. La garantie, c'est la creation
-  // EXCLUSIVE; la graine n'evite que les collisions de bonne foi.
+  // noms temporaires; la vraie garantie reste la creation EXCLUSIVE
   Randomize;
 end;
 
-// Cree un dossier NEUF sous un nom frais: l'echec si le nom existe est LA
-// garantie qu'on n'ecrira jamais dans un dossier (ou une jonction) pose la
-// par un autre. Jamais de reutilisation, et sous Windows une DACL
-// proprietaire seul, heritee par tout l'arbre (voir uRdpClipFiles).
+// Dossier NEUF, jamais reutilise: jamais la jonction posee par un autre.
 function ClipMakeFreshDir(const APrefix: string; out ADir: string): Boolean;
 var
   i: Integer;
@@ -1058,11 +1026,10 @@ end;
 
 destructor TRdpTransport.Destroy;
 begin
-  inherited Destroy;   // joint le thread (donc Cleanup a deja draine)
+  inherited Destroy;   // joint le thread: Cleanup a deja draine
   FreeAndNil(FClipFetchStream);
   FreeAndNil(FClipServedStream);
-  // Les fichiers rapatries meurent avec l'onglet: un collage doit se faire
-  // pendant que la session existe, comme le texte.
+  // les fichiers rapatries meurent avec l'onglet
   if FClipTempRoot <> '' then
     RdpClipRemoveTree(FClipTempRoot);
   FClipNotes.Free;
@@ -1126,7 +1093,7 @@ procedure TRdpTransport.PublishError;
 var
   msg: string;
 begin
-  // instantane sous verrou: chaine MANAGEE, son refcount ne se touche pas a deux
+  // chaine MANAGEE: son refcount ne se touche pas a deux
   FCtxLock.Acquire;
   try
     msg := FErrorMsg;
@@ -1291,7 +1258,7 @@ begin
       if not InterruptibleWait(backoff) then
         Exit;   // Terminate pendant l'attente
 
-      // relire juste avant l'appel reseau: le document a pu etre verrouille
+      // relire: le document a pu etre verrouille pendant l'attente
       FCtxLock.Acquire;
       try
         inhibited := FReconnectInhibited;
@@ -1355,15 +1322,12 @@ begin
   end;
 end;
 
-// cliprdr: tout ce bloc tourne sur le worker, seul PublishClipboard
-// passe par l'UI.
-
 procedure TRdpTransport.ClipAttach(ACliprdr: Pointer);
 begin
   if ACliprdr = nil then
     Exit;
   FCliprdr := ACliprdr;
-  CliprdrSetCustom(ACliprdr, Self);   // lien retour lu par les callbacks C
+  CliprdrSetCustom(ACliprdr, Self);
   CliprdrSetHandler(ACliprdr, CLIPRDR_OFF_MONITOR_READY, @CbClipMonitorReady);
   CliprdrSetHandler(ACliprdr, CLIPRDR_OFF_SERVER_CAPABILITIES, @CbClipServerCaps);
   CliprdrSetHandler(ACliprdr, CLIPRDR_OFF_SERVER_FORMAT_LIST,
@@ -1379,7 +1343,7 @@ begin
   CliprdrSetHandler(ACliprdr, CLIPRDR_OFF_SERVER_FILECONTENTS_RESPONSE,
     @CbClipServerFileResp);
   {$IFDEF WINDOWS}
-  // L'id LOCAL du format nomme: le serveur le redonne dans ses demandes.
+  // id LOCAL: le serveur le redonne dans ses demandes
   FClipFilesFmtId := cuint32(RegisterClipboardFormatW('FileGroupDescriptorW'));
   if FClipFilesFmtId = 0 then
     FClipFilesFmtId := $C004;
@@ -1401,11 +1365,8 @@ begin
   genSet.capabilitySetType := CB_CAPSTYPE_GENERAL;
   genSet.capabilitySetLength := 12;
   genSet.version := CB_CAPS_VERSION_2;
-  // FILECLIP_NO_FILE_PATHS: les contenus passent en FLUX, jamais par un
-  // chemin CF_HDROP que l'autre bout lirait lui-meme. Le pont de FICHIERS ne
-  // s'annonce que la ou il tient sa promesse: hors Windows, pas de CF_HDROP
-  // local -- annoncer ferait rapatrier des temporaires que personne ne peut
-  // coller.
+  // Fichiers en FLUX, jamais par chemin. Hors Windows, pas de CF_HDROP local:
+  // on n'annonce pas des fichiers que personne ne pourrait coller.
   genSet.generalFlags := CB_USE_LONG_FORMAT_NAMES
     {$IFDEF WINDOWS} or CB_STREAM_FILECLIP_ENABLED or
     CB_FILECLIP_NO_FILE_PATHS {$ENDIF};
@@ -1415,7 +1376,7 @@ begin
   fn := CliprdrCall(FCliprdr, CLIPRDR_OFF_CLIENT_CAPABILITIES);
   if fn <> nil then
     fn(FCliprdr, @caps);
-  ClipDoAdvertise;   // annonce ce que l'UI a pu pousser avant la connexion
+  ClipDoAdvertise;   // ce que l'UI a pu pousser avant la connexion
 end;
 
 procedure TRdpTransport.ClipDoAdvertise;
@@ -1473,7 +1434,6 @@ begin
   if (FCliprdr = nil) or (AMsg = nil) then
     Exit;
   list := PCliprdrFormatList(AMsg);
-  // Le serveur a recopie autre chose: ce qui restait a rapatrier est mort.
   if FClipFetchActive then
     ClipAbortFetch('the remote clipboard changed while files were coming ' +
       'over');
@@ -1486,10 +1446,8 @@ begin
     begin
       fmt := PCliprdrFormat(PByte(list^.formats) + i * SizeOf(TCliprdrFormat));
       id := fmt^.formatId;
-      // Des fichiers d'abord: une copie de fichiers annonce souvent AUSSI du
-      // texte (les noms), et coller les noms a la place des fichiers surprend.
-      // Hors Windows le format fichiers est IGNORE, pas seulement non
-      // annonce: sans CF_HDROP local, tirer le lot ne le rendrait a personne.
+      // Fichiers d'abord: une copie de fichiers annonce AUSSI leurs noms en
+      // texte. Hors Windows, IGNORE: pas de CF_HDROP local.
       {$IFDEF WINDOWS}
       if (fmt^.formatName <> nil) and
          SameText(string(AnsiString(fmt^.formatName)),
@@ -1520,8 +1478,8 @@ begin
   if fnResp <> nil then
     fnResp(FCliprdr, @resp);
   if not found then
-    Exit;   // rien d'exploitable: on ne tire pas le contenu
-  FClipReqFmt := chosen;   // memorise pour decoder la reponse
+    Exit;
+  FClipReqFmt := chosen;
   FClipReqIsFiles := isFiles;
   FillChar(req, SizeOf(req), 0);
   req.common.msgType := CB_FORMAT_DATA_REQUEST;
@@ -1580,7 +1538,7 @@ begin
     resp.common.msgFlags := CB_RESPONSE_FAIL;
   fn := CliprdrCall(FCliprdr, CLIPRDR_OFF_CLIENT_FORMAT_DATA_RESPONSE);
   if fn <> nil then
-    fn(FCliprdr, @resp);   // buf reste vivant jusqu'ici (serialise dans l'appel)
+    fn(FCliprdr, @resp);   // buf doit vivre jusqu'ici
 end;
 
 procedure TRdpTransport.ClipHandleServerDataResponse(AMsg: Pointer);
@@ -1602,18 +1560,16 @@ begin
   flags := resp^.common.msgFlags;
   len := resp^.common.dataLen;
   data := resp^.requestedFormatData;
-  // Remis a zero AVANT les sorties: un refus laisserait le drapeau arme, et
-  // la reponse TEXTE suivante serait lue comme un descripteur.
+  // Desarme AVANT les sorties, sinon le texte suivant passe pour un descripteur.
   wasFiles := FClipReqIsFiles;
   FClipReqIsFiles := False;
   if (flags and CB_RESPONSE_OK) = 0 then
-    Exit;   // le serveur a refuse
+    Exit;
   if (data = nil) or (len = 0) then
     Exit;
   if wasFiles then
   begin
-    // Le tronquer fabriquerait un descripteur menteur: refus au-dela du plus
-    // grand descripteur legal.
+    // Tronquer fabriquerait un descripteur menteur: refus.
     if len > 4 + LongWord(RDPCLIP_MAX_FILES) * FILEDESC_W_SIZE then
     begin
       ClipNote(Format('The remote file list was refused: more than %d files.',
@@ -1628,7 +1584,7 @@ begin
     ClipStartFetch(files);
     Exit;
   end;
-  // dataLen vient du serveur: on tronque au lieu d'allouer sa demande
+  // dataLen vient du serveur: tronquer, pas allouer sa demande
   if len > MAX_CLIP_INCOMING_BYTES then
     len := MAX_CLIP_INCOMING_BYTES;
   if FClipReqFmt = CF_UNICODETEXT then
@@ -1702,9 +1658,7 @@ begin
   Queue(@PublishClipNotes);
 end;
 
-// Le serveur demande le descripteur: la selection locale s'enumere ICI, au
-// moment ou il la veut, et c'est CE tableau -- indices compris -- qui fait
-// foi pour toutes les demandes de contenu qui suivent.
+// Enumere ICI, a la demande; CE tableau (indices compris) fait foi ensuite.
 procedure TRdpTransport.ClipServeDescriptor;
 var
   roots: TStringArray;
@@ -1758,8 +1712,7 @@ begin
     fn(FCliprdr, @resp);
 end;
 
-// Le serveur veut la taille ou un morceau d'un fichier ANNONCE: seul l'index
-// dans le tableau servi designe un fichier, jamais un chemin venu du fil.
+// Seul l'index designe un fichier, jamais un chemin venu du fil.
 procedure TRdpTransport.ClipServeFileContents(AMsg: Pointer);
 var
   req: PCliprdrFileContentsRequest;
@@ -1806,12 +1759,9 @@ begin
     begin
       FreeAndNil(FClipServedStream);
       FClipServedIdx := -1;
-      // DenyNone: l'utilisateur garde la main sur ses propres fichiers.
       FClipServedStream := TFileStream.Create(
         FClipServed[req^.listIndex].LocalPath, fmOpenRead or fmShareDenyNone);
-      // La POIGNEE doit designer le fichier vu a l'enumeration: un lien ou
-      // une jonction poses depuis feraient lire autre chose sous le meme
-      // chemin, et l'envoyer au serveur.
+      // La POIGNEE, pas le chemin: une jonction posee depuis enverrait autre chose.
       if not HandleMatchesId(FClipServedStream.Handle,
          FClipServed[req^.listIndex].Id) then
       begin
@@ -1844,7 +1794,7 @@ begin
     size := FClipServedStream.Size;
     if pos >= size then
     begin
-      Respond(True, 0);   // au-dela de la fin: zero octet, pas une erreur
+      Respond(True, 0);   // au-dela de la fin: zero octet, pas d'erreur
       Exit;
     end;
     if Int64(want) > size - pos then
@@ -1862,10 +1812,8 @@ begin
   end;
 end;
 
-// Le lot est TIRE a la copie, pas au collage: attendre le collage exigerait
-// un IDataObject OLE et ses flux differes. Plafond en octets, dossier
-// temporaire de la session, et l'UI ne recoit les chemins qu'une fois le lot
-// COMPLET: jamais un demi-lot collable.
+// TIRE a la copie: attendre le collage exigerait un IDataObject OLE. L'UI
+// n'a les chemins qu'une fois le lot COMPLET.
 procedure TRdpTransport.ClipStartFetch(const AFiles: TRdpClipFileArray);
 var
   i, files: Integer;
@@ -1877,8 +1825,7 @@ begin
     if not AFiles[i].IsDir then
     begin
       Inc(files);
-      // Chaque taille est bornee AVANT la somme: 4096 tailles enormes
-      // feraient deborder le total, et un debordement passe les plafonds.
+      // bornee AVANT la somme: un total qui deborde passe sous le plafond
       if AFiles[i].SizeKnown then
       begin
         if AFiles[i].Size > RDPCLIP_MAX_TOTAL_BYTES then
@@ -1901,16 +1848,12 @@ begin
       if not ClipMakeFreshDir(IncludeTrailingPathDelimiter(GetTempDir) +
          'rssh-rdpclip-' + IntToStr(GetProcessID) + '-', FClipTempRoot) then
         raise EInOutError.Create('temp folder refused');
-    // Le lot precedent meurt: le presse-papiers local ne designe de toute
-    // facon que le dernier, et deux lots empiles grossiraient sans fin.
+    // le presse-papiers ne designe que le dernier lot
     if FClipFetchDir <> '' then
       RdpClipRemoveTree(FClipFetchDir);
     Inc(FClipBatchSeq);
-    // CreateDir et pas ForceDirectories: dans NOTRE racine fraiche, un nom
-    // deja pris ne peut etre que pose par un autre -- refus. Les DESCENDANTS,
-    // eux, vivent dans ce lot tout juste cree, sous la DACL proprietaire seul
-    // heritee de la racine; un processus du meme utilisateur qui y ecrirait
-    // joue deja avec nos droits.
+    // CreateDir: dans NOTRE racine, un nom deja pris vient d'un autre. Les
+    // descendants heritent de la DACL proprietaire seul.
     FClipFetchDir := FClipTempRoot + PathDelim + 'b' + IntToStr(FClipBatchSeq);
     if not CreateDir(FClipFetchDir) then
       raise EInOutError.Create('temp folder refused');
@@ -1930,9 +1873,8 @@ begin
   FClipFetchIdx := -1;
   FClipFetchGot := 0;
   FClipFetchActive := True;
-  // Seules les tetes de lot iront au presse-papiers local: leurs dossiers
-  // portent leur contenu. Remises a l'UI a la FIN seulement: posees ici, une
-  // publication en retard d'un lot precedent offrirait un lot incomplet.
+  // Tetes de lot, remises a l'UI a la FIN seulement: une publication en
+  // retard du lot precedent offrirait sinon celui-ci incomplet.
   SetLength(FClipFetchTops, 0);
   for i := 0 to High(AFiles) do
     if Pos(PathDelim, AFiles[i].LocalRel) = 0 then
@@ -1960,7 +1902,6 @@ begin
     Inc(FClipFetchIdx);
     if FClipFetchIdx > High(FClipFetch) then
     begin
-      // Lot complet: l'UI ne recoit les chemins que maintenant.
       FClipFetchActive := False;
       SetLength(FClipFetch, 0);
       FClipLock.Acquire;
@@ -1988,7 +1929,6 @@ begin
       end;
     end;
     FClipFetchOff := 0;
-    // Un fichier annonce vide est deja complet.
     if FClipFetch[FClipFetchIdx].SizeKnown and
        (FClipFetch[FClipFetchIdx].Size = 0) then
     begin
@@ -2029,7 +1969,7 @@ begin
   FreeAndNil(FClipFetchStream);
   SetLength(FClipFetch, 0);
   FClipFetchTops := nil;
-  // Un demi-lot collable serait un mensonge: tout le lot part.
+  // pas de demi-lot collable
   if FClipFetchDir <> '' then
   begin
     RdpClipRemoveTree(FClipFetchDir);
@@ -2039,8 +1979,7 @@ begin
     ClipNote('Remote file copy abandoned: ' + AWhy + '.');
 end;
 
-// Reponse du serveur a NOTRE demande de morceau. Plus court que demande =
-// fin du fichier, comme mstsc; un refus emporte le lot entier.
+// Plus court que demande = fin du fichier (comme mstsc).
 procedure TRdpTransport.ClipHandleFileResponse(AMsg: Pointer);
 var
   resp: PCliprdrFileContentsResponse;
@@ -2050,7 +1989,7 @@ begin
     Exit;
   resp := PCliprdrFileContentsResponse(AMsg);
   if resp^.streamId <> FClipFetchStreamId then
-    Exit;   // reponse d'une demande abandonnee
+    Exit;   // demande abandonnee
   if (resp^.common.msgFlags and CB_RESPONSE_OK) = 0 then
   begin
     ClipAbortFetch('the server refused the file data');
@@ -2058,15 +1997,14 @@ begin
   end;
   got := resp^.cbRequested;
   if got > RDPCLIP_CHUNK_BYTES then
-    got := RDPCLIP_CHUNK_BYTES;   // jamais plus qu'on n'a demande
+    got := RDPCLIP_CHUNK_BYTES;
   if (got > 0) and (resp^.requestedData = nil) then
   begin
     ClipAbortFetch('the server sent an empty buffer');
     Exit;
   end;
   Inc(FClipFetchGot, got);
-  // Les tailles annoncees ne font pas foi: le plafond se juge sur ce qui
-  // arrive vraiment.
+  // plafond sur ce qui arrive, pas sur ce qui est annonce
   if FClipFetchGot > RDPCLIP_MAX_TOTAL_BYTES then
   begin
     ClipAbortFetch(Format('more than %d MB of file data',
@@ -2096,13 +2034,12 @@ procedure TRdpTransport.AnnounceLocalClipboard(const AText: UnicodeString);
 var
   t: UnicodeString;
 begin
-  t := AText;   // div 2: la borne est en octets, ici des unites UTF-16
+  t := AText;   // div 2: borne en octets, longueur en UTF-16
   if Length(t) > MAX_CLIP_INCOMING_BYTES div 2 then
     SetLength(t, MAX_CLIP_INCOMING_BYTES div 2);
   FClipLock.Acquire;
   try
     FClipLocalText := t;
-    // Un presse-papiers n'a qu'un contenu: du texte remplace des fichiers.
     SetLength(FClipLocalFiles, 0);
     FClipAdvertise := True;
   finally
@@ -2129,8 +2066,7 @@ end;
 {$ELSE}
 procedure TRdpTransport.AnnounceLocalFiles(const APaths: TStringArray);
 begin
-  // Rien: hors Windows le pont de fichiers n'existe pas (pas de CF_HDROP
-  // local) et la capacite n'est pas negociee -- voir ClipMonitorReady.
+  // pas de CF_HDROP local, capacite non negociee
 end;
 {$ENDIF}
 
@@ -2142,7 +2078,7 @@ begin
   finally
     FCtxLock.Release;
   end;
-  // Pas de secret mais des IDENTIFIANTS: masquer cote UI arriverait tard.
+  // pas de secret, mais des IDENTIFIANTS
   if LogIsConfidential then
     LogError('rdp: error (details hidden in confidential mode)')
   else
@@ -2180,7 +2116,7 @@ begin
   Terminate;
   FCertDecision := rcdReject;
   FCertEvent.SetEvent;
-  FCtxLock.Acquire;   // debloque un connect en cours, sous verrou
+  FCtxLock.Acquire;   // debloque un connect en cours
   try
     if FContext <> nil then
       freerdp_abort_connect_context(FContext);
@@ -2301,7 +2237,7 @@ begin
     FPendingResizeW := AWidth;
     FPendingResizeH := AHeight;
     FResizeWanted := True;
-    // display-control ignore le layout avant l'echange de capacites: on renvoie
+    // display-control ignore le layout avant l'echange de capacites: renvois
     FResendBudget := RESIZE_RESEND_MAX;
   finally
     FInputLock.Release;
@@ -2315,8 +2251,8 @@ var
 begin
   Result := False;
   FillChar(ep, SizeOf(ep), 0);
-  // le shim fait AUTORITE: sous-estimer sizeof(rdpContext) ferait ecrire FreeRDP
-  // par-dessus notre pointeur de retour, un refus n'autorise donc aucun repli
+  // le shim fait AUTORITE: sizeof(rdpContext) sous-estime = FreeRDP ecrase notre
+  // pointeur de retour. Refus = pas de repli.
   selfOff := RdpContextSizeBytes;
   ctxSize := selfOff + SizeOf(Pointer);
   if RdpShimActive then
@@ -2346,14 +2282,14 @@ begin
     Fail('Cannot create the FreeRDP context');
     Exit;
   end;
-  PPointer(PByte(FContext) + selfOff)^ := Self;   // lien retour, juste apres le rdpContext
+  PPointer(PByte(FContext) + selfOff)^ := Self;   // juste apres le rdpContext
   FInstance := CtxInstance(FContext);
   if FInstance = nil then
   begin
     Fail('FreeRDP instance missing from the context');
     Exit;
   end;
-  // seul endroit ou l'ABI est PROUVEE: les pointeurs de fonction ne se posent qu'ici
+  // ABI PROUVEE ici seulement: pointeurs de fonction poses apres, jamais avant
   if not RdpInstanceLayoutValid(FInstance, FContext, ctxSize) then
   begin
     Fail('FreeRDP: unexpected instance memory layout');
@@ -2425,14 +2361,14 @@ begin
   freerdp_settings_set_uint32(s, FreeRDP_DesktopHeight, FParams.Height);
   freerdp_settings_set_uint32(s, FreeRDP_ColorDepth, FParams.ColorDepth);
 
-  B(FreeRDP_SoftwareGdi, True);   // c'est lui qui nous donne un framebuffer
+  B(FreeRDP_SoftwareGdi, True);   // notre framebuffer
 
   B(FreeRDP_NlaSecurity, FParams.NlaEnabled);
   B(FreeRDP_TlsSecurity, True);
-  B(FreeRDP_RdpSecurity, not FParams.NlaEnabled);   // historique: si NLA est coupe
+  B(FreeRDP_RdpSecurity, not FParams.NlaEnabled);
   B(FreeRDP_UseRdpSecurityLayer, False);
 
-  // aucune acceptation globale: la decision passe par CbVerifyCertificateEx
+  // aucune acceptation globale: tout passe par CbVerifyCertificateEx
   B(FreeRDP_IgnoreCertificate, False);
   B(FreeRDP_AutoAcceptCertificate, False);
   B(FreeRDP_ExternalCertificateManagement, False);
@@ -2451,19 +2387,14 @@ begin
   B(FreeRDP_AudioPlayback, False);
   B(FreeRDP_AudioCapture, False);
 
-  // Un seul reglage pour le presse-papiers entier: texte, et fichiers la ou
-  // la plateforme les porte.
+  // texte ET fichiers: un seul reglage
   B(FreeRDP_RedirectClipboard, FParams.ClipboardText);
 
   B(FreeRDP_DynamicResolutionUpdate, FParams.DynamicResolution);
   B(FreeRDP_SupportDisplayControl, FParams.DynamicResolution);
   B(FreeRDP_SupportDynamicChannels, True);
-  // Pipeline graphique (canal rdpgfx). FreeRDP le laisse a FALSE cote client,
-  // c'est la ligne de commande de xfreerdp qui l'allume, pas la bibliotheque.
-  // Sans lui, un Windows 11 retombe sur les mises a jour bitmap d'autrefois
-  // et les sert par rafales espacees de plusieurs secondes: une souris qui
-  // met 6 a 13 s a produire une image. Le pont vers le GDI, lui, etait deja
-  // branche a la connexion du canal (CbChannelConnected).
+  // FALSE par defaut dans la lib (c'est xfreerdp qui l'allume). Sans lui,
+  // Windows 11 sert des bitmaps par rafales: 6 a 13 s par image.
   B(FreeRDP_SupportGraphicsPipeline, True);
   B(FreeRDP_FastPathInput, True);
   B(FreeRDP_FastPathOutput, True);
@@ -2500,7 +2431,7 @@ begin
     freerdp_settings_set_string(s, FreeRDP_GatewayHostname,
       PAnsiChar(AnsiString(FParams.GatewayHostname)));
     freerdp_settings_set_uint32(s, FreeRDP_GatewayPort, FParams.GatewayPort);
-    B(FreeRDP_GatewayUseSameCredentials, True);   // pas de second jeu a saisir
+    B(FreeRDP_GatewayUseSameCredentials, True);
   end;
 end;
 
@@ -2522,7 +2453,7 @@ begin
   if gdi = nil then Exit;
   if not FInvalidChainOk then
   begin
-    // sans region lisible, on ne sait pas s'il y a du nouveau: d'ou la borne
+    // sans region lisible, on recopie tout: au plus toutes les 50 ms
     if GetTickCount64 - FLastFullBlitTick < FULL_BLIT_MIN_MS then Exit;
     BlitFullGdi(gdi);
     Queue(@PublishPaint);
@@ -2543,7 +2474,7 @@ var
 begin
   while not Terminated do
   begin
-    MaybeWipePassword;   // le seul point sur pour toucher aux settings
+    MaybeWipePassword;   // seul point sur pour toucher aux settings
 
     if freerdp_shall_disconnect_context(FContext) <> 0 then
       Break;
@@ -2565,7 +2496,7 @@ begin
     if freerdp_check_event_handles(FContext) = 0 then
     begin
       if freerdp_shall_disconnect_context(FContext) <> 0 then
-        Break;   // fin normale demandee par le serveur
+        Break;   // fin demandee par le serveur
       if TryAutoReconnect then
         Continue;
       Fail('Connection lost: ' + LastErrorText);
@@ -2586,19 +2517,16 @@ begin
     if doResize and FParams.DynamicResolution and (cols > 0) and (rows > 0)
       and (FDisp <> nil) then
     begin
-      // Comparer a ce qui a ete ENVOYE, pas a ce que l'onglet a demande: le
-      // layout part arrondi et borne, et une taille hors de ces bornes ne
-      // pouvait jamais etre « confirmee ». Pas de raccourci « le serveur a
-      // repondu depuis l'envoi »: en pipeline graphique, il remet plusieurs
-      // fois l'ancienne taille au demarrage, et ce raccourci prenait ces
-      // remises a zero pour sa reponse, laissant le bureau a 1280x800.
+      // Comparer a l'ENVOYE (arrondi, borne), pas au demande. Et pas de
+      // raccourci « il a repondu »: en rdpgfx il ressert l'ancienne taille
+      // au demarrage, bureau colle a 1280x800.
       NormalizeLayout(cols, rows, sentW, sentH);
       if (FConfirmedW = sentW) and (FConfirmedH = sentH) then
       begin
         FInputLock.Acquire;
         try
           if (FPendingResizeW = cols) and (FPendingResizeH = rows) then
-            FResizeWanted := False;   // confirme: on arrete
+            FResizeWanted := False;
         finally
           FInputLock.Release;
         end;
@@ -2628,7 +2556,7 @@ begin
       end;
     end;
 
-    FClipLock.Acquire;   // annonce armee par l'UI, envoyee ici par le worker
+    FClipLock.Acquire;   // armee par l'UI, envoyee par le worker
     try
       doAdvertise := FClipAdvertise;
       FClipAdvertise := False;
@@ -2640,11 +2568,11 @@ begin
   end;
 end;
 
-// Ce que le canal display-control accepte: dimensions paires, bornees.
+// display-control: dimensions paires, bornees
 procedure TRdpTransport.NormalizeLayout(AWidth, AHeight: Integer;
   out ASentW, ASentH: Integer);
 begin
-  ASentW := AWidth and (not 1);   // RDP veut des dimensions paires
+  ASentW := AWidth and (not 1);
   ASentH := AHeight and (not 1);
   if ASentW < 200 then ASentW := 200;
   if ASentH < 200 then ASentH := 200;
@@ -2658,7 +2586,7 @@ var
   mon: TDisplayControlMonitorLayout;
 begin
   if FDisp = nil then
-    Exit;   // le serveur ne supporte pas la resolution dynamique
+    Exit;
   NormalizeLayout(AWidth, AHeight, AWidth, AHeight);
   fn := DispSendLayoutFn(FDisp);
   if fn = nil then
@@ -2675,8 +2603,8 @@ begin
 end;
 
 {$IFDEF WINDOWS}
-// NTLM (donc NLA) exige MD4 et RC4, exiles dans le provider legacy d'OpenSSL 3
-// dont le chemin fige par vcpkg ne pointe plus nulle part: sans ca, LOGON_FAILURE.
+// NTLM veut MD4/RC4, exiles dans le provider legacy d'OpenSSL 3, au chemin
+// fige par vcpkg vers nulle part. Sans ca: LOGON_FAILURE.
 procedure EnsureOpenSslModulesPath;
 var
   dir: AnsiString;
@@ -2699,8 +2627,7 @@ begin
     Exit;
   ApplySettings;
 
-  // Pre-resolution ANNULABLE du PREMIER SAUT (rebond et passerelle resolvent la
-  // cible eux-memes): celle de freerdp_connect bloque sans abandon possible.
+  // Premier saut resolu ici, ANNULABLE: celle de freerdp_connect ne l'est pas.
   if FParams.ConnectHost <> '' then
   begin
     rhost := FParams.ConnectHost;
@@ -2720,11 +2647,11 @@ begin
   if not ResolveCancellable(AnsiString(rhost), AnsiString(rport),
        @IsAborted, res, resErr) then
   begin
-    if resErr <> '' then   // resErr vide = arret demande: rien a signaler
+    if resErr <> '' then   // vide: arret demande
       Fail(resErr);
     Exit;
   end;
-  freeaddrinfo(res);   // on ne valide que le nom: freerdp_connect resout a nouveau
+  freeaddrinfo(res);   // nom valide; freerdp_connect resout a nouveau
 
   SetState(rssAuthenticating);
   if freerdp_connect(FInstance) = 0 then
@@ -2735,8 +2662,7 @@ begin
     Exit;
   end;
 
-  // nos secrets ne servent plus. FreeRDP garde les siens, ou
-  // freerdp_reconnect ira les rechercher.
+  // FreeRDP garde sa copie pour freerdp_reconnect
   FParams.WipeSecrets;
 
   SetState(rssConnected);
@@ -2751,8 +2677,8 @@ procedure TRdpTransport.Cleanup;
 var
   ctx, inst: Pointer;
 begin
-  // freerdp_disconnect prend des secondes sur un lien mort et
-  // gelerait l'UI. On ne tient le verrou que pour detacher les pointeurs.
+  // verrou pour detacher seulement: freerdp_disconnect prend des secondes
+  // sur un lien mort
   FCtxLock.Acquire;
   try
     ctx := FContext;
@@ -2763,11 +2689,11 @@ begin
     FCtxLock.Release;
   end;
   if ctx = nil then Exit;
-  // detacher bloque les NOUVEAUX envois, pas ceux deja en vol: on les attend
+  // les envois deja en vol, eux, s'attendent
   if FInputIdle.WaitFor(INPUT_DRAIN_MS) <> wrSignaled then
   begin
-    // Un envoi campe sur un pair mort: liberer tirerait le contexte sous ses
-    // pieds. On l'abandonne -- fuite bornee a la session, jamais en silence.
+    // Envoi campe sur un pair mort: on fuit le contexte, en le disant.
+    // Mieux qu'un use-after-free discret.
     LogError('rdp: envoi d''entree encore en vol apres ' +
       IntToStr(INPUT_DRAIN_MS div 1000) +
       ' s (pair bloque): contexte FreeRDP abandonne au lieu d''etre libere');
