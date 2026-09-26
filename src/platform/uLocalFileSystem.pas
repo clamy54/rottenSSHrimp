@@ -164,11 +164,24 @@ const
   {$ELSEIF DEFINED(CPUARM)}
   SYSCALL_RENAMEAT2 = 382; {$DEFINE RSSH_RENAMEAT2}
   {$ENDIF}
+  // utimensat: absent du sysnr x86_64/aarch64 de FPC 3.2.2
+  {$IF DEFINED(CPUX86_64)}
+  SYSCALL_UTIMENSAT_ = 280;
+  {$ELSEIF DEFINED(CPUAARCH64)}
+  SYSCALL_UTIMENSAT_ = 88;
+  {$ELSEIF DEFINED(CPUI386)}
+  SYSCALL_UTIMENSAT_ = 320;
+  {$ELSE}
+  SYSCALL_UTIMENSAT_ = syscall_nr_utimensat;
+  {$ENDIF}
   AT_FDCWD_ = -100;
   RENAME_NOREPLACE_ = 1;
   {$ENDIF}
   {$IFDEF DARWIN}
   RENAME_EXCL_ = 4;   // renamex_np, <sys/stdio.h>
+  // absents du BaseUnix Darwin; <sys/fcntl.h>
+  O_NOFOLLOW = $100;
+  O_DIRECTORY = $100000;
   {$ENDIF}
 
   TEMP_PREFIX = '.rssh-';
@@ -327,7 +340,7 @@ end;
 function FUTimens(AFd: cint; ATimes: Pointer): cint;
 begin
   // utimensat sans chemin = futimens
-  Result := do_syscall(syscall_nr_utimensat, TSysParam(AFd), TSysParam(nil),
+  Result := do_syscall(SYSCALL_UTIMENSAT_, TSysParam(AFd), TSysParam(nil),
     TSysParam(ATimes), TSysParam(0));
 end;
 {$ELSE}
@@ -335,8 +348,9 @@ function openat(dirfd: cint; path: PChar; flags: cint): cint; cdecl; varargs;
   external 'c' name 'openat';
 function unlinkat(dirfd: cint; path: PChar; flags: cint): cint; cdecl;
   external 'c' name 'unlinkat';
-function fchmod(fd: cint; mode: cuint): cint; cdecl; external 'c' name 'fchmod';
-function futimens(fd: cint; times: Pointer): cint; cdecl;
+// prefixe c_: Pascal ignore la casse, fchmod ET FChmod = doublon
+function c_fchmod(fd: cint; mode: cuint): cint; cdecl; external 'c' name 'fchmod';
+function c_futimens(fd: cint; times: Pointer): cint; cdecl;
   external 'c' name 'futimens';
 
 function OpenDirAt(ADir: cint; const AName: string): cint;
@@ -356,12 +370,12 @@ end;
 
 function FChmod(AFd: cint; AMode: LongWord): cint;
 begin
-  Result := fchmod(AFd, cuint(AMode));
+  Result := c_fchmod(AFd, cuint(AMode));
 end;
 
 function FUTimens(AFd: cint; ATimes: Pointer): cint;
 begin
-  Result := futimens(AFd, ATimes);
+  Result := c_futimens(AFd, ATimes);
 end;
 {$ENDIF}
 
@@ -710,7 +724,7 @@ var
   fad: TWin32FileAttributeData;
 {$ELSE}
 var
-  st: Stat;
+  st: BaseUnix.Stat;   // « Stat » seul designe la methode
   rc: cint;
 {$ENDIF}
 begin
