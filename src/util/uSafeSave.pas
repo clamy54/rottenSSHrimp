@@ -22,6 +22,11 @@ function FileIdentity(const APath: string; out ADev, AIno: Int64): Boolean;
 // echoue AVANT toute ecriture plutot que de rendre un chemin encore lie:
 // l'appelant renommerait par-dessus le LIEN
 function ResolveLink(const APath: string): string;
+// Chemin canonique pour servir de CLE (verrou d'instance): resout liens et
+// jonctions de TOUS les segments, pas seulement du dernier -- deux chemins
+// vers le meme document doivent donner la meme cle, sinon deux instances
+// l'ouvrent chacune sous son verrou. Repli: le chemin absolu tel quel.
+function CanonicalPathKey(const APath: string): string;
 function CreateTempIn(const ADest: string; out ATmpName: string): TOwnedHandleStream;
 // Contenu rendu durable AVANT le rename: fsync sous Unix, FlushFileBuffers
 // sous Windows. False = le disque n'a pas confirme, la sauvegarde ne l'est pas.
@@ -73,9 +78,10 @@ const
   FILE_ATTR_NORMAL  = $80;
   FILE_ATTR_REPARSE = $400;
   SHARE_ALL         = 7; // read + write + delete
-  REPLACEFILE_IGNORE_MERGE_ERRORS = 2;
   MOVEFILE_REPLACE_EXISTING = 1;
   MOVEFILE_COPY_ALLOWED     = 2;
+  DACL_SECURITY_INFO = 4;
+  FILE_FLAG_BACKUP_SEM = $02000000; // requis pour ouvrir un DOSSIER
 
 type
   TByHandleInfo = record
@@ -102,6 +108,11 @@ function FlushFileBuffers(h: THandle): LongBool; stdcall; external 'kernel32.dll
 function ReplaceFileW(lpReplaced, lpReplacement, lpBackup: PWideChar;
   dwFlags: LongWord; lpExclude, lpReserved: Pointer): LongBool;
   stdcall; external 'kernel32.dll';
+function GetFileSecurityW(lpFileName: PWideChar; ARequested: LongWord;
+  ADescriptor: Pointer; ALength: LongWord; var ANeeded: LongWord): LongBool;
+  stdcall; external 'advapi32.dll';
+function SetFileSecurityW(lpFileName: PWideChar; AInformation: LongWord;
+  ADescriptor: Pointer): LongBool; stdcall; external 'advapi32.dll';
 
 function HasHardLinks(const APath: string): Boolean;
 var
@@ -138,12 +149,30 @@ begin
   CloseHandle(h);
 end;
 
-function ResolveLink(const APath: string): string;
+function FinalPathOfHandle(h: THandle; out APath: string): Boolean;
 var
-  attrs, n: LongWord;
-  h: THandle;
+  n: LongWord;
   buf: array[0..4095] of WideChar;
   s: UnicodeString;
+begin
+  Result := False;
+  APath := '';
+  n := GetFinalPathNameByHandleW(h, @buf[0], Length(buf), 0);
+  if (n = 0) or (n >= LongWord(Length(buf))) then Exit;
+  SetString(s, PWideChar(@buf[0]), n);
+  // GetFinalPathNameByHandle prefixe en \\?\ (ou \\?\UNC\ pour le reseau)
+  if Copy(s, 1, 8) = '\\?\UNC\' then
+    s := '\\' + Copy(s, 9, MaxInt)
+  else if Copy(s, 1, 4) = '\\?\' then
+    s := Copy(s, 5, MaxInt);
+  APath := UTF8Encode(s);
+  Result := True;
+end;
+
+function ResolveLink(const APath: string): string;
+var
+  attrs: LongWord;
+  h: THandle;
 begin
   Result := APath;
   // UTF8Decode explicite: ne pas dependre de DefaultSystemCodePage
@@ -154,17 +183,42 @@ begin
     OPEN_EXISTING_W, 0, 0); // suit le lien
   if h = THandle(-1) then
     raise EStreamError.CreateFmt('Cannot resolve link %s', [APath]);
-  n := GetFinalPathNameByHandleW(h, @buf[0], Length(buf), 0);
-  CloseHandle(h);
-  if (n = 0) or (n >= LongWord(Length(buf))) then
+  if not FinalPathOfHandle(h, Result) then
+  begin
+    CloseHandle(h);
     raise EStreamError.CreateFmt('Cannot resolve link %s', [APath]);
-  SetString(s, PWideChar(@buf[0]), n);
-  // GetFinalPathNameByHandle prefixe en \\?\ (ou \\?\UNC\ pour le reseau)
-  if Copy(s, 1, 8) = '\\?\UNC\' then
-    s := '\\' + Copy(s, 9, MaxInt)
-  else if Copy(s, 1, 4) = '\\?\' then
-    s := Copy(s, 5, MaxInt);
-  Result := UTF8Encode(s);
+  end;
+  CloseHandle(h);
+end;
+
+function CanonicalPathKey(const APath: string): string;
+var
+  h: THandle;
+  dir, name, s: string;
+begin
+  Result := ExpandFileName(APath);
+  // le handle du fichier resout liens ET jonctions des dossiers parents
+  h := CreateFileW(PWideChar(UTF8Decode(Result)), 0, SHARE_ALL, nil,
+    OPEN_EXISTING_W, FILE_FLAG_BACKUP_SEM, 0);
+  if h <> THandle(-1) then
+  begin
+    if FinalPathOfHandle(h, s) then
+      Result := s;
+    CloseHandle(h);
+    Exit;
+  end;
+  // fichier a creer: canoniser le DOSSIER parent, garder le nom
+  dir := ExcludeTrailingPathDelimiter(ExtractFilePath(Result));
+  name := ExtractFileName(Result);
+  if (dir = '') or (name = '') then Exit;
+  h := CreateFileW(PWideChar(UTF8Decode(dir)), 0, SHARE_ALL, nil,
+    OPEN_EXISTING_W, FILE_FLAG_BACKUP_SEM, 0);
+  if h <> THandle(-1) then
+  begin
+    if FinalPathOfHandle(h, s) then
+      Result := IncludeTrailingPathDelimiter(s) + name;
+    CloseHandle(h);
+  end;
 end;
 
 function ExclusiveCreate(const AName: string): THandle;
@@ -178,13 +232,43 @@ begin
   Result := FlushFileBuffers(AHandle);
 end;
 
+// Reporte la DACL de l'original sur le temporaire, pour un rename qui ne la
+// preserverait pas. False = droits non garantis: ne pas publier.
+function CopyDacl(const AFrom, ATo: string): Boolean;
+var
+  needed: LongWord;
+  buf: array of Byte;
+begin
+  Result := False;
+  needed := 0;
+  GetFileSecurityW(PWideChar(UTF8Decode(AFrom)), DACL_SECURITY_INFO, nil, 0,
+    needed);
+  if needed = 0 then Exit;
+  SetLength(buf, needed);
+  if not GetFileSecurityW(PWideChar(UTF8Decode(AFrom)), DACL_SECURITY_INFO,
+       @buf[0], needed, needed) then Exit;
+  Result := SetFileSecurityW(PWideChar(UTF8Decode(ATo)), DACL_SECURITY_INFO,
+    @buf[0]);
+end;
+
 function ReplaceByRename(const ATmp, ADest: string): Boolean;
 begin
-  // ReplaceFileW preserve attributs/ACL de la cible mais exige qu'elle existe
   if FileExists(ADest) then
+  begin
+    // SANS le drapeau IGNORE_MERGE_ERRORS: avec lui, ReplaceFileW peut
+    // reussir sans reporter l'ACL de la cible, et un document protege par
+    // des droits particuliers ressortirait en silence avec ceux du dossier.
     if ReplaceFileW(PWideChar(UTF8Decode(ADest)), PWideChar(UTF8Decode(ATmp)),
-        nil, REPLACEFILE_IGNORE_MERGE_ERRORS, nil, nil) then
+        nil, 0, nil, nil) then
       Exit(True);
+    // Repli MoveFileExW (montages sans ReplaceFile): seulement une fois la
+    // DACL de la cible posee sur le temporaire, sinon echec FRANC plutot
+    // qu'une protection perdue. PIEGE: un ReplaceFileW interrompu peut avoir
+    // deja supprime la cible; il ne reste alors rien a preserver et refuser
+    // laisserait le document SANS fichier -- le rename doit conclure.
+    if (not CopyDacl(ADest, ATmp)) and FileExists(ADest) then
+      Exit(False);
+  end;
   Result := MoveFileExW(PWideChar(UTF8Decode(ATmp)),
     PWideChar(UTF8Decode(ADest)),
     MOVEFILE_REPLACE_EXISTING or MOVEFILE_COPY_ALLOWED);
@@ -236,6 +320,28 @@ begin
   end;
   if (fpLStat(PChar(Result), st) = 0) and fpS_ISLNK(st.st_mode) then
     raise EStreamError.CreateFmt('Too many symlink levels resolving %s', [APath]);
+end;
+
+// realpath(3): la libc resout tous les segments, ce que fpReadLink sur le
+// dernier ne fait pas. Tampon >= PATH_MAX partout (4096 Linux, 1024 macOS).
+function c_realpath(AName, AResolved: PChar): PChar; cdecl;
+  external 'c' name 'realpath';
+
+function CanonicalPathKey(const APath: string): string;
+var
+  buf: array[0..4096] of Char;
+  dir, name: string;
+begin
+  Result := ExpandFileName(APath);
+  if c_realpath(PChar(Result), @buf[0]) <> nil then
+    Exit(string(PChar(@buf[0])));
+  // fichier a creer: realpath echoue sur un segment absent, mais le dossier
+  // parent, lui, existe -- canoniser le dossier et garder le nom
+  dir := ExcludeTrailingPathDelimiter(ExtractFilePath(Result));
+  name := ExtractFileName(Result);
+  if (dir <> '') and (name <> '') and
+     (c_realpath(PChar(dir), @buf[0]) <> nil) then
+    Result := IncludeTrailingPathDelimiter(string(PChar(@buf[0]))) + name;
 end;
 
 function FlushToDisk(AHandle: THandle): Boolean;

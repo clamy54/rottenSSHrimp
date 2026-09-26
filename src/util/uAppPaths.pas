@@ -145,12 +145,10 @@ var
 begin
   Result := '';
   if APath = '' then Exit;
-  try
-    canon := ExpandFileName(ResolveLink(ExpandFileName(APath)));
-  except
-    on E: Exception do
-      canon := ExpandFileName(APath);
-  end;
+  // TOUS les segments canonises: un lien ou une jonction dans un dossier
+  // parent donnerait sinon une autre cle, donc un second verrou sur le
+  // MEME document, et deux instances l'ouvriraient cote a cote.
+  canon := CanonicalPathKey(APath);
   {$IFDEF WINDOWS}
   canon := LowerCase(canon);
   {$ENDIF}

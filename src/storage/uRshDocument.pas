@@ -474,16 +474,18 @@ begin
 end;
 
 {$IFDEF UNIX}
-procedure FsyncDir(const ADir: string);
+// False: le systeme n'a pas confirme que le NOUVEAU NOM survivra a une
+// coupure (le contenu, lui, a deja recu son fsync). L'appelant le dit a
+// l'utilisateur au lieu d'annoncer une sauvegarde durable.
+function FsyncDir(const ADir: string): Boolean;
 var
   fd: cint;
 begin
+  Result := False;
   fd := FpOpen(PChar(ADir), O_RDONLY);
-  if fd >= 0 then
-  begin
-    fpfsync(fd);
-    FpClose(fd);
-  end;
+  if fd < 0 then Exit;
+  Result := fpfsync(fd) = 0;
+  FpClose(fd);
 end;
 {$ENDIF}
 
@@ -1485,6 +1487,9 @@ var
   destDb: TSqliteDb;
   salt, payload, sealed: TBytes;
   ops, mem: Int64;
+  {$IFDEF UNIX}
+  dirSynced: Boolean;
+  {$ENDIF}
 begin
   Result := False;
   AErr := NoErr;
@@ -1615,7 +1620,7 @@ begin
     end;
     tmpName := '';
     {$IFDEF UNIX}
-    FsyncDir(ExtractFileDir(realTarget));
+    dirSynced := FsyncDir(ExtractFileDir(realTarget));
     {$ENDIF}
   finally
     if (tmpName <> '') and FileExists(tmpName) then
@@ -1624,8 +1629,24 @@ begin
       DeleteFile(plainTmp);
   end;
 
+  // Le fichier EST remplace: identite enregistree meme si la durabilite du
+  // nom n'est pas confirmee, sinon la prochaine sauvegarde verrait a tort
+  // une « modification externe » (conflit).
   FSourcePath := ATarget;
   RecordSourceIdentity;
+  {$IFDEF UNIX}
+  if not dirSynced then
+  begin
+    // Ne pas pretendre la sauvegarde acquise: le document reste « a sauver »
+    // et l'utilisateur sait que le fichier, lui, a bien ete remplace.
+    AErr := DocErr(decIo,
+      'The file was replaced, but the disk did not confirm that the new ' +
+      'name is durable (directory sync failed). A power loss could bring ' +
+      'the previous file back: check the disk, then save again.',
+      'fsync du repertoire en echec apres le rename');
+    Exit;
+  end;
+  {$ENDIF}
   FDirty := False;
   Result := True;
 end;
