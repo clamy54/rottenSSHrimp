@@ -310,23 +310,28 @@ begin
     Exit;
   end;
 
-  // ::1 aussi: « localhost » y mene d'abord sous Windows et macOS. Sans
-  // IPv6 sur le poste, on s'en passe; mais un ::1 DEJA PRIS enverrait les
-  // clients de « localhost » vers un autre programme: c'est un echec.
+  // ::1 aussi: « localhost » y mene d'abord sous Windows et macOS. Un poste
+  // SANS IPv6 (socket refusee, ou ::1 inconnu au bind) s'en passe: personne
+  // ne peut ni y joindre ni y detourner quoi que ce soit. Mais des qu'IPv6
+  // existe, TOUT autre echec refuse le tunnel: annoncer un tunnel qui laisse
+  // ::1 libre ou pris, c'est laisser les clients de « localhost » echouer,
+  // voire tomber sur un autre programme.
   s6 := fpSocket(AF_INET6, SOCK_STREAM, 0);
-  // sourde ou bloquante, elle est inutilisable: comme un poste sans IPv6
-  if (s6 >= 0) and (not SockFitsInSet(s6)) then
-  begin
-    CloseSocket(s6);
-    s6 := -1;
-  end;
   if s6 >= 0 then
   begin
+    if not SockFitsInSet(s6) then
+    begin
+      CloseSocket(s6);
+      CloseSocket(s4);
+      AFail := sffOther;
+      ADetail := 'too many open files in this program to watch a new socket';
+      Exit;
+    end;
     if not Prepare(s6) then
     begin
       // meme exigence que l'IPv4: ecouter ::1 sans exclusivite serait
       // detournable, et « localhost » y passe en premier
-      Classify(SockLastError, 'setsockopt');
+      Classify(SockLastError, 'setsockopt v6');
       CloseSocket(s6);
       CloseSocket(s4);
       Exit;
@@ -341,17 +346,20 @@ begin
       err := SockLastError;
       CloseSocket(s6);
       s6 := -1;
-      if SockErrIsAddrInUse(err) then
+      if not SockErrIsAddrNotAvail(err) then
       begin
-        AFail := sffInUse;
+        Classify(err, 'bind v6');
         CloseSocket(s4);
         Exit;
       end;
+      // ::1 absent du poste: l'ecoute IPv4 suffit
     end
     else if not SockSetNonBlocking(s6, True) then
     begin
+      Classify(SockLastError, 'nonblock v6');
       CloseSocket(s6);
-      s6 := -1;
+      CloseSocket(s4);
+      Exit;
     end;
   end;
 

@@ -37,6 +37,9 @@ function SockErrIsIntr(ACode: cint): Boolean;
 // (sous Windows, les plages reservees par Hyper-V/WSL repondent ACCES).
 function SockErrIsAddrInUse(ACode: cint): Boolean;
 function SockErrIsAccess(ACode: cint): Boolean;
+// bind sur une adresse que le poste n'a pas (::1 avec l'IPv6 coupe): pas une
+// erreur comme les autres, c'est « vivre sans IPv6 ».
+function SockErrIsAddrNotAvail(ACode: cint): Boolean;
 
 // select() ne sait pas surveiller n'importe quel descripteur: sous Unix, un
 // numero >= FD_SETSIZE deborderait le fd_set. Sous Windows c'est le NOMBRE
@@ -142,6 +145,11 @@ end;
 function SockErrIsAccess(ACode: cint): Boolean;
 begin
   Result := ACode = WSAEACCES;
+end;
+
+function SockErrIsAddrNotAvail(ACode: cint): Boolean;
+begin
+  Result := (ACode = WSAEADDRNOTAVAIL) or (ACode = WSAEAFNOSUPPORT);
 end;
 
 function SockFitsInSet(AFd: cint): Boolean;
@@ -285,6 +293,11 @@ end;
 function SockErrIsAccess(ACode: cint): Boolean;
 begin
   Result := (ACode = ESysEACCES) or (ACode = ESysEPERM);
+end;
+
+function SockErrIsAddrNotAvail(ACode: cint): Boolean;
+begin
+  Result := (ACode = ESysEADDRNOTAVAIL) or (ACode = ESysEAFNOSUPPORT);
 end;
 
 function SockFitsInSet(AFd: cint): Boolean;
