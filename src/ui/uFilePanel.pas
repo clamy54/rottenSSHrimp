@@ -109,6 +109,9 @@ type
     destructor Destroy; override;
 
     procedure ApplyTheme;
+    // Largeur en dessous de laquelle la barre d'icones se tronque: le
+    // separateur des volets ne doit pas descendre en dessous.
+    function ToolbarMinWidth: Integer;
     procedure SetPathText(const APath: string);
     function PathText: string;
     procedure SetEntries(const APath: string;
@@ -1515,6 +1518,13 @@ end;
 function TFilePanel.ButtonCount: Integer;
 begin
   Result := 8;
+end;
+
+function TFilePanel.ToolbarMinWidth: Integer;
+begin
+  // derive du dessin de ToolbarPaint (PANEL_PAD + i * (taille + 6)): suit
+  // tout ajout de bouton sans re-mesure a la main
+  Result := 2 * PANEL_PAD + ButtonCount * (ButtonSize + 6) - 6;
 end;
 
 function TFilePanel.ButtonIcon(AIndex: Integer): TScpIcon;

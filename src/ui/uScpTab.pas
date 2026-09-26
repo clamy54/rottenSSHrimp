@@ -145,6 +145,7 @@ type
     FRemoteSavedTop: Integer;
 
     procedure BuildUi;
+    function PaneMinW: Integer;
     procedure MiddleResize(Sender: TObject);
     procedure SplitMoved(Sender: TObject);
     procedure HookTransport;
@@ -593,6 +594,8 @@ begin
   FRemotePanel.OnNavigate := @RemoteNavigate;
   FRemotePanel.OnDrop := @PanelDrop;
   FRemotePanel.List.OnAction := @RemoteAction;
+  // maintenant que les DEUX volets existent, le vrai minimum est connu
+  FSplit.MinSize := PaneMinW;
 
   FRefreshTimer := TTimer.Create(Self);
   FRefreshTimer.Interval := REFRESH_DEBOUNCE_MS;
@@ -602,22 +605,34 @@ begin
   RefreshTheme;
 end;
 
+// PANE_MIN_W ou, si elle est plus grande, la largeur ou TOUTES les icones du
+// bandeau restent visibles: un volet plus etroit cachait la derniere icone.
+function TScpTab.PaneMinW: Integer;
+begin
+  Result := PANE_MIN_W;
+  if (FLocalPanel <> nil) and (FLocalPanel.ToolbarMinWidth > Result) then
+    Result := FLocalPanel.ToolbarMinWidth;
+  if (FRemotePanel <> nil) and (FRemotePanel.ToolbarMinWidth > Result) then
+    Result := FRemotePanel.ToolbarMinWidth;
+end;
+
 // La largeur utile se partage selon FSplitRatio: 50/50 a l'ouverture, puis la
-// proportion choisie au separateur. Chaque volet garde PANE_MIN_W tant que la
+// proportion choisie au separateur. Chaque volet garde PaneMinW tant que la
 // place existe; en dessous, moitie-moitie du peu qu'il reste -- les colonnes
 // des volets s'effacent deja d'elles-memes.
 procedure TScpTab.MiddleResize(Sender: TObject);
 var
-  avail, w: Integer;
+  avail, w, minW: Integer;
 begin
   if (FLocalPanel = nil) or (FSplit = nil) then Exit;
   avail := FMiddle.ClientWidth - FSplit.Width;
   if avail <= 0 then Exit;
+  minW := PaneMinW;
   w := Round(FSplitRatio * avail);
-  if avail >= 2 * PANE_MIN_W then
+  if avail >= 2 * minW then
   begin
-    if w < PANE_MIN_W then w := PANE_MIN_W;
-    if w > avail - PANE_MIN_W then w := avail - PANE_MIN_W;
+    if w < minW then w := minW;
+    if w > avail - minW then w := avail - minW;
   end
   else
     w := avail div 2;
