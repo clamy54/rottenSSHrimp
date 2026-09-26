@@ -822,7 +822,9 @@ begin
   {$IFDEF DARWIN}
   if (ssMeta in Shift) and (Key = VK_V) then
   {$ELSE}
-  if (ssCtrl in Shift) and (Key = VK_V) then
+  // sans Alt: Ctrl+Alt = AltGr sous Windows, et AltGr+V compose un caractere
+  // sur certains claviers (@ en hongrois) qui doit passer, pas coller
+  if (ssCtrl in Shift) and (not (ssAlt in Shift)) and (Key = VK_V) then
   {$ENDIF}
   begin
     PasteBroadcast;
@@ -855,7 +857,10 @@ begin
     VK_RIGHT: begin Broadcast(#27'[C'); Key := 0; end;
     VK_LEFT:  begin Broadcast(#27'[D'); Key := 0; end;
   else
-    if (ssCtrl in Shift) and (Key >= Ord('A')) and (Key <= Ord('Z')) then
+    // Ctrl sans Alt: avec Alt c'est AltGr (AltGr+E = euro sur azerty), le
+    // caractere compose arrive par BarUtf8KeyPress et Key := 0 le tuerait
+    if (ssCtrl in Shift) and (not (ssAlt in Shift)) and
+       (Key >= Ord('A')) and (Key <= Ord('Z')) then
     begin
       c := Byte(Key) - Ord('A') + 1;
       Broadcast(AnsiChar(c));

@@ -1196,7 +1196,10 @@ begin
   {$IFDEF DARWIN}
   if ssMeta in Shift then
   {$ELSE}
-  if ssCtrl in Shift then
+  // SANS Alt: AltGr se presente comme Ctrl+Alt sous Windows. Sur azerty,
+  // @ vit sur la touche 0 (VK_0) et } sur = (VK_OEM_PLUS): le zoom les
+  // avalerait et ces caracteres ne partiraient jamais au shell.
+  if (ssCtrl in Shift) and not (ssAlt in Shift) then
   {$ENDIF}
   begin
     case Key of
@@ -1245,10 +1248,15 @@ begin
     VK_F11: seq := TildeSeq(23);
     VK_F12: seq := TildeSeq(24);
   else
+    // Ctrl seul, sans Alt: avec Alt c'est AltGr, et le caractere compose
+    // (AltGr+E = euro...) arrive par UTF8KeyPress -- forger un caractere de
+    // controle ici mangerait la touche (Key := 0 supprime le WM_CHAR).
     if (ssCtrl in Shift) and (not (ssMeta in Shift)) and
+       (not (ssAlt in Shift)) and
        (Key >= Ord('A')) and (Key <= Ord('Z')) then
       seq := Chr(Key - Ord('A') + 1)
-    else if (ssCtrl in Shift) and (Key = VK_SPACE) then
+    else if (ssCtrl in Shift) and (not (ssAlt in Shift)) and
+            (Key = VK_SPACE) then
       seq := #0;
   end;
 

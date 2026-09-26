@@ -402,6 +402,11 @@ begin
   Result := 0;
   if not ((ssCtrl in AShift) or (ssAlt in AShift) or (ssMeta in AShift)) then
     Exit;
+  // SAUF Ctrl+Alt ensemble: c'est AltGr sous Windows, et le caractere compose
+  // (@ sur la touche 0 d azerty) arrive par UTF8KeyPress. Envoyer ici le
+  // keysym du chiffre, avec Key := 0 chez l'appelant, le supprimerait.
+  if (ssCtrl in AShift) and (ssAlt in AShift) then
+    Exit;
   case AKey of
     VK_A..VK_Z: Result := Cardinal(Ord('a') + (AKey - VK_A));
     VK_0..VK_9: Result := Cardinal(Ord('0') + (AKey - VK_0));
