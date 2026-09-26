@@ -348,6 +348,12 @@ function ContainerShellFromName(const S: string): TContainerShell;
 function MatchesSearch(const AFilter, AName, AHostname, AProtocol,
   ADescription, AParentName, ACredName: string): Boolean;
 
+// Un tunnel SEUL, memes regles que SetLocalForwards: l'import s'en sert pour
+// ecarter l'entree fautive au lieu de perdre toute la liste de l'hote.
+// Normalise en place (hote et note rognes).
+function ValidateLocalForward(var AFwd: TRshLocalForward;
+  out AWhy: string): Boolean;
+
 implementation
 
 uses
@@ -421,6 +427,37 @@ begin
   if f = '' then Exit(True);
   Result := Has(AName) or Has(AHostname) or Has(AProtocol) or
     Has(ADescription) or Has(AParentName) or Has(ACredName);
+end;
+
+function ValidateLocalForward(var AFwd: TRshLocalForward;
+  out AWhy: string): Boolean;
+var
+  j: Integer;
+begin
+  Result := False;
+  AWhy := '';
+  if (AFwd.LocalPort < FORWARD_LOCAL_PORT_MIN) or
+     (AFwd.LocalPort > 65535) then
+  begin
+    AWhy := Format('the local port must be between %d and 65535.',
+      [FORWARD_LOCAL_PORT_MIN]);
+    Exit;
+  end;
+  if not ValidateHostname(AFwd.DestHost, AWhy) then Exit;
+  if not ValidatePort(AFwd.DestPort, AWhy) then Exit;
+  AFwd.Note := Trim(AFwd.Note);
+  for j := 1 to Length(AFwd.Note) do
+    if AFwd.Note[j] < #32 then
+    begin
+      AWhy := 'the note contains control characters.';
+      Exit;
+    end;
+  if Length(AFwd.Note) > FORWARD_NOTE_MAX then
+  begin
+    AWhy := Format('the note exceeds %d characters.', [FORWARD_NOTE_MAX]);
+    Exit;
+  end;
+  Result := True;
 end;
 
 { TRshModel }
@@ -1632,24 +1669,9 @@ begin
   clean := Copy(AForwards);
   for i := 0 to High(clean) do
   begin
-    if (clean[i].LocalPort < FORWARD_LOCAL_PORT_MIN) or
-       (clean[i].LocalPort > 65535) then
-      raise EModelError.CreateFmt('Tunnel %d: the local port must be between ' +
-        '%d and 65535.', [i + 1, FORWARD_LOCAL_PORT_MIN]);
-    if not ValidateHostname(clean[i].DestHost, err) then
+    if not ValidateLocalForward(clean[i], err) then
       raise EModelError.CreateFmt('Tunnel %d (local port %d): %s',
         [i + 1, clean[i].LocalPort, err]);
-    if not ValidatePort(clean[i].DestPort, err) then
-      raise EModelError.CreateFmt('Tunnel %d (local port %d): %s',
-        [i + 1, clean[i].LocalPort, err]);
-    clean[i].Note := Trim(clean[i].Note);
-    for j := 1 to Length(clean[i].Note) do
-      if clean[i].Note[j] < #32 then
-        raise EModelError.CreateFmt('Tunnel %d: the note contains control ' +
-          'characters.', [i + 1]);
-    if Length(clean[i].Note) > FORWARD_NOTE_MAX then
-      raise EModelError.CreateFmt('Tunnel %d: the note exceeds %d characters.',
-        [i + 1, FORWARD_NOTE_MAX]);
     for j := 0 to i - 1 do
       if clean[j].LocalPort = clean[i].LocalPort then
         raise EModelError.CreateFmt('Two tunnels listen on local port %d.',

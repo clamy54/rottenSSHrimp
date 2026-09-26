@@ -512,9 +512,9 @@ function ImportOpenSshConfig(AModel: TRshModel; const AParentUuid: string;
 var
   rep: TImportReport;
   lines: TStringList;
-  i, sp, port, entries: Integer;
-  ok: Boolean;
-  line, key, value, curHost, curHostName, why: string;
+  i, sp, k, port, entries: Integer;
+  ok, dup: Boolean;
+  line, key, value, curHost, curHostName, why, warn: string;
   curFwd: TRshLocalForwards;
   fwd: TRshLocalForward;
 
@@ -605,23 +605,38 @@ begin
           // espaces multiples entre les deux moities: un seul suffit au decoupage
           while Pos('  ', value) > 0 do
             value := StringReplace(value, '  ', ' ', [rfReplaceAll]);
-          if ParseLocalForward(value, fwd, why) then
+          // Chaque ligne se juge SEULE: la fautive (invalide, port deja pris)
+          // est ecartee avec un mot, les autres tunnels de l'hote survivent.
+          // Sinon SetLocalForwards rejetterait la liste entiere plus bas.
+          if not ParseLocalForward(value, fwd, why) then
+            rep.Messages.Add(Format('"%s": LocalForward %s skipped: %s',
+              [curHost, value, why]))
+          else
           begin
-            if Length(curFwd) >= MAX_LOCAL_FORWARDS then
+            warn := why;   // non bloquant (adresse d'ecoute non locale)
+            dup := False;
+            for k := 0 to High(curFwd) do
+              if curFwd[k].LocalPort = fwd.LocalPort then
+                dup := True;
+            if not ValidateLocalForward(fwd, why) then
+              rep.Messages.Add(Format('"%s": LocalForward %s skipped: %s',
+                [curHost, value, why]))
+            else if dup then
+              rep.Messages.Add(Format('"%s": LocalForward %s skipped: local ' +
+                'port %d already taken by an earlier line',
+                [curHost, value, fwd.LocalPort]))
+            else if Length(curFwd) >= MAX_LOCAL_FORWARDS then
               rep.Messages.Add(Format('"%s": LocalForward %s skipped: at most ' +
                 '%d tunnels per host', [curHost, value, MAX_LOCAL_FORWARDS]))
             else
             begin
               SetLength(curFwd, Length(curFwd) + 1);
               curFwd[High(curFwd)] := fwd;
-              if why <> '' then
+              if warn <> '' then
                 rep.Messages.Add(Format('"%s": LocalForward %s: %s',
-                  [curHost, value, why]));
+                  [curHost, value, warn]));
             end;
-          end
-          else
-            rep.Messages.Add(Format('"%s": LocalForward %s skipped: %s',
-              [curHost, value, why]));
+          end;
         end;
       end;
       FlushHost;
@@ -726,16 +741,19 @@ begin
   end;
 end;
 
-// Tunnels d'un export v4. Une entree mal formee est ecartee avec un mot, les
-// autres passent: un fichier edite a la main ne doit pas tout faire tomber.
-// Le modele revalide l'ensemble (ports, doublons, destination).
+// Tunnels d'un export v4. CHAQUE entree se juge seule: mal formee, invalide
+// ou en conflit de port, elle est ecartee avec un mot et les AUTRES passent.
+// Valider la liste en bloc ferait perdre les tunnels sains de l'hote pour une
+// seule ligne editee a la main. Le modele revalide l'ensemble par surete.
 procedure ImportLocalForwards(AModel: TRshModel; const AUuid, AName: string;
   AArr: TJSONArray; var AReport: TImportReport);
 var
   list: TRshLocalForwards;
   one: TRshLocalForward;
   o: TJSONObject;
-  i, n: Integer;
+  i, j, n: Integer;
+  why: string;
+  dup: Boolean;
 begin
   list := nil;
   n := 0;
@@ -762,6 +780,22 @@ begin
           [AName]));
         Continue;
       end;
+    end;
+    if not ValidateLocalForward(one, why) then
+    begin
+      AReport.Messages.Add(Format('"%s": tunnel on local port %d skipped: %s',
+        [AName, one.LocalPort, why]));
+      Continue;
+    end;
+    dup := False;
+    for j := 0 to n - 1 do
+      if list[j].LocalPort = one.LocalPort then
+        dup := True;
+    if dup then
+    begin
+      AReport.Messages.Add(Format('"%s": tunnel on local port %d skipped: ' +
+        'another tunnel already listens on that port', [AName, one.LocalPort]));
+      Continue;
     end;
     SetLength(list, n + 1);
     list[n] := one;

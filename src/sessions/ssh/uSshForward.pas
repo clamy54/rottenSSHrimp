@@ -248,15 +248,19 @@ var
     end;
   end;
 
-  procedure Prepare(AFd: cint);
+  // False: pas d'ecoute sans cette garantie. Sous Windows, SO_REUSEADDR
+  // laisserait un AUTRE processus se lier au meme port et detourner les
+  // connexions -- semantique inverse d'Unix. Ailleurs, SO_REUSEADDR n'est
+  // qu'un confort (rebind pendant TIME_WAIT): son echec ne retire rien.
+  function Prepare(AFd: cint): Boolean;
   begin
     yes := 1;
     {$IFDEF WINDOWS}
-    // Sous Windows, SO_REUSEADDR laisserait un AUTRE processus se lier au
-    // meme port et detourner les connexions -- semantique inverse d'Unix.
-    fpSetSockOpt(AFd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, @yes, SizeOf(yes));
+    Result := fpSetSockOpt(AFd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, @yes,
+      SizeOf(yes)) = 0;
     {$ELSE}
     fpSetSockOpt(AFd, SOL_SOCKET, SO_REUSEADDR, @yes, SizeOf(yes));
+    Result := True;
     {$ENDIF}
   end;
 
@@ -271,7 +275,21 @@ begin
     Classify(SockLastError, 'socket');
     Exit;
   end;
-  Prepare(s4);
+  // Hors capacite de select(), l'ecoute serait SOURDE (fpFD_SET la refuse
+  // sans bruit): trop de fichiers ouverts dans le processus, on renonce.
+  if not SockFitsInSet(s4) then
+  begin
+    CloseSocket(s4);
+    AFail := sffOther;
+    ADetail := 'too many open files in this program to watch a new socket';
+    Exit;
+  end;
+  if not Prepare(s4) then
+  begin
+    Classify(SockLastError, 'setsockopt');
+    CloseSocket(s4);
+    Exit;
+  end;
   FillChar(a4, SizeOf(a4), 0);
   a4.sin_family := AF_INET;
   a4.sin_port := htons(FListeners[AIndex].Spec.LocalPort);
@@ -283,15 +301,36 @@ begin
     CloseSocket(s4);
     Exit;
   end;
-  SockSetNonBlocking(s4, True);
+  // Restee bloquante, la boucle d'accept se figerait au second appel et le
+  // TERMINAL avec elle (meme thread): mieux vaut un tunnel refuse.
+  if not SockSetNonBlocking(s4, True) then
+  begin
+    Classify(SockLastError, 'nonblock');
+    CloseSocket(s4);
+    Exit;
+  end;
 
   // ::1 aussi: « localhost » y mene d'abord sous Windows et macOS. Sans
   // IPv6 sur le poste, on s'en passe; mais un ::1 DEJA PRIS enverrait les
   // clients de « localhost » vers un autre programme: c'est un echec.
   s6 := fpSocket(AF_INET6, SOCK_STREAM, 0);
+  // sourde ou bloquante, elle est inutilisable: comme un poste sans IPv6
+  if (s6 >= 0) and (not SockFitsInSet(s6)) then
+  begin
+    CloseSocket(s6);
+    s6 := -1;
+  end;
   if s6 >= 0 then
   begin
-    Prepare(s6);
+    if not Prepare(s6) then
+    begin
+      // meme exigence que l'IPv4: ecouter ::1 sans exclusivite serait
+      // detournable, et « localhost » y passe en premier
+      Classify(SockLastError, 'setsockopt');
+      CloseSocket(s6);
+      CloseSocket(s4);
+      Exit;
+    end;
     FillChar(a6, SizeOf(a6), 0);
     a6.sin6_family := AF_INET6;
     a6.sin6_port := htons(FListeners[AIndex].Spec.LocalPort);
@@ -309,8 +348,11 @@ begin
         Exit;
       end;
     end
-    else
-      SockSetNonBlocking(s6, True);
+    else if not SockSetNonBlocking(s6, True) then
+    begin
+      CloseSocket(s6);
+      s6 := -1;
+    end;
   end;
 
   FListeners[AIndex].Socks[0] := s4;
@@ -381,12 +423,13 @@ begin
       begin
         s := fpAccept(FListeners[i].Socks[k], nil, nil);
         if s < 0 then Break;
-        if not SockFitsInSet(s) then
+        // Non bloquante ou rien: restee bloquante, fpRecv figerait la pompe,
+        // donc la session entiere. Le client, coupe, retentera.
+        if (not SockFitsInSet(s)) or (not SockSetNonBlocking(s, True)) then
         begin
           CloseSocket(s);
           Continue;
         end;
-        SockSetNonBlocking(s, True);
         // meme raison que le tunnel de rebond: de petits echanges
         // interactifs, que Nagle retiendrait jusqu'a 200 ms
         SockSetNoDelay(s);
