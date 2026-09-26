@@ -79,7 +79,7 @@ type
 implementation
 
 uses
-  uVncKeysyms;
+  uVncKeysyms, uKeyCompat;
 
 const
   REFRESH_MS = 33;
@@ -402,10 +402,11 @@ begin
   Result := 0;
   if not ((ssCtrl in AShift) or (ssAlt in AShift) or (ssMeta in AShift)) then
     Exit;
-  // SAUF Ctrl+Alt ensemble: c'est AltGr sous Windows, et le caractere compose
-  // (@ sur la touche 0 d azerty) arrive par UTF8KeyPress. Envoyer ici le
-  // keysym du chiffre, avec Key := 0 chez l'appelant, le supprimerait.
-  if (ssCtrl in AShift) and (ssAlt in AShift) then
+  // SAUF sous AltGr physique: le caractere compose (@ sur la touche 0
+  // d'azerty) arrive par UTF8KeyPress, et envoyer ici le keysym du chiffre,
+  // avec Key := 0 chez l'appelant, le supprimerait. Un vrai Ctrl+Alt+lettre
+  // (touches gauches) doit continuer d'atteindre le bureau distant.
+  if ShiftIsAltGr(AShift) then
     Exit;
   case AKey of
     VK_A..VK_Z: Result := Cardinal(Ord('a') + (AKey - VK_A));

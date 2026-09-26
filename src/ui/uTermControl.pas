@@ -10,7 +10,8 @@ interface
 uses
   Classes, SysUtils, Controls, Graphics, LCLType, LCLIntf, Forms, ExtCtrls,
   Clipbrd, Dialogs, LMessages,
-  uTermTypes, uTermScreen, uTermEmulator, uFontEmbed, uTheme, uTreeScrollBar;
+  uTermTypes, uTermScreen, uTermEmulator, uFontEmbed, uTheme, uTreeScrollBar,
+  uKeyCompat;
 
 const
   PASTE_MAX_BYTES = 1024 * 1024;
@@ -1146,8 +1147,12 @@ var
   end;
 
 var
-  isCopyCombo, isPasteCombo: Boolean;
+  isCopyCombo, isPasteCombo, altGr: Boolean;
 begin
+  // AltGr PHYSIQUE tenu (Ctrl+Alt aux yeux de Windows): le caractere compose
+  // arrive par UTF8KeyPress, aucun raccourci Ctrl ne doit le consommer. Un
+  // vrai Ctrl+Alt (touches gauches) garde ses raccourcis plus bas.
+  altGr := ShiftIsAltGr(Shift);
   // echappement: rend le focus a l'application, rien ne part au shell
   if (Key = VK_RETURN) and (ssCtrl in Shift) and (ssAlt in Shift) then
   begin
@@ -1172,13 +1177,16 @@ begin
     Exit;
   end;
 
-  // Ctrl+C SEUL doit rester au terminal: le copier demande Shift (ou Cmd)
+  // Ctrl+C SEUL doit rester au terminal: le copier demande Shift (ou Cmd).
+  // Pas sous AltGr: AltGr+Maj+C compose un caractere sur certains claviers.
   {$IFDEF DARWIN}
   isCopyCombo := (ssMeta in Shift) and (Key = VK_C);
   isPasteCombo := (ssMeta in Shift) and (Key = VK_V);
   {$ELSE}
-  isCopyCombo := (ssCtrl in Shift) and (ssShift in Shift) and (Key = VK_C);
-  isPasteCombo := (ssCtrl in Shift) and (ssShift in Shift) and (Key = VK_V);
+  isCopyCombo := (ssCtrl in Shift) and (ssShift in Shift) and (not altGr) and
+    (Key = VK_C);
+  isPasteCombo := (ssCtrl in Shift) and (ssShift in Shift) and (not altGr) and
+    (Key = VK_V);
   {$ENDIF}
   if isCopyCombo then
   begin
@@ -1196,10 +1204,9 @@ begin
   {$IFDEF DARWIN}
   if ssMeta in Shift then
   {$ELSE}
-  // SANS Alt: AltGr se presente comme Ctrl+Alt sous Windows. Sur azerty,
-  // @ vit sur la touche 0 (VK_0) et } sur = (VK_OEM_PLUS): le zoom les
-  // avalerait et ces caracteres ne partiraient jamais au shell.
-  if (ssCtrl in Shift) and not (ssAlt in Shift) then
+  // sans AltGr: sur azerty, @ vit sur la touche 0 (VK_0) et } sur =
+  // (VK_OEM_PLUS) -- le zoom les avalerait et rien ne partirait au shell
+  if (ssCtrl in Shift) and (not altGr) then
   {$ENDIF}
   begin
     case Key of
@@ -1248,15 +1255,14 @@ begin
     VK_F11: seq := TildeSeq(23);
     VK_F12: seq := TildeSeq(24);
   else
-    // Ctrl seul, sans Alt: avec Alt c'est AltGr, et le caractere compose
-    // (AltGr+E = euro...) arrive par UTF8KeyPress -- forger un caractere de
-    // controle ici mangerait la touche (Key := 0 supprime le WM_CHAR).
-    if (ssCtrl in Shift) and (not (ssMeta in Shift)) and
-       (not (ssAlt in Shift)) and
+    // sans AltGr: son caractere compose (AltGr+E = euro...) arrive par
+    // UTF8KeyPress, et forger un caractere de controle ici mangerait la
+    // touche (Key := 0 supprime le WM_CHAR). Un vrai Ctrl+Alt+lettre, lui,
+    // doit continuer d'envoyer son caractere de controle.
+    if (ssCtrl in Shift) and (not (ssMeta in Shift)) and (not altGr) and
        (Key >= Ord('A')) and (Key <= Ord('Z')) then
       seq := Chr(Key - Ord('A') + 1)
-    else if (ssCtrl in Shift) and (not (ssAlt in Shift)) and
-            (Key = VK_SPACE) then
+    else if (ssCtrl in Shift) and (not altGr) and (Key = VK_SPACE) then
       seq := #0;
   end;
 

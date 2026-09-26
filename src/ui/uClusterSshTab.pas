@@ -14,7 +14,7 @@ uses
   ExtCtrls, LCLType, Clipbrd,
   uTermControl, uSshTransport, uSshKnownHosts, uSessionState,
   uSessionManager, uRshDocument, uSessionTabBase, uSshTunnel,
-  uSshTunnelConnect;
+  uSshTunnelConnect, uKeyCompat;
 
 const
   CLUSTER_MAX_SESSIONS = 16;
@@ -822,9 +822,9 @@ begin
   {$IFDEF DARWIN}
   if (ssMeta in Shift) and (Key = VK_V) then
   {$ELSE}
-  // sans Alt: Ctrl+Alt = AltGr sous Windows, et AltGr+V compose un caractere
-  // sur certains claviers (@ en hongrois) qui doit passer, pas coller
-  if (ssCtrl in Shift) and (not (ssAlt in Shift)) and (Key = VK_V) then
+  // sans AltGr: AltGr+V compose un caractere sur certains claviers
+  // (@ en hongrois) qui doit passer, pas coller
+  if (ssCtrl in Shift) and (not ShiftIsAltGr(Shift)) and (Key = VK_V) then
   {$ENDIF}
   begin
     PasteBroadcast;
@@ -857,9 +857,10 @@ begin
     VK_RIGHT: begin Broadcast(#27'[C'); Key := 0; end;
     VK_LEFT:  begin Broadcast(#27'[D'); Key := 0; end;
   else
-    // Ctrl sans Alt: avec Alt c'est AltGr (AltGr+E = euro sur azerty), le
-    // caractere compose arrive par BarUtf8KeyPress et Key := 0 le tuerait
-    if (ssCtrl in Shift) and (not (ssAlt in Shift)) and
+    // sans AltGr (AltGr+E = euro sur azerty): le caractere compose arrive
+    // par BarUtf8KeyPress et Key := 0 le tuerait. Un vrai Ctrl+Alt+lettre
+    // garde son caractere de controle.
+    if (ssCtrl in Shift) and (not ShiftIsAltGr(Shift)) and
        (Key >= Ord('A')) and (Key <= Ord('Z')) then
     begin
       c := Byte(Key) - Ord('A') + 1;
