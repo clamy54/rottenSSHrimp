@@ -612,10 +612,18 @@ begin
     // repond « no such file ». Un stat du chemin remet le vrai motif; il ne
     // coute qu'un echange, et seulement sur ce chemin d'echec.
     if AErr.Kind in [sekNotFound, sekOther] then
-      if Stat(APath, True, statEntry, statErr) and
-         (not statEntry.IsDir) then
-        AErr := MakeScpError(sekNotADirectory, 'Listing',
-          DisplaySafeName(APath), 'the path leads to a file, not a folder');
+    begin
+      if Stat(APath, True, statEntry, statErr) then
+      begin
+        if not statEntry.IsDir then
+          AErr := MakeScpError(sekNotADirectory, 'Listing',
+            DisplaySafeName(APath), 'the path leads to a file, not a folder');
+      end
+      // La session peut tomber PENDANT ce stat: taire sa coupure rendrait un
+      // simple « not found » et l'onglet resterait connecte sur un cable mort.
+      else if IsFatalToSession(statErr.Kind) then
+        AErr := statErr;
+    end;
     Exit(False);
   end;
   // Aucune sortie avant la fermeture: une coupure qu'elle revele doit pouvoir
