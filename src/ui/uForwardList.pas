@@ -32,6 +32,7 @@ type
     procedure ColumnX(out AOn, APort, ADest, ANote: Integer);
     procedure EnsureVisible(AIndex: Integer);
     procedure SetSel(AIndex: Integer);
+    function Fit(const S: string; AWidth: Integer): string;
   protected
     procedure Paint; override;
     procedure MouseDown(Button: TMouseButton; Shift: TShiftState;
@@ -223,6 +224,24 @@ begin
     FOnToggle(Self);
 end;
 
+// Texte trop long pour sa colonne: coupe avec « … », pour qu'on voie qu'il
+// continue (hote coupe net = hote qu'on croit lire en entier).
+function TForwardListView.Fit(const S: string; AWidth: Integer): string;
+var
+  n: Integer;
+begin
+  Result := S;
+  if (AWidth <= 0) or (Canvas.TextWidth(S) <= AWidth) then Exit;
+  n := Length(UTF8Decode(S));
+  while n > 0 do
+  begin
+    Dec(n);
+    Result := UTF8Encode(Copy(UTF8Decode(S), 1, n)) + '…';
+    if Canvas.TextWidth(Result) <= AWidth then Exit;
+  end;
+  Result := '…';
+end;
+
 procedure TForwardListView.Paint;
 var
   r, cell: TRect;
@@ -326,11 +345,12 @@ begin
       Canvas.Font.Color := fg;
     end;
     Canvas.TextRect(Rect(xDest, y, xNote - 8, y + rh), xDest,
-      y + (rh - th) div 2, Format('%s:%d', [it.DestHost, it.DestPort]));
+      y + (rh - th) div 2, Fit(Format('%s:%d', [it.DestHost, it.DestPort]),
+      xNote - 8 - xDest));
     if i <> FSel then
       Canvas.Font.Color := fg2;
     Canvas.TextRect(Rect(xNote, y, r.Right - PAD, y + rh), xNote,
-      y + (rh - th) div 2, it.Note);
+      y + (rh - th) div 2, Fit(it.Note, r.Right - PAD - xNote));
   end;
   Canvas.Brush.Style := bsSolid;
 end;

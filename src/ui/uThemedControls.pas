@@ -132,6 +132,9 @@ type
     FTabs: TStringList;
     FTabIndex: Integer;
     FHot: Integer;
+    // Focus pris a la souris: pas de cadre, il ne sert qu'a qui navigue au
+    // clavier et, apres un clic, ressemble a un onglet encadre par erreur.
+    FMouseFocus: Boolean;
     FOnChange: TNotifyEvent;
     function TabRect(AIndex: Integer): TRect;
     function TabAt(X, Y: Integer): Integer;
@@ -1055,7 +1058,7 @@ begin
       Canvas.Brush.Style := bsSolid;
       Canvas.Brush.Color := clAccent;
       Canvas.FillRect(Rect(r.Left + 4, r.Bottom - 3, r.Right - 4, r.Bottom));
-      if Focused then
+      if Focused and (not FMouseFocus) then
       begin
         Canvas.Brush.Style := bsClear;
         Canvas.Pen.Color := clAccent;
@@ -1096,15 +1099,22 @@ procedure TThemedTabs.MouseDown(Button: TMouseButton; Shift: TShiftState;
 var
   i: Integer;
 begin
+  FMouseFocus := True;
   inherited MouseDown(Button, Shift, X, Y);
   if Button <> mbLeft then Exit;
   i := TabAt(X, Y);
   if i >= 0 then
     SetTabIndex(i);
+  Invalidate;
 end;
 
 procedure TThemedTabs.KeyDown(var Key: Word; Shift: TShiftState);
 begin
+  if FMouseFocus then
+  begin
+    FMouseFocus := False;
+    Invalidate;
+  end;
   case Key of
     VK_LEFT:
       begin
@@ -1130,6 +1140,7 @@ end;
 procedure TThemedTabs.DoExit;
 begin
   inherited DoExit;
+  FMouseFocus := False;
   Invalidate;
 end;
 

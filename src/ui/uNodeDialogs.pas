@@ -1042,14 +1042,45 @@ end;
 
 { Onglet Tunnels }
 
+// Hauteur d'un texte coupe aux espaces dans AWidth, a la police d'interface:
+// les libelles de cet onglet sont longs, et une police a chasse fixe en
+// demande une ligne de plus qu'une proportionnelle.
+function WrappedHeight(const S: string; AWidth: Integer): Integer;
+var
+  words: TStringArray;
+  cur, cand: string;
+  i, lines: Integer;
+begin
+  words := S.Split([' ']);
+  lines := 1;
+  cur := '';
+  for i := 0 to High(words) do
+  begin
+    if cur = '' then cand := words[i] else cand := cur + ' ' + words[i];
+    if (cur <> '') and (UiTextWidth(cand) > AWidth) then
+    begin
+      Inc(lines);
+      cur := words[i];
+    end
+    else
+      cur := cand;
+  end;
+  Result := lines * (UiTextHeight('Ag') + 1) + 2;
+end;
+
 // La page Tunnels prend la hauteur de la page General (deja construite): la
-// liste s'etire dans ce qui reste, la saisie reste en bas.
+// liste s'etire dans ce qui reste, la saisie reste en bas. Tout ce qui porte
+// du texte est MESURE a la police d'interface (embarquee, souvent a chasse
+// fixe): des cotes fixes coupaient l'introduction et l'invite des champs.
 procedure TNodeDialog.BuildTunnelsPage(AModel: TRshModel;
   const AConnUuid: string);
 const
-  FIXED_H = 236;
+  INTRO = 'Tunnels open with the SSH terminal of this host and close with ' +
+    'it. They listen on this computer only (localhost) and leave from the ' +
+    'SSH server towards the destination.';
 var
-  w, x, listH, target: Integer;
+  w, x, listH, target, lh, introH, msgH, localW, portW, arrowW, colonW,
+  gap, after: Integer;
   lbl: TLabel;
 
   function MkLbl(const ACaption: string; AX, AY, AW: Integer): TLabel;
@@ -1057,7 +1088,7 @@ var
     Result := TLabel.Create(Self);
     Result.Parent := FPage;
     Result.AutoSize := False;
-    Result.SetBounds(AX, AY, AW, 18);
+    Result.SetBounds(AX, AY, AW, lh);
     Result.Caption := ACaption;
   end;
 
@@ -1085,29 +1116,42 @@ begin
   FFwdPageIdx := 1;
   UsePage(FFwdPageIdx);
   w := DLG_W - 2 * MARGIN;
+  lh := UiTextHeight('Ag') + 2;
 
-  lbl := MkLbl('Tunnels open with the SSH terminal of this host and close ' +
-    'with it. They listen on this computer only (localhost) and leave from ' +
-    'the SSH server towards the destination.', MARGIN, FY, w);
+  introH := WrappedHeight(INTRO, w);
+  lbl := MkLbl(INTRO, MARGIN, FY, w);
   lbl.WordWrap := True;
-  lbl.Height := 36;
+  lbl.Height := introH;
   lbl.Tag := THEME_TAG_SECONDARY;
-  Inc(FY, 44);
+  Inc(FY, introH + 8);
 
   if not AModel.ForwardsAvailable then
   begin
     lbl := MkLbl('Unavailable: this document is open read-only in an older ' +
       'format, which cannot store tunnels.', MARGIN, FY, w);
     lbl.WordWrap := True;
-    lbl.Height := 36;
+    lbl.Height := WrappedHeight(lbl.Caption, w);
     lbl.Tag := THEME_TAG_WARN;
-    Inc(FY, 44);
+    Inc(FY, lbl.Height + 8);
     FFwdPageIdx := -1;
     UsePage(0);
     Exit;
   end;
 
-  listH := target - FIXED_H;
+  // largeurs a la mesure de ce qu'elles contiennent (7 = retrait du cadre)
+  localW := UiTextWidth('e.g. 10636') + 2 * 7 + 10;
+  if localW < 80 then localW := 80;
+  portW := UiTextWidth('65535') + 2 * 7 + 14;
+  if portW < 64 then portW := 64;
+  arrowW := UiTextWidth('→') + 12;
+  colonW := UiTextWidth(':') + 10;
+  // le message peut tenir sur trois lignes (conflit de port nomme)
+  msgH := 3 * (UiTextHeight('Ag') + 1) + 2;
+  gap := 8;
+
+  // tout ce qui suit la liste, pour lui donner le reste de la hauteur
+  after := 10 + lh + 2 + 34 + 36 + 36 + msgH + 4;
+  listH := target - FY - after;
   if listH < 170 then
     listH := 170;
   FFwdList := TForwardListView.Create(Self);
@@ -1119,41 +1163,43 @@ begin
   Inc(FY, listH + 10);
 
   // port local  →  destination  :  port
-  MkLbl('Local port', MARGIN, FY, 90).Tag := THEME_TAG_SECONDARY;
-  MkLbl('Destination host', MARGIN + 104, FY, 200).Tag := THEME_TAG_SECONDARY;
-  MkLbl('Port', MARGIN + w - 70, FY, 70).Tag := THEME_TAG_SECONDARY;
-  Inc(FY, 20);
-  FFwdLocal := Field(MARGIN, FY, 80);
+  x := MARGIN + localW + arrowW;
+  MkLbl('Local port', MARGIN, FY, localW + arrowW).Tag := THEME_TAG_SECONDARY;
+  MkLbl('Destination host', x, FY, 200).Tag := THEME_TAG_SECONDARY;
+  MkLbl('Port', MARGIN + w - portW, FY, portW).Tag := THEME_TAG_SECONDARY;
+  Inc(FY, lh + 2);
+  FFwdLocal := Field(MARGIN, FY, localW);
   FFwdLocal.TextHint := 'e.g. 10636';
-  MkLbl('→', MARGIN + 84, FY + 4, 18);
-  x := MARGIN + 104;
-  FFwdHost := Field(x, FY, w - 104 - 88);
+  MkLbl('→', MARGIN + localW + (arrowW - UiTextWidth('→')) div 2,
+    FY + (26 - lh) div 2, arrowW);
+  FFwdHost := Field(x, FY, w - (x - MARGIN) - colonW - portW);
   FFwdHost.TextHint := 'as seen from the SSH server';
-  MkLbl(':', MARGIN + w - 82, FY + 4, 10);
-  FFwdPort := Field(MARGIN + w - 70, FY, 70);
+  MkLbl(':', MARGIN + w - portW - colonW + (colonW - UiTextWidth(':')) div 2,
+    FY + (26 - lh) div 2, colonW);
+  FFwdPort := Field(MARGIN + w - portW, FY, portW);
   Inc(FY, 34);
-  MkLbl('Note', MARGIN, FY + 4, 90).Tag := THEME_TAG_SECONDARY;
-  FFwdNote := Field(MARGIN + 104, FY, w - 104);
+  MkLbl('Note', MARGIN, FY + (26 - lh) div 2, localW).Tag :=
+    THEME_TAG_SECONDARY;
+  FFwdNote := Field(x, FY, w - (x - MARGIN));
   FFwdNote.MaxLength := FORWARD_NOTE_MAX;
   FFwdNote.TextHint := 'optional';
   Inc(FY, 36);
 
   FFwdAdd := Btn('Add', MARGIN, FY, @FwdAddClick);
-  FFwdUpdate := Btn('Update', MARGIN + 108, FY, @FwdUpdateClick);
-  FFwdRemove := Btn('Remove', MARGIN + 216, FY, @FwdRemoveClick);
+  FFwdUpdate := Btn('Update', MARGIN + 100 + gap, FY, @FwdUpdateClick);
+  FFwdRemove := Btn('Remove', MARGIN + 2 * (100 + gap), FY, @FwdRemoveClick);
   Inc(FY, 36);
 
   FFwdMsg := MkLbl('', MARGIN, FY, w);
   FFwdMsg.WordWrap := True;
-  FFwdMsg.Height := 36;
-  Inc(FY, 40);
+  FFwdMsg.Height := msgH;
+  Inc(FY, msgH + 4);
 
   FFwdList.SetItems(AModel.LoadLocalForwards(AConnUuid));
   FwdRefreshClashes;
   FwdSelect(nil);
   UsePage(0);
 end;
-
 // Couleur posee APRES ThemeControls: le message change en cours de route.
 procedure TNodeDialog.FwdSay(const AText: string; AColor: TColor);
 begin
