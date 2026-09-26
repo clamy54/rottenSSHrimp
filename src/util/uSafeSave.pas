@@ -32,6 +32,15 @@ function CreateTempIn(const ADest: string; out ATmpName: string): TOwnedHandleSt
 // sous Windows. False = le disque n'a pas confirme, la sauvegarde ne l'est pas.
 function FlushToDisk(AHandle: THandle): Boolean;
 function ReplaceByRename(const ATmp, ADest: string): Boolean;
+{$IFDEF WINDOWS}
+// Lecture et repose d'une DACL, etat « heritage coupe » compris: le reposer
+// sans cet etat reactiverait l'heritage sur un fichier qui l'avait coupe.
+// ReplaceByRename s'en sert pour son repli quand ReplaceFileW echoue.
+function ReadDacl(const AFrom: string; out ASd: TBytes;
+  out AInfo: LongWord): Boolean;
+function ApplyDacl(const ATo: string; const ASd: TBytes;
+  AInfo: LongWord): Boolean;
+{$ENDIF}
 // Variantes « privees »: 0600/0700 quel que soit l'umask; no-op sous Windows.
 function ReplaceByRenamePrivate(const ATmp, ADest: string): Boolean;
 procedure MakePrivateFile(const APath: string);
@@ -81,6 +90,12 @@ const
   MOVEFILE_REPLACE_EXISTING = 1;
   MOVEFILE_COPY_ALLOWED     = 2;
   DACL_SECURITY_INFO = 4;
+  // L'etat « heritage coupe » de la DACL. Se tromper ici reactiverait
+  // l'heritage sur une cible qui l'avait coupe: le document ressortirait
+  // avec, en plus, tout ce que le dossier accorde.
+  SE_DACL_PROTECTED_SS        = $1000;
+  PROTECTED_DACL_SEC_INFO     = $80000000;
+  UNPROTECTED_DACL_SEC_INFO   = $20000000;
   FILE_FLAG_BACKUP_SEM = $02000000; // requis pour ouvrir un DOSSIER
 
 type
@@ -113,6 +128,9 @@ function GetFileSecurityW(lpFileName: PWideChar; ARequested: LongWord;
   stdcall; external 'advapi32.dll';
 function SetFileSecurityW(lpFileName: PWideChar; AInformation: LongWord;
   ADescriptor: Pointer): LongBool; stdcall; external 'advapi32.dll';
+function GetSecurityDescriptorControl(ADescriptor: Pointer;
+  var AControl: Word; var ARevision: LongWord): LongBool;
+  stdcall; external 'advapi32.dll';
 
 function HasHardLinks(const APath: string): Boolean;
 var
@@ -232,29 +250,57 @@ begin
   Result := FlushFileBuffers(AHandle);
 end;
 
-// Reporte la DACL de l'original sur le temporaire, pour un rename qui ne la
-// preserverait pas. False = droits non garantis: ne pas publier.
-function CopyDacl(const AFrom, ATo: string): Boolean;
+// Lit la DACL de AFrom, et decide avec quel etat d'heritage la reposer:
+// protege si la source coupait l'heritage, rien de plus sinon.
+function ReadDacl(const AFrom: string; out ASd: TBytes;
+  out AInfo: LongWord): Boolean;
 var
   needed: LongWord;
-  buf: array of Byte;
+  control: Word;
+  revision: LongWord;
 begin
   Result := False;
+  ASd := nil;
+  AInfo := 0;
   needed := 0;
   GetFileSecurityW(PWideChar(UTF8Decode(AFrom)), DACL_SECURITY_INFO, nil, 0,
     needed);
   if needed = 0 then Exit;
-  SetLength(buf, needed);
+  SetLength(ASd, needed);
   if not GetFileSecurityW(PWideChar(UTF8Decode(AFrom)), DACL_SECURITY_INFO,
-       @buf[0], needed, needed) then Exit;
-  Result := SetFileSecurityW(PWideChar(UTF8Decode(ATo)), DACL_SECURITY_INFO,
-    @buf[0]);
+       @ASd[0], needed, needed) then Exit;
+  control := 0;
+  revision := 0;
+  if not GetSecurityDescriptorControl(@ASd[0], control, revision) then Exit;
+  if (control and SE_DACL_PROTECTED_SS) <> 0 then
+    AInfo := DACL_SECURITY_INFO or PROTECTED_DACL_SEC_INFO
+  else
+    AInfo := DACL_SECURITY_INFO or UNPROTECTED_DACL_SEC_INFO;
+  Result := True;
+end;
+
+function ApplyDacl(const ATo: string; const ASd: TBytes;
+  AInfo: LongWord): Boolean;
+begin
+  Result := (ASd <> nil) and
+    SetFileSecurityW(PWideChar(UTF8Decode(ATo)), AInfo, @ASd[0]);
 end;
 
 function ReplaceByRename(const ATmp, ADest: string): Boolean;
+var
+  sd: TBytes;
+  info: LongWord;
+  daclOk: Boolean;
 begin
+  daclOk := False;
+  sd := nil;
+  info := 0;
   if FileExists(ADest) then
   begin
+    // La DACL de la cible se lit AVANT ReplaceFileW: interrompu, il peut
+    // avoir deja supprime le nom de la cible, et il serait alors trop tard
+    // pour savoir quels droits reposer sur le temporaire.
+    daclOk := ReadDacl(ADest, sd, info);
     // SANS le drapeau IGNORE_MERGE_ERRORS: avec lui, ReplaceFileW peut
     // reussir sans reporter l'ACL de la cible, et un document protege par
     // des droits particuliers ressortirait en silence avec ceux du dossier.
@@ -262,11 +308,14 @@ begin
         nil, 0, nil, nil) then
       Exit(True);
     // Repli MoveFileExW (montages sans ReplaceFile): seulement une fois la
-    // DACL de la cible posee sur le temporaire, sinon echec FRANC plutot
-    // qu'une protection perdue. PIEGE: un ReplaceFileW interrompu peut avoir
-    // deja supprime la cible; il ne reste alors rien a preserver et refuser
-    // laisserait le document SANS fichier -- le rename doit conclure.
-    if (not CopyDacl(ADest, ATmp)) and FileExists(ADest) then
+    // DACL de la cible reposee sur le temporaire, etat d'heritage compris,
+    // sinon echec FRANC plutot qu'une protection perdue. PIEGE: un
+    // ReplaceFileW interrompu peut avoir deja supprime la cible; refuser
+    // alors laisserait le document SANS fichier -- le rename conclut, c'est
+    // le seul cas ou publier prime sur les droits.
+    if daclOk then
+      daclOk := ApplyDacl(ATmp, sd, info);
+    if (not daclOk) and FileExists(ADest) then
       Exit(False);
   end;
   Result := MoveFileExW(PWideChar(UTF8Decode(ATmp)),
