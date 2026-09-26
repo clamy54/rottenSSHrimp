@@ -131,97 +131,33 @@ time it is opened for writing, and from then on older versions of the
 application will decline to open it rather than lose the tunnels.
 
 **File transfer.** Right-click an SSH host, *File Transfer*, and get a
-two-panel file manager in a tab: local on the left, remote on the right, a
-splitter between them, and multi-select with Ctrl and Shift. Send a selection
-across by dragging it into the other panel -- drop it on a folder to go
-straight in -- or with F5, or with the arrow at the end of the panel's
-toolbar. Right-click for the same actions plus rename, duplicate, delete, and
-*Properties* on the remote side -- what the server says about an entry, and
-its access rights: the nine permission bits, setuid, setgid and the sticky
-bit, as boxes or as an octal number, optionally applied to the contents of a
-folder. On several files at once, a box whose files disagree stays
-undecided, and so does a box for an item whose permissions the server did
-not report; each file keeps the bit it had. Symbolic links keep their own
-permissions, because SFTP has no way to set them through a link without
-landing on its target. A folder is done after its contents, so a rights
-change cannot lock the walk out halfway, and it is read again after its
-listing and right before its own rights: a folder swapped for a link in the
-meantime stops the walk. That narrows the window without closing it -- SFTP
-knows only paths -- which is worth knowing before a recursive change in a
-folder other people can write to. Rights already in place are not sent again,
-and if something stops the walk, the tab says how many items were already
-changed. Owner and group are shown as the server reports them and are not
-editable.
-Transfers are recursive, and a queue says what is happening; cancelling one
-stops it where it is and leaves the destination as it was. Queue rows select
-like files do -- Shift and Ctrl (Cmd on macOS) with the mouse or the arrows,
-Ctrl+A for all, Delete to cancel the selection -- and *Clear completed* keeps
-what is still selected. A replaced file
-keeps its permissions -- on Windows its ACL; setuid, setgid and sticky bits
-are never carried onto new content. A file whose permissions, or whose very
-type, the server will not tell is left alone rather than replaced, and a
-symbolic link in the way is replaced by a new file, never followed. A new
-file gets its source's read
-and write bits, never widened and never executable. A new folder is created
-with its source's permissions from the start, so a private folder is never
-readable by others while it fills, and its source is read again just before
-it is created. Windows has no such bits: there, a download that the server
-keeps from others -- a private file or folder -- and any temporary file that
-will replace an existing one are created with an ACL for you, SYSTEM and
-Administrators only, and keep it through an interruption; everything else
-inherits the folder's ACL like any new file. A duplicate on the local disk
-takes its source's own ACL before a single byte is written, and its
-read-only, hidden and system attributes before it appears. Windows ACLs are
-not translated into permission bits on upload: a new file there gets the
-server's usual read and write bits. A selection that would take the
-queue past 500,000 items is set aside whole, with the reason, rather than
-half-copied. If the connection drops,
-*Reconnect* replays the same prompts as opening the tab; interrupted
-transfers resume where they were confirmed, once both ends are checked
-against what was written, and a folder whose listing was cut is scanned
-again.
+two-panel file manager in a tab: local on the left, remote on the right, the
+layout every file manager has used since 1986, because nobody has found a way
+to improve on it that did not involve a cloud. Drag, drop, F5, rename, delete,
+and recursive permission changes on a folder other people can write to, if
+that is how you like to spend an evening. A queue says what is going on, and
+its *Cancel* button actually cancels.
 
-The menu says *File Transfer* and means it. What goes over the wire is **SFTP
-over SSH**, which the tab header states in as many words, and there is no
-silent fallback to the historical SCP protocol (the name survives only in the
-source units). That
-protocol can send a file and receive a file; it cannot list a directory without
-someone parsing the output of `ls` and guessing about locales, spaces and
-quoting, and it has no honest way to cancel a transfer halfway. SFTP runs on
-the same connection, with the same credentials, the same host-key store, the
-same jump host and the same security key, and it can actually answer the
-questions a file manager needs to ask.
+It speaks SFTP, says so in the tab header, and never falls back in silence to
+the old SCP protocol, which can send a file, receive a file, and otherwise
+learns what is in a directory by parsing `ls` and praying about the locale.
 
-The part worth knowing about: **a complete file is never replaced by an
-incomplete one.** Every transfer lands in a temporary file inside the
-destination folder, gets flushed and closed, and only then is renamed over the
-target in one atomic step. Pull the network cable during a 4 GB download and
-the old file is still there, whole, with the partial one sitting next to it
-under a name that says what it is. If the server cannot do an atomic rename --
-some SFTP servers do not offer the OpenSSH extension that makes it possible --
-it says so, explains what the fallback costs, and waits for an answer instead
-of deciding on your behalf.
+The one promise worth making: **a complete file is never replaced by an
+incomplete one.** Everything lands in a temporary file next to its target and
+is renamed over it only once whole. Pull the cable halfway through a 4 GB
+download and the old file is still there, intact and faintly smug. When the
+network comes back, *Reconnect* resumes from what was confirmed written, not
+from what was hoped.
 
-It also declines to guess in the other direction. A symbolic link is never
-followed during a recursive copy, so a link pointing at `/` cannot turn one
-folder into a copy of the whole disk, and a recursive delete removes the link,
-not what it points at -- on the local disk every step is anchored to the
-folder already opened, a guarantee SFTP, which only knows paths, cannot give.
-On Linux and macOS a folder is also checked to be the same one, by device and
-inode, just before its name is removed; POSIX cannot remove a folder through
-an open descriptor, so this narrows the last window rather than closing it.
-Sockets, pipes and devices are refused
-rather than read as files. A remote filename containing a slash, a `..`, an
-ANSI escape sequence or a Windows reserved device name is refused with the
-reason, never quietly renamed into something that would land outside the
-folder you picked. `%2F` stays four characters, because decoding it is how
-that particular hole gets reopened.
-
-And when something does go wrong, it says which thing. Out of space is not
-"access denied", a name collision is not "access denied", and a timestamp that
-could not be restored is a warning on a file that transferred perfectly, not a
-failure that makes you send it again. A batch where six files were skipped
-reports six files skipped; it does not say *Completed*.
+The rest is paranoia, applied evenly. Symbolic links are never followed, so a
+link to `/` cannot turn one folder into a copy of the entire disk, and a
+recursive delete removes the link rather than what it points at: a distinction
+people only learn to love afterwards. Filenames with `..`, slashes, or escape
+sequences a hostile server found amusing are refused, with the reason.
+Permissions survive a replacement, setuid bits never sneak onto new content,
+and private stays private, Windows ACLs included. When something fails, it
+says which thing: out of space is not "access denied", and six skipped files
+are reported as six skipped files, never as *Completed*.
 
 **Credentials.** Passwords, private keys, agent auth, and managed keys the
 application generates, rotates, and pushes with a built-in `ssh-copy-id`.
