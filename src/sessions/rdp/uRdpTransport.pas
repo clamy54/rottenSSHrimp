@@ -102,7 +102,7 @@ type
     FClipFilesFmtId: cuint32;        // id LOCAL de FileGroupDescriptorW
     FClipLocalFiles: TStringArray;   // sous FClipLock
     FClipServed: TRdpClipFileArray;
-    FClipServedStream: TFileStream;
+    FClipServedStream: THandleStream;
     FClipServedIdx: Integer;
     FClipReqIsFiles: Boolean;
     FClipFetch: TRdpClipFileArray;
@@ -1365,11 +1365,9 @@ begin
   genSet.capabilitySetType := CB_CAPSTYPE_GENERAL;
   genSet.capabilitySetLength := 12;
   genSet.version := CB_CAPS_VERSION_2;
-  // Fichiers en FLUX, jamais par chemin. Hors Windows, pas de CF_HDROP local:
-  // on n'annonce pas des fichiers que personne ne pourrait coller.
+  // Fichiers en FLUX, jamais par chemin.
   genSet.generalFlags := CB_USE_LONG_FORMAT_NAMES
-    {$IFDEF WINDOWS} or CB_STREAM_FILECLIP_ENABLED or
-    CB_FILECLIP_NO_FILE_PATHS {$ENDIF};
+    or CB_STREAM_FILECLIP_ENABLED or CB_FILECLIP_NO_FILE_PATHS;
   caps.common.msgType := CB_CLIP_CAPS;
   caps.cCapabilitiesSets := 1;
   caps.capabilitySets := @genSet;
@@ -1447,8 +1445,7 @@ begin
       fmt := PCliprdrFormat(PByte(list^.formats) + i * SizeOf(TCliprdrFormat));
       id := fmt^.formatId;
       // Fichiers d'abord: une copie de fichiers annonce AUSSI leurs noms en
-      // texte. Hors Windows, IGNORE: pas de CF_HDROP local.
-      {$IFDEF WINDOWS}
+      // texte.
       if (fmt^.formatName <> nil) and
          SameText(string(AnsiString(fmt^.formatName)),
            string(CLIP_FILES_FMT)) then
@@ -1458,7 +1455,6 @@ begin
         isFiles := True;
         Break;
       end;
-      {$ENDIF}
       if id = CF_UNICODETEXT then
       begin
         chosen := CF_UNICODETEXT;
@@ -1759,8 +1755,8 @@ begin
     begin
       FreeAndNil(FClipServedStream);
       FClipServedIdx := -1;
-      FClipServedStream := TFileStream.Create(
-        FClipServed[req^.listIndex].LocalPath, fmOpenRead or fmShareDenyNone);
+      FClipServedStream := RdpClipOpenServed(
+        FClipServed[req^.listIndex].LocalPath);
       // La POIGNEE, pas le chemin: une jonction posee depuis enverrait autre chose.
       if not HandleMatchesId(FClipServedStream.Handle,
          FClipServed[req^.listIndex].Id) then
@@ -2047,7 +2043,6 @@ begin
   end;
 end;
 
-{$IFDEF WINDOWS}
 procedure TRdpTransport.AnnounceLocalFiles(const APaths: TStringArray);
 var
   i: Integer;
@@ -2063,12 +2058,6 @@ begin
     FClipLock.Release;
   end;
 end;
-{$ELSE}
-procedure TRdpTransport.AnnounceLocalFiles(const APaths: TStringArray);
-begin
-  // pas de CF_HDROP local, capacite non negociee
-end;
-{$ENDIF}
 
 procedure TRdpTransport.Fail(const AMessage: string);
 begin

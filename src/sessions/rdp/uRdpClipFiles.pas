@@ -40,7 +40,11 @@ type
   // jonction posee entre-temps le ferait mentir.
   TRdpFileId = record
     Known: Boolean;
+    {$IFDEF WINDOWS}
     Volume, IdHigh, IdLow: LongWord;
+    {$ELSE}
+    Dev, Ino: QWord;
+    {$ENDIF}
   end;
 
   TRdpClipFile = record
@@ -82,7 +86,16 @@ function CaptureLocalFileId(const APath: string; out AId: TRdpFileId): Boolean;
 // Identite inconnue: False.
 function HandleMatchesId(AHandle: THandle; const AId: TRdpFileId): Boolean;
 
+// Ouvre un fichier a servir; echec = EFOpenError. Unix: O_NOFOLLOW et
+// O_NONBLOCK, un tube pose a la place du fichier ne fige pas le transport.
+function RdpClipOpenServed(const APath: string): THandleStream;
+
 implementation
+
+{$IFNDEF WINDOWS}
+uses
+  BaseUnix{$IFDEF LINUX}, Syscall{$ENDIF}, uSafeSave;
+{$ENDIF}
 
 {$IFDEF WINDOWS}
 type
@@ -353,53 +366,180 @@ begin
   Result := (info.dwVolumeSerialNumber = AId.Volume) and
     (info.nFileIndexHigh = AId.IdHigh) and (info.nFileIndexLow = AId.IdLow);
 end;
+
+function RdpClipOpenServed(const APath: string): THandleStream;
+begin
+  Result := TFileStream.Create(APath, fmOpenRead or fmShareDenyNone);
+end;
 {$ELSE}
+const
+  {$IFDEF LINUX}
+  O_CLOEXEC_ = $80000;
+  AT_SYMLINK_NOFOLLOW_ = $100;
+    {$IF DEFINED(CPUX86_64)}
+    SYSCALL_FSTATAT_ = 262; {$DEFINE RSSH_FSTATAT}   // newfstatat
+    {$ELSEIF DEFINED(CPUAARCH64)}
+    SYSCALL_FSTATAT_ = 79; {$DEFINE RSSH_FSTATAT}
+    {$ELSEIF DEFINED(CPUI386)}
+    SYSCALL_FSTATAT_ = 300; {$DEFINE RSSH_FSTATAT}   // fstatat64, Stat FPC = stat64
+    {$ENDIF}
+  {$ELSE}
+  // absents du BaseUnix Darwin; <sys/fcntl.h>
+  O_NOFOLLOW = $100;
+  O_DIRECTORY = $100000;
+  O_CLOEXEC_ = $1000000;
+  AT_SYMLINK_NOFOLLOW_ = $20;
+    {$IF DEFINED(CPUAARCH64)}
+    {$DEFINE RSSH_FSTATAT}   // arm64: fstatat EST la variante inode 64 bits
+    {$ENDIF}
+  {$ENDIF}
+
+{$IFDEF LINUX}
+function OpenAtNoFollow(ADir: cint; const AName: string; AFlags: cint): cint;
+begin
+  Result := do_syscall(syscall_nr_openat, TSysParam(ADir),
+    TSysParam(PChar(AName)),
+    TSysParam(O_RDONLY or O_NOFOLLOW or AFlags or O_CLOEXEC_), TSysParam(0));
+end;
+
+{$IFDEF RSSH_FSTATAT}
+function FStatAtNoFollow(ADir: cint; const ADirPath, AName: string;
+  out ASt: Stat): Boolean;
+begin
+  ASt := Default(Stat);
+  Result := do_syscall(SYSCALL_FSTATAT_, TSysParam(ADir),
+    TSysParam(PChar(AName)), TSysParam(@ASt),
+    TSysParam(AT_SYMLINK_NOFOLLOW_)) = 0;
+end;
+{$ENDIF}
+{$ELSE}
+function c_openat(dirfd: cint; path: PChar; flags: cint): cint; cdecl;
+  external 'c' name 'openat';
+{$IFDEF RSSH_FSTATAT}
+function c_fstatat(dirfd: cint; path: PChar; var st: Stat;
+  flags: cint): cint; cdecl; external 'c' name 'fstatat';
+{$ENDIF}
+
+function OpenAtNoFollow(ADir: cint; const AName: string; AFlags: cint): cint;
+begin
+  Result := c_openat(ADir, PChar(AName),
+    O_RDONLY or O_NOFOLLOW or AFlags or O_CLOEXEC_);
+end;
+
+{$IFDEF RSSH_FSTATAT}
+function FStatAtNoFollow(ADir: cint; const ADirPath, AName: string;
+  out ASt: Stat): Boolean;
+begin
+  ASt := Default(Stat);
+  Result := c_fstatat(ADir, PChar(AName), ASt, AT_SYMLINK_NOFOLLOW_) = 0;
+end;
+{$ENDIF}
+{$ENDIF}
+
+{$IFNDEF RSSH_FSTATAT}
+// Archi sans fstatat connu: lstat par chemin. La descente reste ancree (le
+// fd enfant est compare), seule la capture des metadonnees perd l'ancrage.
+function FStatAtNoFollow(ADir: cint; const ADirPath, AName: string;
+  out ASt: Stat): Boolean;
+begin
+  ASt := Default(Stat);
+  Result := fpLStat(PChar(ADirPath + '/' + AName), ASt) = 0;
+end;
+{$ENDIF}
+
 function CaptureLocalFileId(const APath: string; out AId: TRdpFileId): Boolean;
+var
+  st: Stat;
 begin
   AId := Default(TRdpFileId);
+  Result := False;
+  if fpLStat(PChar(APath), st) <> 0 then
+    Exit;
+  if fpS_ISLNK(st.st_mode) then
+    Exit;
+  AId.Known := True;
+  AId.Dev := QWord(st.st_dev);
+  AId.Ino := QWord(st.st_ino);
   Result := True;
 end;
 
 function HandleMatchesId(AHandle: THandle; const AId: TRdpFileId): Boolean;
+var
+  st: Stat;
 begin
   Result := False;
+  if not AId.Known then
+    Exit;
+  if fpFStat(cint(AHandle), st) <> 0 then
+    Exit;
+  Result := (QWord(st.st_dev) = AId.Dev) and (QWord(st.st_ino) = AId.Ino);
 end;
 
 function RdpClipMakeDirOwnerOnly(const APath: string): Boolean;
 begin
-  Result := CreateDir(APath);   // exclusif aussi
+  // mkdir echoue si le nom existe: jamais le lien pose par un autre
+  Result := FpMkdir(PChar(APath), &700) = 0;
 end;
 
-// Pas de pont de fichiers ici: balayer un reliquat, sans suivre les liens.
 procedure RdpClipRemoveTree(const APath: string);
-var
-  sr: TSearchRec;
+
+  procedure RemoveLevel(const ADir: string; ADepth: Integer);
+  var
+    sr: TSearchRec;
+    sub: string;
+    st: Stat;
+  begin
+    // au pire du temporaire reste: mieux qu'effacer a l'aveugle
+    if ADepth > RDPCLIP_MAX_DEPTH * 2 then
+      Exit;
+    if FindFirst(ADir + '/*', faAnyFile, sr) = 0 then
+    begin
+      try
+        repeat
+          if (sr.Name = '.') or (sr.Name = '..') or (sr.Name = '') then
+            Continue;
+          sub := ADir + '/' + sr.Name;
+          // lstat tranche: FindFirst suit parfois le lien pour les attributs
+          if fpLStat(PChar(sub), st) <> 0 then
+            Continue;
+          if (not fpS_ISLNK(st.st_mode)) and fpS_ISDIR(st.st_mode) then
+          begin
+            RemoveLevel(sub, ADepth + 1);
+            FpRmdir(PChar(sub));
+          end
+          else
+            FpUnlink(PChar(sub));
+        until FindNext(sr) <> 0;
+      finally
+        FindClose(sr);
+      end;
+    end;
+  end;
+
 begin
   if APath = '' then
     Exit;
-  if FindFirst(APath + PathDelim + '*', faAnyFile, sr) = 0 then
+  RemoveLevel(APath, 0);
+  FpRmdir(PChar(ExcludeTrailingPathDelimiter(APath)));
+end;
+
+function RdpClipOpenServed(const APath: string): THandleStream;
+var
+  fd: cint;
+  st: Stat;
+begin
+  // O_NONBLOCK: inoffensif sur un fichier regulier, vital si un tube a pris
+  // sa place; l'identite (dev/ino) est reverifiee ensuite par l'appelant.
+  fd := FpOpen(PChar(APath), O_RDONLY or O_NOFOLLOW or O_NONBLOCK
+    or O_CLOEXEC_);
+  if fd < 0 then
+    raise EFOpenError.CreateFmt('Cannot open %s', [APath]);
+  if (fpFStat(fd, st) <> 0) or (not fpS_ISREG(st.st_mode)) then
   begin
-    try
-      repeat
-        if (sr.Name = '.') or (sr.Name = '..') or (sr.Name = '') then
-          Continue;
-        if (sr.Attr and FA_SYMLINK_) <> 0 then
-        begin
-          if (sr.Attr and faDirectory) <> 0 then
-            RemoveDir(APath + PathDelim + sr.Name)
-          else
-            SysUtils.DeleteFile(APath + PathDelim + sr.Name);
-        end
-        else if (sr.Attr and faDirectory) <> 0 then
-          RdpClipRemoveTree(APath + PathDelim + sr.Name)
-        else
-          SysUtils.DeleteFile(APath + PathDelim + sr.Name);
-      until FindNext(sr) <> 0;
-    finally
-      FindClose(sr);
-    end;
+    FpClose(fd);
+    raise EFOpenError.CreateFmt('%s is not a regular file', [APath]);
   end;
-  RemoveDir(APath);
+  Result := TOwnedHandleStream.Create(fd);
 end;
 {$ENDIF}
 
@@ -440,15 +580,55 @@ begin
   end;
 end;
 
-function RdpClipSafeRelPath(const ARel: UnicodeString; out ALocalRel: string;
-  out AWhy: string): Boolean;
+// Regles du FIL (MS-RDPECLIP vise un collage Windows): un nom qui les casse
+// est refuse a l'entree comme a la sortie.
+function WireComponentOk(const AComp: UnicodeString; out AWhy: string): Boolean;
 const
   BAD_CHARS: UnicodeString = '<>:"/|?*';
 var
-  comp: UnicodeString;
-  i, start, depth, p: Integer;
+  k, p: Integer;
   c: WideChar;
   stem: string;
+
+  function Refuse(const AReason: string): Boolean;
+  begin
+    AWhy := AReason;
+    Result := False;
+  end;
+
+begin
+  AWhy := '';
+  Result := False;
+  if AComp = '' then Exit(Refuse('empty path component'));
+  if (AComp = '.') or (AComp = '..') then
+    Exit(Refuse('"." and ".." are not file names'));
+  for k := 1 to Length(AComp) do
+  begin
+    c := AComp[k];
+    if (Ord(c) < 32) or (Pos(c, BAD_CHARS) > 0) or (c = '\') then
+      Exit(Refuse('forbidden character in a file name'));
+  end;
+  // Windows mange point et espace finaux: deux entrees, un seul fichier.
+  c := AComp[Length(AComp)];
+  if (c = '.') or (c = ' ') then
+    Exit(Refuse('a file name may not end with a dot or a space'));
+  stem := UpperCase(string(AComp));
+  p := Pos('.', stem);
+  if p > 1 then
+    stem := Copy(stem, 1, p - 1);
+  if (stem = 'CON') or (stem = 'PRN') or (stem = 'AUX') or (stem = 'NUL') or
+     (((Copy(stem, 1, 3) = 'COM') or (Copy(stem, 1, 3) = 'LPT')) and
+      (Length(stem) = 4) and (stem[4] in ['1'..'9'])) then
+    Exit(Refuse('reserved device name'));
+  Result := True;
+end;
+
+function RdpClipSafeRelPath(const ARel: UnicodeString; out ALocalRel: string;
+  out AWhy: string): Boolean;
+var
+  comp: UnicodeString;
+  i, start, depth: Integer;
+  why: string;
 
   function Refuse(const AReason: string): Boolean;
   begin
@@ -466,26 +646,8 @@ var
     SetLength(comp, ATo - AFrom + 1);
     for k := AFrom to ATo do
       comp[k - AFrom + 1] := ARel[k];
-    if (comp = '.') or (comp = '..') then
-      Exit(Refuse('"." and ".." are not file names'));
-    for k := 1 to Length(comp) do
-    begin
-      c := comp[k];
-      if (Ord(c) < 32) or (Pos(c, BAD_CHARS) > 0) or (c = '\') then
-        Exit(Refuse('forbidden character in a file name'));
-    end;
-    // Windows mange point et espace finaux: deux entrees, un seul fichier.
-    c := comp[Length(comp)];
-    if (c = '.') or (c = ' ') then
-      Exit(Refuse('a file name may not end with a dot or a space'));
-    stem := UpperCase(string(comp));
-    p := Pos('.', stem);
-    if p > 1 then
-      stem := Copy(stem, 1, p - 1);
-    if (stem = 'CON') or (stem = 'PRN') or (stem = 'AUX') or (stem = 'NUL') or
-       (((Copy(stem, 1, 3) = 'COM') or (Copy(stem, 1, 3) = 'LPT')) and
-        (Length(stem) = 4) and (stem[4] in ['1'..'9'])) then
-      Exit(Refuse('reserved device name'));
+    if not WireComponentOk(comp, why) then
+      Exit(Refuse(why));
     Result := True;
   end;
 
@@ -748,13 +910,206 @@ begin
   Result := True;
 end;
 {$ELSE}
+// Meme modele que Windows: identite capturee a l'enumeration, descente par
+// openat ancre au parent, reverification fstat. Un lien est saute, tout le
+// reste d'inclassable (tube, socket, device) fait refuser le lot.
 function EnumerateLocalTree(const ARoots: array of string;
   out AFiles: TRdpClipFileArray; out AWhy: string): Boolean;
+const
+  // secondes Unix -> FILETIME (100 ns depuis 1601)
+  EPOCH_1601 = Int64(116444736000000000);
+var
+  n: Integer;
+
+  function Refuse(const AReason: string): Boolean;
+  begin
+    SetLength(AFiles, 0);
+    AWhy := AReason;
+    Result := False;
+  end;
+
+  function WireTime(const ASt: Stat): Int64;
+  begin
+    Result := Int64(ASt.st_mtime) * 10000000 + EPOCH_1601;
+  end;
+
+  // Le nom doit survivre au fil: UTF-8 valide et regles Windows.
+  function WireName(const AName: string; out AWide: UnicodeString): Boolean;
+  var
+    why: string;
+  begin
+    Result := False;
+    AWide := UTF8Decode(AName);
+    if UTF8Encode(AWide) <> AName then
+    begin
+      Refuse(Format('"%s" is not valid text; it cannot cross the clipboard',
+        [AName]));
+      Exit;
+    end;
+    if not WireComponentOk(AWide, why) then
+    begin
+      Refuse(Format('"%s": %s', [AName, why]));
+      Exit;
+    end;
+    Result := True;
+  end;
+
+  function AddEntry(const ARel: UnicodeString; const ALocal: string;
+    AIsDir: Boolean; const ASt: Stat): Boolean;
+  begin
+    if Length(ARel) > FILEDESC_NAME_MAX then
+      Exit(Refuse(Format('the relative path of "%s" does not fit the ' +
+        'clipboard format (260 characters)', [ALocal])));
+    if n >= RDPCLIP_MAX_FILES then
+      Exit(Refuse(Format('more than %d files', [RDPCLIP_MAX_FILES])));
+    if n = Length(AFiles) then
+      SetLength(AFiles, 16 + n * 2);
+    AFiles[n] := Default(TRdpClipFile);
+    AFiles[n].RelPath := ARel;
+    AFiles[n].LocalPath := ALocal;
+    AFiles[n].IsDir := AIsDir;
+    AFiles[n].SizeKnown := not AIsDir;
+    AFiles[n].Size := ASt.st_size;
+    AFiles[n].WriteTime := WireTime(ASt);
+    AFiles[n].Id.Known := True;
+    AFiles[n].Id.Dev := QWord(ASt.st_dev);
+    AFiles[n].Id.Ino := QWord(ASt.st_ino);
+    Inc(n);
+    Result := True;
+  end;
+
+  function WalkFd(AFd: cint; const ADir: string; const ARel: UnicodeString;
+    ADepth: Integer): Boolean;
+  var
+    names: array of string;
+    sr: TSearchRec;
+    cnt, e: Integer;
+    st, cst: Stat;
+    sub: string;
+    wide: UnicodeString;
+    child: cint;
+  begin
+    Result := False;
+    if ADepth > RDPCLIP_MAX_DEPTH then
+      Exit(Refuse('folder tree too deep'));
+    // Les NOMS viennent du chemin; identite et contenu, du fd. Un dossier
+    // substitue donne des noms que le fd ne connait pas: refus, pas d'evasion.
+    names := nil;
+    cnt := 0;
+    if FindFirst(ADir + '/*', faAnyFile, sr) = 0 then
+    begin
+      try
+        repeat
+          if (sr.Name = '.') or (sr.Name = '..') or (sr.Name = '') then
+            Continue;
+          if cnt = Length(names) then
+            SetLength(names, 16 + cnt * 2);
+          names[cnt] := sr.Name;
+          Inc(cnt);
+        until FindNext(sr) <> 0;
+      finally
+        FindClose(sr);
+      end;
+    end;
+    for e := 0 to cnt - 1 do
+    begin
+      if not FStatAtNoFollow(AFd, ADir, names[e], st) then
+        Exit(Refuse(Format('"%s" changed while it was being listed; ' +
+          'nothing was sent', [names[e]])));
+      // lien: ni suivi ni annonce
+      if fpS_ISLNK(st.st_mode) then
+        Continue;
+      if not WireName(names[e], wide) then
+        Exit;
+      sub := ADir + '/' + names[e];
+      if fpS_ISDIR(st.st_mode) then
+      begin
+        if not AddEntry(ARel + '\' + wide, sub, True, st) then
+          Exit;
+        child := OpenAtNoFollow(AFd, names[e], O_DIRECTORY);
+        if child < 0 then
+          Exit(Refuse(Format('"%s" could not be opened to walk into it',
+            [names[e]])));
+        try
+          // La POIGNEE doit etre l'entree listee; un substitut fait refuser.
+          if (fpFStat(child, cst) <> 0) or
+             (QWord(cst.st_dev) <> QWord(st.st_dev)) or
+             (QWord(cst.st_ino) <> QWord(st.st_ino)) then
+            Exit(Refuse(Format('"%s" changed while it was being listed; ' +
+              'nothing was sent', [names[e]])));
+          if not WalkFd(child, sub, ARel + '\' + wide, ADepth + 1) then
+            Exit;
+        finally
+          FpClose(child);
+        end;
+      end
+      else if fpS_ISREG(st.st_mode) then
+      begin
+        if not AddEntry(ARel + '\' + wide, sub, False, st) then
+          Exit;
+      end
+      else
+        Exit(Refuse(Format('"%s" is neither a file nor a folder',
+          [names[e]])));
+    end;
+    Result := True;
+  end;
+
+var
+  i: Integer;
+  root, base: string;
+  wide: UnicodeString;
+  st, fst: Stat;
+  fd: cint;
 begin
-  SetLength(AFiles, 0);
-  // Refus FRANC: sans CF_HDROP local, on promettrait un envoi intenable.
-  AWhy := 'copying files works between Windows machines only';
   Result := False;
+  SetLength(AFiles, 0);
+  AWhy := '';
+  n := 0;
+  for i := 0 to High(ARoots) do
+  begin
+    root := ExcludeTrailingPathDelimiter(ARoots[i]);
+    base := ExtractFileName(root);
+    if base = '' then
+      Exit(Refuse('a filesystem root cannot be copied whole'));
+    if fpLStat(PChar(root), st) <> 0 then
+      Exit(Refuse(Format('"%s" is not there any more', [base])));
+    if fpS_ISLNK(st.st_mode) then
+      Exit(Refuse(Format('"%s" is a link, and links are not carried',
+        [base])));
+    if not WireName(base, wide) then
+      Exit;
+    if fpS_ISDIR(st.st_mode) then
+    begin
+      fd := FpOpen(PChar(root), O_RDONLY or O_NOFOLLOW or O_DIRECTORY
+        or O_CLOEXEC_);
+      if fd < 0 then
+        Exit(Refuse(Format('"%s" could not be opened', [base])));
+      try
+        if (fpFStat(fd, fst) <> 0) or
+           (QWord(fst.st_dev) <> QWord(st.st_dev)) or
+           (QWord(fst.st_ino) <> QWord(st.st_ino)) then
+          Exit(Refuse(Format('"%s" changed while it was being listed; ' +
+            'nothing was sent', [base])));
+        if not AddEntry(wide, root, True, st) then
+          Exit;
+        if not WalkFd(fd, root, wide, 1) then
+          Exit;
+      finally
+        FpClose(fd);
+      end;
+    end
+    else if fpS_ISREG(st.st_mode) then
+    begin
+      if not AddEntry(wide, root, False, st) then
+        Exit;
+    end
+    else
+      Exit(Refuse(Format('"%s" is neither a file nor a folder', [base])));
+  end;
+  if n = 0 then Exit(Refuse('nothing to copy'));
+  SetLength(AFiles, n);
+  Result := True;
 end;
 {$ENDIF}
 

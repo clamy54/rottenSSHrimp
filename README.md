@@ -56,8 +56,8 @@ healthy machines on earth have been quietly ignoring ping since a security
 review in 2018, and it would be rude to accuse them. Mostly you will use it
 for the ninety seconds after a reboot you started yourself.
 
-**Clipboard.** Copy and paste work in and out of remote desktops, and on
-Windows that includes files, both ways. Anything coming back from a server is
+**Clipboard.** Copy and paste work in and out of remote desktops, files
+included, both ways. Anything coming back from a server is
 handled like a parcel that ticks: size-limited, opened in a private folder,
 and never allowed to wander off to somewhere else on your disk. In terminals
 the middle mouse button pastes, as Unix has insisted since before most of us

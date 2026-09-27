@@ -80,10 +80,8 @@ type
     procedure ClipboardFromRemote(const AText: UnicodeString);
     procedure ClipboardFilesFromRemote(const APaths: TStringArray);
     procedure ClipNoteFromTransport(const AText: string);
-    {$IFDEF WINDOWS}
     function TryReadLocalFiles(out APaths: TStringArray): Boolean;
     function WriteLocalFiles(const APaths: TStringArray): Boolean;
-    {$ENDIF}
     procedure PollLocalFiles;
     procedure ClipPoll(Sender: TObject);
     function TryReadLocalClipboard(out AText: string): Boolean;
@@ -611,7 +609,6 @@ end;
 
 // Presse-papiers verrouille: retente au tick suivant.
 procedure TRdpSessionTab.PollLocalFiles;
-{$IFDEF WINDOWS}
 var
   paths: TStringArray;
   sig: string;
@@ -646,14 +643,9 @@ begin
   end;
   FTransport.AnnounceLocalFiles(paths);
 end;
-{$ELSE}
-begin
-end;
-{$ENDIF}
 
 // Provenance marquee AVANT l'ecriture, sinon le sondage suivant le renvoie.
 procedure TRdpSessionTab.ClipboardFilesFromRemote(const APaths: TStringArray);
-{$IFDEF WINDOWS}
 var
   sig, prevSig, prevRemote: string;
   prevPrimed: Boolean;
@@ -687,10 +679,6 @@ begin
         'clipboard.', [FDisplayName]));
   end;
 end;
-{$ELSE}
-begin
-end;
-{$ENDIF}
 
 procedure TRdpSessionTab.ClipNoteFromTransport(const AText: string);
 begin
@@ -698,7 +686,6 @@ begin
     FOnNotice(Format('%s: %s', [FDisplayName, AText]));
 end;
 
-{$IFDEF WINDOWS}
 function TRdpSessionTab.TryReadLocalFiles(out APaths: TStringArray): Boolean;
 begin
   Result := ClipReadHdrop(APaths);
@@ -708,7 +695,6 @@ function TRdpSessionTab.WriteLocalFiles(const APaths: TStringArray): Boolean;
 begin
   Result := ClipWriteHdrop(APaths);
 end;
-{$ENDIF}
 
 procedure TRdpSessionTab.TransportFinished;
 begin
