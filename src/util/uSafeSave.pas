@@ -276,19 +276,32 @@ var
   sd: TBytes;
   info: LongWord;
   daclOk: Boolean;
+  bak: string;
 begin
   daclOk := False;
   sd := nil;
   info := 0;
+  bak := '';
   if FileExists(ADest) then
   begin
     // Lue et posee sur le temporaire AVANT: un ReplaceFileW interrompu a pu
     // emporter la cible, et sa DACL avec.
     daclOk := ReadDacl(ADest, sd, info) and ApplyDacl(ATmp, sd, info);
+    // Avec un nom de sauvegarde, ReplaceFileW interrompu RENOMME l'original
+    // au lieu de l'emporter: il reste toujours une copie intacte quelque part.
+    bak := Format('%s.rssh%.8x%.4x.bak',
+      [ADest, LongWord(GetTickCount64), Random($10000)]);
     // Pas d'IGNORE_MERGE_ERRORS: il « reussit » en jetant l'ACL au passage.
     if ReplaceFileW(PWideChar(UTF8Decode(ADest)), PWideChar(UTF8Decode(ATmp)),
-        nil, 0, nil, nil) then
+        PWideChar(UTF8Decode(bak)), 0, nil, nil) then
+    begin
+      DeleteFile(bak);   // l'ancien contenu, remplace en bonne et due forme
       Exit(True);
+    end;
+    // Echec a mi-course: si l'original est sous le nom de sauvegarde, il
+    // reprend sa place avant toute autre tentative.
+    if (not FileExists(ADest)) and FileExists(bak) then
+      MoveFileExW(PWideChar(UTF8Decode(bak)), PWideChar(UTF8Decode(ADest)), 0);
     // Repli MoveFileExW, DACL deja posee ou echec franc. Reste un trou: DACL
     // illisible (FAT, exFAT, partage sans ACL) ET cible disparue. Les droits
     // du dossier valent alors mieux que pas de fichier du tout.
@@ -298,6 +311,8 @@ begin
   Result := MoveFileExW(PWideChar(UTF8Decode(ATmp)),
     PWideChar(UTF8Decode(ADest)),
     MOVEFILE_REPLACE_EXISTING or MOVEFILE_COPY_ALLOWED);
+  if Result and (bak <> '') then
+    DeleteFile(bak);
 end;
 
 {$ELSE}

@@ -1478,6 +1478,7 @@ var
   destDb: TSqliteDb;
   salt, payload, sealed: TBytes;
   ops, mem: Int64;
+  hadTarget: Boolean;
   {$IFDEF UNIX}
   dirSynced: Boolean;
   {$ENDIF}
@@ -1600,10 +1601,22 @@ begin
         'lien physique cree pendant la sauvegarde');
       Exit;
     end;
+    hadTarget := FileExists(realTarget);
     if not ReplaceByRenamePrivate(tmpName, realTarget) then
     begin
-      AErr := DocErr(decIo, 'Cannot replace the target file.',
-        'rename en echec');
+      // Cible emportee par un ReplaceFileW interrompu: le temporaire est la
+      // seule copie sur disque, il ne part pas a la poubelle avec l'erreur.
+      if hadTarget and (not FileExists(realTarget)) then
+      begin
+        AErr := DocErr(decIo, Format('Cannot replace the target file, and ' +
+          'the previous file is gone. Your document was kept as "%s": ' +
+          'save it again, or under a new name.', [tmpName]),
+          'rename en echec et cible disparue: temporaire conserve');
+        tmpName := '';
+      end
+      else
+        AErr := DocErr(decIo, 'Cannot replace the target file.',
+          'rename en echec');
       Exit;
     end;
     tmpName := '';
