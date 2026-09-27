@@ -17,7 +17,8 @@ uses
 // False = presse-papiers verrouille par un autre, a retenter. Vide n'est pas False.
 function ClipReadHdrop(out APaths: TStringArray): Boolean;
 
-// False = rien n'a ete change.
+// False = fichiers non poses. Le presse-papiers a pu etre vide au passage,
+// comme apres n'importe quelle copie ratee.
 function ClipWriteHdrop(const APaths: TStringArray): Boolean;
 
 // Change a chaque ecriture, par qui que ce soit. Emule par empreinte sous X11.
@@ -33,7 +34,7 @@ implementation
 
 {$IFNDEF WINDOWS}
 uses
-  {$IFDEF DARWIN}CocoaAll{$ELSE}Classes, Clipbrd{$ENDIF};
+  {$IFDEF DARWIN}CocoaAll{$ELSE}Classes, LCLType, Clipbrd{$ENDIF};
 {$ENDIF}
 
 // hors des non-reserves de la RFC 3986; '/' reste un separateur
@@ -455,10 +456,22 @@ begin
     msU.WriteBuffer(uris[1], Length(uris));
     msG.Position := 0;
     msU.Position := 0;
+    // Open/Close: une seule prise de possession, les deux formats ou aucun.
+    // Sans, chaque AddFormat publie seul et Nautilus voit un etat a moitie.
     try
-      Clipboard.Clear;
-      Result := Clipboard.AddFormat(GGnomeFmt, msG);
-      Result := Clipboard.AddFormat(GUriFmt, msU) and Result;
+      Clipboard.Open;
+      try
+        Clipboard.Clear;   // le cache LCL, pas X11
+        Result := Clipboard.AddFormat(GGnomeFmt, msG) and
+          Clipboard.AddFormat(GUriFmt, msU);
+        if not Result then
+          Clipboard.Clear;   // un format seul ne part pas
+      finally
+        Clipboard.Close;
+      end;
+      // Close avale l'echec de possession: il vide alors le cache
+      Result := Result and Clipboard.HasFormat(GGnomeFmt) and
+        Clipboard.HasFormat(GUriFmt);
     except
       Result := False;
     end;

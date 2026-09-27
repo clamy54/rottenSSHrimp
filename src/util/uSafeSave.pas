@@ -282,16 +282,16 @@ begin
   info := 0;
   if FileExists(ADest) then
   begin
-    // AVANT: un ReplaceFileW interrompu a pu deja emporter la cible.
-    daclOk := ReadDacl(ADest, sd, info);
+    // Lue et posee sur le temporaire AVANT: un ReplaceFileW interrompu a pu
+    // emporter la cible, et sa DACL avec.
+    daclOk := ReadDacl(ADest, sd, info) and ApplyDacl(ATmp, sd, info);
     // Pas d'IGNORE_MERGE_ERRORS: il « reussit » en jetant l'ACL au passage.
     if ReplaceFileW(PWideChar(UTF8Decode(ADest)), PWideChar(UTF8Decode(ATmp)),
         nil, 0, nil, nil) then
       Exit(True);
-    // Repli MoveFileExW, DACL reposee ou echec franc. Sauf cible deja
-    // disparue: les droits du dossier valent mieux que pas de fichier.
-    if daclOk then
-      daclOk := ApplyDacl(ATmp, sd, info);
+    // Repli MoveFileExW, DACL deja posee ou echec franc. Reste un trou: DACL
+    // illisible (FAT, exFAT, partage sans ACL) ET cible disparue. Les droits
+    // du dossier valent alors mieux que pas de fichier du tout.
     if (not daclOk) and FileExists(ADest) then
       Exit(False);
   end;

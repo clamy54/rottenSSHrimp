@@ -376,12 +376,16 @@ const
   {$IFDEF LINUX}
   O_CLOEXEC_ = $80000;
   AT_SYMLINK_NOFOLLOW_ = $100;
+  AT_REMOVEDIR_ = $200;
     {$IF DEFINED(CPUX86_64)}
     SYSCALL_FSTATAT_ = 262; {$DEFINE RSSH_FSTATAT}   // newfstatat
+    SYSCALL_GETDENTS64_ = 217; {$DEFINE RSSH_LISTFD}
     {$ELSEIF DEFINED(CPUAARCH64)}
     SYSCALL_FSTATAT_ = 79; {$DEFINE RSSH_FSTATAT}
+    SYSCALL_GETDENTS64_ = 61; {$DEFINE RSSH_LISTFD}
     {$ELSEIF DEFINED(CPUI386)}
     SYSCALL_FSTATAT_ = 300; {$DEFINE RSSH_FSTATAT}   // fstatat64, Stat FPC = stat64
+    SYSCALL_GETDENTS64_ = 220; {$DEFINE RSSH_LISTFD}
     {$ENDIF}
   {$ELSE}
   // absents du BaseUnix Darwin; <sys/fcntl.h>
@@ -389,8 +393,12 @@ const
   O_DIRECTORY = $100000;
   O_CLOEXEC_ = $1000000;
   AT_SYMLINK_NOFOLLOW_ = $20;
+  AT_REMOVEDIR_ = $80;
     {$IF DEFINED(CPUAARCH64)}
     {$DEFINE RSSH_FSTATAT}   // arm64: fstatat EST la variante inode 64 bits
+    {$DEFINE RSSH_LISTFD}
+    {$ELSEIF DEFINED(CPUX86_64)}
+    {$DEFINE RSSH_LISTFD}   // via les symboles $INODE64
     {$ENDIF}
   {$ENDIF}
 
@@ -412,9 +420,129 @@ begin
     TSysParam(AT_SYMLINK_NOFOLLOW_)) = 0;
 end;
 {$ENDIF}
+
+function UnlinkAt_(ADir: cint; const AName: string; AIsDir: Boolean): cint;
+var
+  flags: cint;
+begin
+  flags := 0;
+  if AIsDir then flags := AT_REMOVEDIR_;
+  Result := do_syscall(syscall_nr_unlinkat, TSysParam(ADir),
+    TSysParam(PChar(AName)), TSysParam(flags));
+end;
+
+{$IFDEF RSSH_LISTFD}
+function ListDirFd(AFd: cint; const ADirPath: string;
+  out ANames: TStringArray): Boolean;
+var
+  buf: array[0..16383] of Byte;
+  got, off, n: PtrInt;
+  reclen: Word;
+  name: string;
+begin
+  Result := False;
+  ANames := nil;
+  n := 0;
+  repeat
+    got := PtrInt(do_syscall(SYSCALL_GETDENTS64_, TSysParam(AFd),
+      TSysParam(@buf[0]), TSysParam(SizeOf(buf))));
+    if got < 0 then
+      Exit;
+    off := 0;
+    // linux_dirent64: ino 8, off 8, reclen 2, type 1, nom
+    while off < got do
+    begin
+      reclen := PWord(@buf[off + 16])^;
+      if reclen = 0 then
+        Exit;
+      name := StrPas(PChar(@buf[off + 19]));
+      Inc(off, reclen);
+      if (name = '.') or (name = '..') then
+        Continue;
+      if n = Length(ANames) then
+        SetLength(ANames, 16 + n * 2);
+      ANames[n] := name;
+      Inc(n);
+    end;
+  until got = 0;
+  SetLength(ANames, n);
+  Result := True;
+end;
+{$ENDIF}
 {$ELSE}
 function c_openat(dirfd: cint; path: PChar; flags: cint): cint; cdecl;
   external 'c' name 'openat';
+function c_unlinkat(dirfd: cint; path: PChar; flags: cint): cint; cdecl;
+  external 'c' name 'unlinkat';
+{$IFDEF RSSH_LISTFD}
+{$IFDEF CPUX86_64}
+function c_fdopendir(fd: cint): Pointer; cdecl;
+  external 'c' name 'fdopendir$INODE64';
+function c_readdir(d: Pointer): PByte; cdecl;
+  external 'c' name 'readdir$INODE64';
+{$ELSE}
+function c_fdopendir(fd: cint): Pointer; cdecl; external 'c' name 'fdopendir';
+function c_readdir(d: Pointer): PByte; cdecl; external 'c' name 'readdir';
+{$ENDIF}
+function c_closedir(d: Pointer): cint; cdecl; external 'c' name 'closedir';
+function c_errno: pcint; cdecl; external 'c' name '__error';
+
+function ListDirFd(AFd: cint; const ADirPath: string;
+  out ANames: TStringArray): Boolean;
+var
+  dup: cint;
+  d: Pointer;
+  e: PByte;
+  n: Integer;
+  name: string;
+begin
+  Result := False;
+  ANames := nil;
+  n := 0;
+  // fdopendir garde le fd et closedir le ferme: on lui donne une copie
+  dup := FpDup(AFd);
+  if dup < 0 then
+    Exit;
+  d := c_fdopendir(dup);
+  if d = nil then
+  begin
+    FpClose(dup);
+    Exit;
+  end;
+  try
+    repeat
+      // readdir rend nil a la fin ET sur erreur: seul errno tranche
+      c_errno^ := 0;
+      e := c_readdir(d);
+      if e = nil then
+        Break;
+      // dirent inode 64: ino 8, seekoff 8, reclen 2, namlen 2, type 1, nom
+      SetString(name, PChar(e + 21), PWord(e + 18)^);
+      if (name = '.') or (name = '..') then
+        Continue;
+      if n = Length(ANames) then
+        SetLength(ANames, 16 + n * 2);
+      ANames[n] := name;
+      Inc(n);
+    until False;
+    Result := c_errno^ = 0;
+  finally
+    c_closedir(d);
+  end;
+  SetLength(ANames, n);
+  if not Result then
+    ANames := nil;
+end;
+{$ENDIF}
+
+function UnlinkAt_(ADir: cint; const AName: string; AIsDir: Boolean): cint;
+var
+  flags: cint;
+begin
+  flags := 0;
+  if AIsDir then flags := AT_REMOVEDIR_;
+  Result := c_unlinkat(ADir, PChar(AName), flags);
+end;
 {$IFDEF RSSH_FSTATAT}
 function c_fstatat(dirfd: cint; path: PChar; var st: Stat;
   flags: cint): cint; cdecl; external 'c' name 'fstatat';
@@ -444,6 +572,52 @@ function FStatAtNoFollow(ADir: cint; const ADirPath, AName: string;
 begin
   ASt := Default(Stat);
   Result := fpLStat(PChar(ADirPath + '/' + AName), ASt) = 0;
+end;
+{$ENDIF}
+
+{$IFNDEF RSSH_LISTFD}
+// Archi sans listing par fd: noms par chemin, gardes seulement si le chemin
+// designe encore le fd avant ET apres. Un echec de FindFirst en est un: « . »
+// est toujours la.
+function ListDirFd(AFd: cint; const ADirPath: string;
+  out ANames: TStringArray): Boolean;
+
+  function PathIsFd: Boolean;
+  var
+    ps, fs: Stat;
+  begin
+    Result := (fpLStat(PChar(ADirPath), ps) = 0) and
+      (not fpS_ISLNK(ps.st_mode)) and (fpFStat(AFd, fs) = 0) and
+      (ps.st_dev = fs.st_dev) and (ps.st_ino = fs.st_ino);
+  end;
+
+var
+  sr: TSearchRec;
+  n: Integer;
+begin
+  Result := False;
+  ANames := nil;
+  n := 0;
+  if not PathIsFd then
+    Exit;
+  if FindFirst(ADirPath + '/*', faAnyFile, sr) <> 0 then
+    Exit;
+  try
+    repeat
+      if (sr.Name = '.') or (sr.Name = '..') or (sr.Name = '') then
+        Continue;
+      if n = Length(ANames) then
+        SetLength(ANames, 16 + n * 2);
+      ANames[n] := sr.Name;
+      Inc(n);
+    until FindNext(sr) <> 0;
+  finally
+    FindClose(sr);
+  end;
+  SetLength(ANames, n);
+  Result := PathIsFd;
+  if not Result then
+    ANames := nil;
 end;
 {$ENDIF}
 
@@ -483,44 +657,53 @@ end;
 
 procedure RdpClipRemoveTree(const APath: string);
 
-  procedure RemoveLevel(const ADir: string; ADepth: Integer);
+  // Tout relatif au fd: un lien glisse en route part lui-meme, sa cible
+  // reste ou elle est.
+  procedure EmptyFd(ADir: cint; const ADirPath: string; ADepth: Integer);
   var
-    sr: TSearchRec;
-    sub: string;
-    st: Stat;
+    names: TStringArray;
+    i: Integer;
+    child: cint;
   begin
     // au pire du temporaire reste: mieux qu'effacer a l'aveugle
     if ADepth > RDPCLIP_MAX_DEPTH * 2 then
       Exit;
-    if FindFirst(ADir + '/*', faAnyFile, sr) = 0 then
+    if not ListDirFd(ADir, ADirPath, names) then
+      Exit;
+    for i := 0 to High(names) do
     begin
-      try
-        repeat
-          if (sr.Name = '.') or (sr.Name = '..') or (sr.Name = '') then
-            Continue;
-          sub := ADir + '/' + sr.Name;
-          // lstat tranche: FindFirst suit parfois le lien pour les attributs
-          if fpLStat(PChar(sub), st) <> 0 then
-            Continue;
-          if (not fpS_ISLNK(st.st_mode)) and fpS_ISDIR(st.st_mode) then
-          begin
-            RemoveLevel(sub, ADepth + 1);
-            FpRmdir(PChar(sub));
-          end
-          else
-            FpUnlink(PChar(sub));
-        until FindNext(sr) <> 0;
-      finally
-        FindClose(sr);
-      end;
+      child := OpenAtNoFollow(ADir, names[i], O_DIRECTORY);
+      if child >= 0 then
+      begin
+        try
+          EmptyFd(child, ADirPath + '/' + names[i], ADepth + 1);
+        finally
+          FpClose(child);
+        end;
+        UnlinkAt_(ADir, names[i], True);
+      end
+      else
+        UnlinkAt_(ADir, names[i], False);
     end;
   end;
 
+var
+  root: string;
+  fd: cint;
 begin
   if APath = '' then
     Exit;
-  RemoveLevel(APath, 0);
-  FpRmdir(PChar(ExcludeTrailingPathDelimiter(APath)));
+  root := ExcludeTrailingPathDelimiter(APath);
+  fd := FpOpen(PChar(root), O_RDONLY or O_NOFOLLOW or O_DIRECTORY
+    or O_CLOEXEC_);
+  if fd < 0 then
+    Exit;   // lien ou disparu: plus rien a nous
+  try
+    EmptyFd(fd, root, 0);
+  finally
+    FpClose(fd);
+  end;
+  FpRmdir(PChar(root));   // rmdir refuse un lien
 end;
 
 function RdpClipOpenServed(const APath: string): THandleStream;
@@ -981,9 +1164,8 @@ var
   function WalkFd(AFd: cint; const ADir: string; const ARel: UnicodeString;
     ADepth: Integer): Boolean;
   var
-    names: array of string;
-    sr: TSearchRec;
-    cnt, e: Integer;
+    names: TStringArray;
+    e: Integer;
     st, cst: Stat;
     sub: string;
     wide: UnicodeString;
@@ -992,26 +1174,12 @@ var
     Result := False;
     if ADepth > RDPCLIP_MAX_DEPTH then
       Exit(Refuse('folder tree too deep'));
-    // Les NOMS viennent du chemin; identite et contenu, du fd. Un dossier
-    // substitue donne des noms que le fd ne connait pas: refus, pas d'evasion.
-    names := nil;
-    cnt := 0;
-    if FindFirst(ADir + '/*', faAnyFile, sr) = 0 then
-    begin
-      try
-        repeat
-          if (sr.Name = '.') or (sr.Name = '..') or (sr.Name = '') then
-            Continue;
-          if cnt = Length(names) then
-            SetLength(names, 16 + cnt * 2);
-          names[cnt] := sr.Name;
-          Inc(cnt);
-        until FindNext(sr) <> 0;
-      finally
-        FindClose(sr);
-      end;
-    end;
-    for e := 0 to cnt - 1 do
+    // Liste illisible = refus: un dossier annonce vide est un collage ampute
+    // que personne ne remarquera avant d'en avoir besoin.
+    if not ListDirFd(AFd, ADir, names) then
+      Exit(Refuse(Format('"%s" could not be listed; nothing was sent',
+        [ExtractFileName(ADir)])));
+    for e := 0 to High(names) do
     begin
       if not FStatAtNoFollow(AFd, ADir, names[e], st) then
         Exit(Refuse(Format('"%s" changed while it was being listed; ' +
