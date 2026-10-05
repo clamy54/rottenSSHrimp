@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Lazarus 4.8 + FPC 3.2.2, runner Linux amd64 (ci.yml, release.yml).
+# FPC 3.2.2 + Lazarus trunk (GTK3), runner Linux amd64 (ci.yml, release.yml).
+# Lazarus: commit epingle, bati ici (make lazbuild). Le hash git fait foi.
 # Pas setup-lazarus: bloque a 4.4, et SourceForge bride les runners jusqu'au
 # timeout. Miroir d'abord, SourceForge en secours.
 # Empreinte verifiee AVANT installation, d'ou qu'il vienne: le compilateur
@@ -43,11 +44,27 @@ fetch() {  # $1 nom du fichier, $2 SHA-256 attendu
 
 fetch fpc-laz_3.2.2-210709_amd64.deb   92000f2b831184e153aab0c910f8ae9240450e5c6d76dc189cf53116ee501d83
 fetch fpc-src_3.2.2-210709_amd64.deb   8c9e145d8056754a9ca39ce3e52e982b8e4816124984c5f542f2a874e721ad53
-fetch lazarus-project_4.8.0-0_amd64.deb 401742cefb01ad99a628188034bf728fb5360d641ed2be5f91fb0ee183a301cd
 
 sudo apt-get update
 sudo apt-get install -y --no-install-recommends \
   "$dl/fpc-laz_3.2.2-210709_amd64.deb" \
   "$dl/fpc-src_3.2.2-210709_amd64.deb" \
-  "$dl/lazarus-project_4.8.0-0_amd64.deb"
-lazbuild --version
+  make git libgtk-3-dev
+
+laz_commit=39a5eec43c6846e8d63cbb6c5fd263db38c4ea5b
+laz_url=https://gitlab.com/freepascal.org/lazarus/lazarus.git
+lazdir="$HOME/lazarus-trunk"
+if [ ! -x "$lazdir/lazbuild" ] || [ "$(cat "$lazdir/.commit" 2>/dev/null)" != "$laz_commit" ]; then
+  rm -rf "$lazdir"; mkdir -p "$lazdir"
+  git -C "$lazdir" init -q
+  git -C "$lazdir" fetch -q --depth 1 "$laz_url" "$laz_commit"
+  git -C "$lazdir" checkout -q FETCH_HEAD
+  [ "$(git -C "$lazdir" rev-parse HEAD)" = "$laz_commit" ] || { echo "Lazarus: commit inattendu" >&2; exit 1; }
+  make -C "$lazdir" lazbuild >/dev/null
+  echo "$laz_commit" > "$lazdir/.commit"
+fi
+if [ -n "${GITHUB_PATH:-}" ]; then
+  echo "$lazdir" >> "$GITHUB_PATH"
+  echo "LAZARUS_DIR=$lazdir" >> "$GITHUB_ENV"
+fi
+"$lazdir/lazbuild" --version

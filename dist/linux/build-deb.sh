@@ -183,7 +183,7 @@ if command -v dpkg-shlibdeps >/dev/null 2>&1; then
 fi
 [ -n "$deps" ] || {
 	echo "dpkg-shlibdeps indisponible : Depends de repli (a verifier)" >&2
-	deps="libc6, libgtk2.0-0t64 | libgtk2.0-0, libx11-6"
+	deps="libc6, libgtk-3-0t64 | libgtk-3-0"
 }
 # FreeRDP = TROIS paquets; libfreerdp3-3 ne tire pas le client. winpr declare
 # aussi: on le dlopen nous-memes, compter sur un Depends tiers est un pari.

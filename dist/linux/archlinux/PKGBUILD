@@ -9,7 +9,7 @@
 # argv[0] resterait /usr/bin/rottensshrimp.
 
 pkgname=rottensshrimp
-pkgver=1.8
+pkgver=2.2
 pkgrel=1
 pkgdesc='SSH, RDP and VNC connection manager'
 arch=('x86_64')
@@ -18,7 +18,7 @@ license=('GPL-3.0-or-later')
 
 # Deux familles de dependances, et la seconde est le piege:
 #
-#  - LIEES au binaire (gtk2, libx11): l'editeur de liens les inscrit, namcap
+#  - LIEES au binaire (gtk3): l'editeur de liens les inscrit, namcap
 #    les retrouve seul.
 #  - ouvertes par DLOPEN (freerdp, libssh2, sqlite, libsodium): invisibles pour
 #    l'editeur de liens comme pour namcap, qui ne lisent que la table des
@@ -26,19 +26,7 @@ license=('GPL-3.0-or-later')
 #    n'ouvre aucune session. C'est l'echec le plus couteux a diagnostiquer:
 #    rien ne manque a l'installation, tout manque a l'usage.
 depends=(
-  # ATTENTION: gtk2 n'est PLUS dans les depots officiels d'Arch, il vient
-  # d'AUR, et makepkg seul ne le resoudra pas (paru, yay, ou installation
-  # prealable a la main). Arch ne fournit d'ailleurs plus lazarus-gtk2, mais
-  # lazarus-qt5 et lazarus-qt6.
-  #
-  # Ce n'est pas un choix d'empaquetage: le widgetset LCL de l'application est
-  # gtk2 et le code en depend explicitement -- uSearchBox importe gtk2/gdk2/
-  # glib2 et manipule un GtkStyle pour contourner les themes a moteur,
-  # uRdpControl lit les keycodes natifs sous {$IFDEF LCLGtk2}. Passer a Qt5
-  # ferait disparaitre ces branches SANS erreur de compilation, en emportant
-  # le clavier RDP: c'est un portage a mener et a tester, pas un drapeau.
-  'gtk2'
-  'libx11'
+  'gtk3'
   # FreeRDP 3 compte pour TROIS bibliotheques ouvertes par dlopen
   # (libfreerdp3, libfreerdp-client3, libwinpr3); sur Arch elles sont dans le
   # meme paquet, contrairement a Debian ou il en fallait trois.
@@ -52,39 +40,43 @@ depends=(
   'libjpeg-turbo'
 )
 
-# lazarus tire fpc et fpc-src. cmake sert a libvncclient, pkgconf au shim RDP
-# (en-tetes FreeRDP), imagemagick aux icones redimensionnees.
-#
-# lazarus-gtk2 vient d'AUR, comme gtk2: le paquet lazarus officiel ne livre que
-# les unites LCL qt5 et qt6, aucune gtk2. Sans lui, lazbuild voudrait compiler
-# la LCL gtk2 lui-meme et l'ecrire dans /usr/lib/lazarus, ou makepkg n'a pas les
-# droits. Le declarer ici fait echouer tot, avec un message clair, plutot qu'au
-# milieu de la compilation.
-makedepends=('lazarus' 'lazarus-gtk2' 'cmake' 'pkgconf' 'imagemagick')
+# Lazarus n'est pas pris dans les depots: GTK3 demande le trunk, bati ici a un
+# commit epingle. cmake sert a libvncclient, pkgconf au shim RDP, imagemagick
+# aux icones.
+makedepends=('fpc' 'cmake' 'pkgconf' 'imagemagick')
 
 # Ouverte par dlopen seulement quand un identifiant FIDO2 est en jeu; absente,
 # l'application le dit et tout le reste marche.
 optdepends=('libfido2: SSH authentication with FIDO2 security keys')
 
 _gitname=rottenSSHrimp
-source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+# l'archive d'un tag ne contient pas le sous-module rottenui
+_uicommit=91368995fe844b7794d4a1d3e66c947a7d7231de
+_lazcommit=39a5eec43c6846e8d63cbb6c5fd263db38c4ea5b
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz"
+        "rottenUI-$_uicommit.tar.gz::https://github.com/clamy54/rottenUI/archive/$_uicommit.tar.gz"
+        "lazarus-$_lazcommit.tar.gz::https://gitlab.com/freepascal.org/lazarus/lazarus/-/archive/$_lazcommit/lazarus-$_lazcommit.tar.gz")
 
 # SKIP, et la raison n'est pas la paresse: depuis la 1.3 ce PKGBUILD est DANS
 # l'archive dont il devrait donner l'empreinte -- y inscrire une somme change
 # l'archive, donc la somme, indefiniment. (La 1.2 y echappait: le fichier n'y
 # figurait pas encore.) Sur AUR, ou le PKGBUILD vit dans son propre depot, le
 # cycle disparait: lancer `updpkgsums` et remplacer SKIP par la somme obtenue.
-sha256sums=('SKIP')
+sha256sums=('SKIP' 'SKIP' 'SKIP')
+
+prepare() {
+  rm -rf "$_gitname-$pkgver/rottenui"
+  cp -a "rottenUI-$_uicommit" "$_gitname-$pkgver/rottenui"
+}
 
 build() {
   cd "$_gitname-$pkgver"
 
-  # lazbuild lit d'ordinaire le repertoire Lazarus dans sa configuration
-  # primaire; sous makepkg elle est neuve et vide, d'ou « Invalid Lazarus
-  # directory "": directory lcl not found ». build.sh sait le chercher, mais
-  # sur Arch l'emplacement ne varie pas: autant le nommer et rendre la
-  # construction deterministe.
-  export LAZARUS_DIR=/usr/lib/lazarus
+  # Lazarus trunk, config a part
+  make -C "$srcdir/lazarus-$_lazcommit" lazbuild
+  export PATH="$srcdir/lazarus-$_lazcommit:$PATH"
+  export LAZARUS_DIR="$srcdir/lazarus-$_lazcommit"
+  export LAZBUILD_PCP="$srcdir/lazcfg"
 
   # 1) libvncclient vendorisee (patchee: trois correctifs de securite
   #    Tight/UltraZip). Le tarball epingle est DANS le depot, aucun acces

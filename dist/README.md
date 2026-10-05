@@ -98,19 +98,15 @@ distributions with no package. Output:
 `install.sh` that needs no privileges.
 
 **Arch Linux**: `linux/archlinux/PKGBUILD`, same layout as the `.deb`, but
-unsupported. Two dependencies come from AUR and `makepkg` will not resolve
-them, so install them first:
+unsupported.
 
 ```sh
-yay -S gtk2 lazarus-gtk2      # or paru -S
 cd dist/linux/archlinux
 makepkg -si
 ```
 
-Neither GTK+2 nor its LCL variant is in the official repositories any more —
-Arch ships `lazarus-qt5` and `lazarus-qt6` only. Switching this application to
-Qt is not a matter of changing a flag: the comments in the `PKGBUILD` explain
-what would silently disappear with the GTK2 branches.
+The application uses GTK3, which needs Lazarus trunk: the `PKGBUILD` builds
+`lazbuild` from a pinned commit instead of using the `lazarus` package.
 
 All three ship the same two files, `linux/rottensshrimp.desktop` and
 `linux/rottensshrimp-mime.xml`, so double-clicking a `.rsh` opens it. The
@@ -141,9 +137,9 @@ Since the loaders look for `lib/` next to the executable, everything lives in
 `/usr/bin/rottensshrimp` and `lib/` would be looked up in `/usr/bin`.
 
 **Dependencies come from two places, and the second one is the trap.** What is
-*linked* into the binary (GTK, X11, libc) is computed by `dpkg-shlibdeps` and
+*linked* into the binary (GTK, libc) is computed by `dpkg-shlibdeps` and
 never hand-written, because package names drift under you: Ubuntu's time64
-transition renamed `libgtk2.0-0` to `libgtk2.0-0t64`, and a `Depends` on a
+transition renamed `libgtk-3-0` to `libgtk-3-0t64`, and a `Depends` on a
 package that no longer exists produces a `.deb` installable on precisely zero
 machines, with nothing failing at build time to warn you.
 

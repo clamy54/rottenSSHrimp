@@ -52,6 +52,18 @@ if [ "$(uname -s)" = "Darwin" ]; then
   optarg="--opt=-k-ld_classic"
 fi
 
+# Linux: GTK3, celui de Lazarus trunk (>= 5). RSSH_WS=gtk2 pour l'ancien.
+wsarg=""
+if [ "$(uname -s)" = "Linux" ]; then
+  ws="${RSSH_WS:-gtk3}"
+  lazver="$("$lazbuild" --version 2>/dev/null | head -1)"
+  if [ "$ws" = "gtk3" ] && [ "${lazver%%.*}" -lt 5 ] 2>/dev/null; then
+    echo "Lazarus $lazver: GTK3 demande Lazarus trunk (>= 5). RSSH_WS=gtk2 sinon." >&2
+    exit 1
+  fi
+  wsarg="--ws=$ws"
+fi
+
 # shim facultatif ici: sans en-tetes, l'app retombe sur ses offsets
 "$root/scripts/build-rdp-shim.sh" || true
 
@@ -59,5 +71,6 @@ echo "lazbuild: $lazbuild"
 [ -n "$lazdir" ] && echo "lazarusdir: $lazdir"
 # lazbuild resout les RCDATA depuis le cwd, PAS depuis le .lpi
 cd "$root/app"
-"$lazbuild" $buildarg ${lazdirarg:+"$lazdirarg"} ${optarg:+"$optarg"} "$lpi"
+"$lazbuild" $buildarg $wsarg ${lazdirarg:+"$lazdirarg"} \
+  ${LAZBUILD_PCP:+"--pcp=$LAZBUILD_PCP"} ${optarg:+"$optarg"} ${LAZBUILD_OPTS:-} "$lpi"
 echo "OK -> $root/rottensshrimp"
