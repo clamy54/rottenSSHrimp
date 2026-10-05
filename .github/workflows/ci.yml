@@ -99,8 +99,6 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
       - name: Dependances de construction de libvncclient
         run: ${{ matrix.install }}
       - name: Construire la lib epinglee et comparer les offsets en dur
@@ -138,8 +136,6 @@ jobs:
     continue-on-error: ${{ matrix.informational == true }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
       - name: Installer les en-tetes FreeRDP
         run: ${{ matrix.install }}
       - name: Comparer les offsets en dur aux en-tetes installes
