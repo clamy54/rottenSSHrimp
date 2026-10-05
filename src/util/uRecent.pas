@@ -26,7 +26,7 @@ function RecentDisplay(AIndex: Integer): string; // assaini, pour le menu
 implementation
 
 uses
-  Classes, SysUtils, fpjson, jsonparser, uAppPaths, uSafeSave;
+  Classes, SysUtils, fpjson, jsonparser, uAppPaths, uRshSafeSave;
 
 const
   MAX_FILE_BYTES = 64 * 1024;

@@ -16,14 +16,14 @@ function AskRdpCertificate(const AInfo: TRdpCertInfo): TRdpCertDecision;
 implementation
 
 uses
-  uTheme;
+  uThemedControls, uTheme;
 
 function AskRdpCertificate(const AInfo: TRdpCertInfo): TRdpCertDecision;
 var
   f: TForm;
   lblTitle, lblWarn: TLabel;
   memo: TMemo;
-  btnOnce, btnSave, btnCancel: TButton;
+  btnOnce, btnSave, btnCancel: TThemedButton;
   y: Integer;
   details: TStringList;
   problems: string;
@@ -108,7 +108,7 @@ begin
     Inc(y, 146);
 
     // Cancel par defaut: un Entree reflexe n'accepte rien
-    btnCancel := TButton.Create(f);
+    btnCancel := TThemedButton.Create(f);
     btnCancel.Parent := f;
     btnCancel.Caption := 'Cancel';
     btnCancel.ModalResult := mrCancel;
@@ -118,7 +118,7 @@ begin
     btnCancel.Top := y;
     btnCancel.Width := 100;
 
-    btnOnce := TButton.Create(f);
+    btnOnce := TThemedButton.Create(f);
     btnOnce.Parent := f;
     btnOnce.Caption := 'Trust once';
     btnOnce.ModalResult := mrYes;
@@ -126,7 +126,7 @@ begin
     btnOnce.Top := y;
     btnOnce.Width := 130;
 
-    btnSave := TButton.Create(f);
+    btnSave := TThemedButton.Create(f);
     btnSave.Parent := f;
     btnSave.Caption := 'Trust and save';
     btnSave.ModalResult := mrAll;
@@ -135,7 +135,7 @@ begin
     btnSave.Width := 150;
 
     f.ClientHeight := y + 32 + 16;
-    ApplyUiFont(f);
+    ThemeDialog(f);
 
     case f.ShowModal of
       mrYes: Result := rcdAcceptOnce;

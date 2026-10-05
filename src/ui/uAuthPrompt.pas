@@ -20,14 +20,14 @@ function AskSecret(const APrompt: string; out ASecret: TSecureBytes): Boolean;
 implementation
 
 uses
-  uTheme;
+  uTheme, uThemedControls;
 
 function AskSecret(const APrompt: string; out ASecret: TSecureBytes): Boolean;
 var
   f: TForm;
   lbl: TLabel;
   ed: TEdit;
-  btnOk, btnCancel: TButton;
+  btnOk, btnCancel: TThemedButton;
   raw: RawByteString;
 begin
   Result := False;
@@ -52,9 +52,10 @@ begin
     ed.Left := 16;
     ed.Top := 52;
     ed.Width := 388;
+    ed.Height := 26;
     ed.PasswordChar := '*';
 
-    btnOk := TButton.Create(f);
+    btnOk := TThemedButton.Create(f);
     btnOk.Parent := f;
     btnOk.Caption := 'OK';
     btnOk.ModalResult := mrOK;
@@ -63,7 +64,7 @@ begin
     btnOk.Top := 92;
     btnOk.Width := 88;
 
-    btnCancel := TButton.Create(f);
+    btnCancel := TThemedButton.Create(f);
     btnCancel.Parent := f;
     btnCancel.Caption := 'Cancel';
     btnCancel.ModalResult := mrCancel;
@@ -73,7 +74,7 @@ begin
     btnCancel.Width := 88;
 
     f.ClientHeight := 140;
-    ApplyUiFont(f);
+    ThemeDialog(f);
 
     if f.ShowModal <> mrOK then
       Exit;
@@ -101,7 +102,7 @@ var
   f: TForm;
   lbl: TLabel;
   edUser, edDomain, edPass: TEdit;
-  btnOk, btnCancel: TButton;
+  btnOk, btnCancel: TThemedButton;
   raw: RawByteString;
   y: Integer;
 
@@ -118,6 +119,7 @@ var
     Result.Left := 112;
     Result.Top := y;
     Result.Width := 292;
+    Result.Height := 26;
     Result.Text := AValue;
     if AIsPassword then
       Result.PasswordChar := '*';
@@ -156,7 +158,7 @@ begin
     edPass := AddField('Password:', '', True);
     Inc(y, 8);
 
-    btnOk := TButton.Create(f);
+    btnOk := TThemedButton.Create(f);
     btnOk.Parent := f;
     btnOk.Caption := AOkCaption;
     btnOk.ModalResult := mrOK;
@@ -165,7 +167,7 @@ begin
     btnOk.Top := y;
     btnOk.Width := 112;
 
-    btnCancel := TButton.Create(f);
+    btnCancel := TThemedButton.Create(f);
     btnCancel.Parent := f;
     btnCancel.Caption := 'Cancel';
     btnCancel.ModalResult := mrCancel;
@@ -175,7 +177,7 @@ begin
     btnCancel.Width := 88;
 
     f.ClientHeight := y + 32 + 16;
-    ApplyUiFont(f);
+    ThemeDialog(f);
 
     // Pas SetFocus: forme pas encore affichee = 'Can not focus'
     if (edUser <> nil) and (edUser.Text = '') then

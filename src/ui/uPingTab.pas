@@ -13,7 +13,7 @@ unit uPingTab;
 interface
 
 uses
-  Classes, SysUtils, Types, Controls, ComCtrls, Forms, StdCtrls, ExtCtrls,
+  uThemedControls, Classes, SysUtils, Types, Controls, ComCtrls, Forms, StdCtrls, ExtCtrls,
   Graphics, uIcmpPing, uSessionState, uSessionTabBase;
 
 const
@@ -46,7 +46,7 @@ type
     FTitle: TLabel;
     FStateLbl: TLabel;
     FSinceLbl: TLabel;
-    FBtnPause, FBtnReset, FBtnCopy: TButton;
+    FBtnPause, FBtnReset, FBtnCopy: TThemedButton;
     FStatsBox: TPaintBox;
     FGraphBox: TPaintBox;
     FTick: TTimer;
@@ -115,9 +115,9 @@ var
   row: TPanel;
 
   function AddBtn(AParent: TWinControl; const ACaption: string;
-    AHandler: TNotifyEvent): TButton;
+    AHandler: TNotifyEvent): TThemedButton;
   begin
-    Result := TButton.Create(Self);
+    Result := TThemedButton.Create(Self);
     Result.Parent := AParent;
     Result.Caption := ACaption;
     Result.AutoSize := True;

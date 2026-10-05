@@ -34,7 +34,7 @@ function EstablishJumpTunnel(ADoc: TRshDocument; AModel: TRshModel;
 implementation
 
 uses
-  StdCtrls, uHostKeyDialog, uSshConnect, uFidoPrompt;
+  uThemedControls, StdCtrls, uHostKeyDialog, uSshConnect, uFidoPrompt;
 
 type
   TTunnelWaitDialog = class
@@ -52,7 +52,7 @@ type
 constructor TTunnelWaitDialog.Create(const AGatewayName: string);
 var
   lbl: TLabel;
-  btn: TButton;
+  btn: TThemedButton;
 begin
   inherited Create;
   FCancelled := False;
@@ -74,7 +74,7 @@ begin
   lbl.Height := 40;
   lbl.Caption := Format('Connecting to jump host %s…', [AGatewayName]);
 
-  btn := TButton.Create(FForm);
+  btn := TThemedButton.Create(FForm);
   btn.Parent := FForm;
   btn.Caption := 'Cancel';
   btn.Width := 90;
@@ -85,6 +85,7 @@ begin
   btn.Cancel := True;
   btn.OnClick := @CancelClick;
 
+  ThemeDialog(FForm);
   FForm.Show;
 end;
 

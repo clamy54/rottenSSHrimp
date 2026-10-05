@@ -1,4 +1,4 @@
-unit uSafeSave;
+unit uRshSafeSave;
 
 {$mode objfpc}{$H+}
 

@@ -7,7 +7,7 @@ unit uHostKeyDialog;
 interface
 
 uses
-  Classes, SysUtils, Forms, Controls, StdCtrls, Graphics, Dialogs, LCLType,
+  uRtMessage, Classes, SysUtils, Forms, Controls, StdCtrls, Graphics, Dialogs, LCLType,
   uSshTransport;
 
 function AskUnknownHostKey(const AInfo: TSshHostKeyInfo): TSshHostKeyDecision;
@@ -22,7 +22,7 @@ function AskBulkUnknownHostKeys(const AHosts: array of string;
 implementation
 
 uses
-  uTheme;
+  uThemedControls, uTheme;
 
 function AskBulkUnknownHostKeys(const AHosts: array of string;
   out ADecision: TSshHostKeyDecision; out ACancelled: Boolean): Boolean;
@@ -30,7 +30,7 @@ var
   f: TForm;
   lblTitle, lblWarn: TLabel;
   lst: TMemo;
-  btnSaveAll, btnOnceAll, btnEach, btnCancel: TButton;
+  btnSaveAll, btnOnceAll, btnEach, btnCancel: TThemedButton;
   i, y: Integer;
 begin
   Result := False;
@@ -82,7 +82,7 @@ begin
     Inc(y, 56);
 
     // par defaut: le moins engageant
-    btnEach := TButton.Create(f);
+    btnEach := TThemedButton.Create(f);
     btnEach.Parent := f;
     btnEach.Caption := 'Ask for each host';
     btnEach.ModalResult := mrNo;
@@ -91,7 +91,7 @@ begin
     btnEach.Top := y;
     btnEach.Width := 150;
 
-    btnOnceAll := TButton.Create(f);
+    btnOnceAll := TThemedButton.Create(f);
     btnOnceAll.Parent := f;
     btnOnceAll.Caption := 'Trust once, all';
     btnOnceAll.ModalResult := mrYes;
@@ -99,7 +99,7 @@ begin
     btnOnceAll.Top := y;
     btnOnceAll.Width := 140;
 
-    btnSaveAll := TButton.Create(f);
+    btnSaveAll := TThemedButton.Create(f);
     btnSaveAll.Parent := f;
     btnSaveAll.Caption := 'Trust and save, all';
     btnSaveAll.ModalResult := mrAll;
@@ -107,7 +107,7 @@ begin
     btnSaveAll.Top := y;
     btnSaveAll.Width := 160;
 
-    btnCancel := TButton.Create(f);
+    btnCancel := TThemedButton.Create(f);
     btnCancel.Parent := f;
     btnCancel.Caption := 'Cancel';
     btnCancel.ModalResult := mrCancel;
@@ -117,7 +117,7 @@ begin
     btnCancel.Width := 54;
 
     f.ClientHeight := y + 32 + 16;
-    ApplyUiFont(f);
+    ThemeDialog(f);
 
     case f.ShowModal of
       mrYes:
@@ -143,7 +143,7 @@ function AskUnknownHostKey(const AInfo: TSshHostKeyInfo): TSshHostKeyDecision;
 var
   f: TForm;
   lblTitle, lblType, lblFp: TLabel;
-  btnOnce, btnSave, btnCancel: TButton;
+  btnOnce, btnSave, btnCancel: TThemedButton;
   y: Integer;
 begin
   Result := hkdReject;
@@ -182,7 +182,7 @@ begin
     Inc(y, 40);
 
     // par defaut: le moins engageant
-    btnOnce := TButton.Create(f);
+    btnOnce := TThemedButton.Create(f);
     btnOnce.Parent := f;
     btnOnce.Caption := 'Trust once';
     btnOnce.ModalResult := mrYes;
@@ -191,7 +191,7 @@ begin
     btnOnce.Top := y;
     btnOnce.Width := 130;
 
-    btnSave := TButton.Create(f);
+    btnSave := TThemedButton.Create(f);
     btnSave.Parent := f;
     btnSave.Caption := 'Trust and save';
     btnSave.ModalResult := mrAll;
@@ -199,7 +199,7 @@ begin
     btnSave.Top := y;
     btnSave.Width := 150;
 
-    btnCancel := TButton.Create(f);
+    btnCancel := TThemedButton.Create(f);
     btnCancel.Parent := f;
     btnCancel.Caption := 'Cancel';
     btnCancel.ModalResult := mrCancel;
@@ -209,7 +209,7 @@ begin
     btnCancel.Width := 100;
 
     f.ClientHeight := y + 32 + 16;
-    ApplyUiFont(f);
+    ThemeDialog(f);
 
     case f.ShowModal of
       mrYes: Result := hkdAcceptOnce;
@@ -227,7 +227,7 @@ var
   f: TForm;
   lbl, lblOld, lblNew: TLabel;
   memo: TMemo;
-  btnReplace, btnCancel: TButton;
+  btnReplace, btnCancel: TThemedButton;
   y: Integer;
   typed: string;
 begin
@@ -294,7 +294,7 @@ begin
       '(server rebuilt, key rotated). Otherwise this is an attack.';
     Inc(y, 44);
 
-    btnCancel := TButton.Create(f);
+    btnCancel := TThemedButton.Create(f);
     btnCancel.Parent := f;
     btnCancel.Caption := 'Cancel';
     btnCancel.ModalResult := mrCancel;
@@ -304,7 +304,7 @@ begin
     btnCancel.Top := y;
     btnCancel.Width := 100;
 
-    btnReplace := TButton.Create(f);
+    btnReplace := TThemedButton.Create(f);
     btnReplace.Parent := f;
     btnReplace.Caption := 'Replace stored key…';
     btnReplace.ModalResult := mrYes;
@@ -313,7 +313,7 @@ begin
     btnReplace.Width := 180;
 
     f.ClientHeight := y + 32 + 16;
-    ApplyUiFont(f);
+    ThemeDialog(f);
 
     if f.ShowModal <> mrYes then
       Exit;
@@ -323,7 +323,7 @@ begin
 
   // saisie, jamais un simple clic
   typed := '';
-  if not InputQuery('Replace Host Key',
+  if not RtInputQuery('Replace Host Key',
     Format('Type REPLACE to trust the new key for %s:%d.',
       [AInfo.Host, AInfo.Port]), typed) then
     Exit;
@@ -335,7 +335,7 @@ function AskChangedHostKey(const AInfo: TSshHostKeyInfo): TSshHostKeyDecision;
 var
   f: TForm;
   lblWarn, lblExpl: TLabel;
-  btnCancel, btnDetails: TButton;
+  btnCancel, btnDetails: TThemedButton;
   y: Integer;
 begin
   Result := hkdReject;
@@ -369,7 +369,7 @@ begin
     Inc(y, 52);
 
     // Cancel par defaut: le remplacement jamais a portee d'un Entree reflexe
-    btnCancel := TButton.Create(f);
+    btnCancel := TThemedButton.Create(f);
     btnCancel.Parent := f;
     btnCancel.Caption := 'Cancel';
     btnCancel.ModalResult := mrCancel;
@@ -379,7 +379,7 @@ begin
     btnCancel.Top := y;
     btnCancel.Width := 110;
 
-    btnDetails := TButton.Create(f);
+    btnDetails := TThemedButton.Create(f);
     btnDetails.Parent := f;
     btnDetails.Caption := 'View details';
     btnDetails.ModalResult := mrYes;
@@ -388,7 +388,7 @@ begin
     btnDetails.Width := 130;
 
     f.ClientHeight := y + 32 + 16;
-    ApplyUiFont(f);
+    ThemeDialog(f);
 
     if f.ShowModal <> mrYes then
       Exit;

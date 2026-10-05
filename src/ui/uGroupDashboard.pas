@@ -7,7 +7,7 @@ unit uGroupDashboard;
 interface
 
 uses
-  Classes, SysUtils, Forms, Controls, ComCtrls, StdCtrls, ExtCtrls, Graphics,
+  Classes, SysUtils, Forms, Controls, StdCtrls, ExtCtrls, Graphics, uRtList,
   uRshModel;
 
 type
@@ -17,7 +17,7 @@ type
 
   TGroupDashboard = class(TForm)
   private
-    FList: TListView;
+    FList: TRtListGrid;
     FSummary: TLabel;
     FModel: TRshModel;
     FUuids: TStringList;   // aligne sur l'index de ligne
@@ -25,7 +25,7 @@ type
     FGroupName: string;
     FOnSessionState: TDashSessionState;
     FOnConnect: TDashConnect;
-    procedure ListDblClick(Sender: TObject);
+    procedure ListActivate(Sender: TObject; AIndex: Integer);
     procedure RefreshClick(Sender: TObject);
     function DescribeLast(AEntry: TRshQuickEntry): string;
   public
@@ -43,12 +43,12 @@ type
 implementation
 
 uses
-  uTheme, DateUtils, uRsUtil;
+  uThemedControls, uTheme, DateUtils, uRsUtil;
 
 constructor TGroupDashboard.CreateFor(AOwner: TComponent; AModel: TRshModel;
   const AGroupUuid, AGroupName: string);
 var
-  btn: TButton;
+  btn: TThemedButton;
   bar: TPanel;
 begin
   inherited CreateNew(AOwner);
@@ -80,7 +80,7 @@ begin
   FSummary.Font.Color := clAppFg;
   FSummary.ParentFont := False;
 
-  btn := TButton.Create(Self);
+  btn := TThemedButton.Create(Self);
   btn.Parent := bar;
   btn.Align := alRight;
   btn.Width := 110;
@@ -88,20 +88,21 @@ begin
   btn.Caption := 'Refresh';
   btn.OnClick := @RefreshClick;
 
-  FList := TListView.Create(Self);
+  FList := TRtListGrid.Create(Self);
   FList.Parent := Self;
   FList.Align := alClient;
-  FList.ViewStyle := vsReport;
-  FList.ReadOnly := True;
-  FList.RowSelect := True;
-  FList.OnDblClick := @ListDblClick;
-  with FList.Columns.Add do begin Caption := ''; Width := 26; end;   // favori
-  with FList.Columns.Add do begin Caption := 'Name'; Width := 150; end;
-  with FList.Columns.Add do begin Caption := 'Group'; Width := 130; end;
-  with FList.Columns.Add do begin Caption := 'Proto'; Width := 55; end;
-  with FList.Columns.Add do begin Caption := 'Host'; Width := 160; end;
-  with FList.Columns.Add do begin Caption := 'Session'; Width := 90; end;
-  with FList.Columns.Add do begin Caption := 'Last attempt'; Width := 160; end;
+  FList.Color := clAppBg;
+  FList.OnActivateRow := @ListActivate;
+  FList.AddColumn('', 26);   // favori
+  FList.AddColumn('Name', 150);
+  FList.AddColumn('Group', 130);
+  FList.AddColumn('Proto', 55);
+  FList.AddColumn('Host', 160);
+  FList.AddColumn('Session', 90);
+  FList.AddColumn('Last attempt', 160);
+  FList.StretchLastColumn := True;
+  ApplyUiFont(Self);
+  FList.RefreshMetrics;
 
   Refresh;
 end;
@@ -115,7 +116,7 @@ end;
 procedure TGroupDashboard.Detach;
 begin
   FModel := nil;
-  FList.Items.Clear;
+  FList.Clear;
   FUuids.Clear;
   FSummary.Caption := 'Document closed.';
 end;
@@ -148,13 +149,12 @@ procedure TGroupDashboard.Refresh;
 var
   list: TRshQuickList;
   i, open, failed: Integer;
-  it: TListItem;
   e: TRshQuickEntry;
-  state: string;
+  state, fav: string;
 begin
-  FList.Items.BeginUpdate;
+  FList.BeginUpdate;
   try
-    FList.Items.Clear;
+    FList.Clear;
     FUuids.Clear;
     if FModel = nil then Exit;
     open := 0;
@@ -171,14 +171,10 @@ begin
         if (e.LastConnectedMs > 0) and (e.LastResult = srFailed) then
           Inc(failed);
 
-        it := FList.Items.Add;
-        if e.Favorite then it.Caption := '★' else it.Caption := '';
-        it.SubItems.Add(e.DisplayName);
-        it.SubItems.Add(e.GroupPath);
-        it.SubItems.Add(UpperCase(PROTOCOL_NAMES[e.Protocol]));
-        it.SubItems.Add(e.Hostname);
-        it.SubItems.Add(state);
-        it.SubItems.Add(DescribeLast(e));
+        if e.Favorite then fav := '★' else fav := '';
+        FList.AddRow([fav, e.DisplayName, e.GroupPath,
+          UpperCase(PROTOCOL_NAMES[e.Protocol]), e.Hostname, state,
+          DescribeLast(e)]);
         FUuids.Add(e.ConnUuid);
       end;
       FSummary.Caption := Format(
@@ -188,7 +184,7 @@ begin
       list.Free;
     end;
   finally
-    FList.Items.EndUpdate;
+    FList.EndUpdate;
   end;
 end;
 
@@ -197,15 +193,11 @@ begin
   Refresh;
 end;
 
-procedure TGroupDashboard.ListDblClick(Sender: TObject);
-var
-  it: TListItem;
+procedure TGroupDashboard.ListActivate(Sender: TObject; AIndex: Integer);
 begin
-  it := FList.Selected;
-  if it = nil then Exit;
-  if (it.Index < 0) or (it.Index >= FUuids.Count) then Exit;
+  if (AIndex < 0) or (AIndex >= FUuids.Count) then Exit;
   if Assigned(FOnConnect) then
-    FOnConnect(FUuids[it.Index]);
+    FOnConnect(FUuids[AIndex]);
 end;
 
 end.

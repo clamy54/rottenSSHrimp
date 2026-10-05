@@ -12,7 +12,7 @@ procedure ShowAbout;
 implementation
 
 uses
-  Classes, SysUtils, Types, Forms, Controls, StdCtrls, ExtCtrls, Graphics,
+  uThemedControls, Classes, SysUtils, Types, Forms, Controls, StdCtrls, ExtCtrls, Graphics,
   LCLIntf, uTheme, uVersion;
 
 type
@@ -100,7 +100,7 @@ var
   f: TAboutForm;
   img: TImage;
   ico: TIcon;
-  b: TButton;
+  b: TThemedButton;
   y: Integer;
 begin
   f := TAboutForm.CreateNew(nil);
@@ -164,7 +164,7 @@ begin
     AddCredit(f, y, RSSH_APP_NAME + ' also uses SQLite (public domain):',
       'https://sqlite.org/');
 
-    b := TButton.Create(f);
+    b := TThemedButton.Create(f);
     b.Parent := f;
     b.Caption := 'Close';
     b.ModalResult := mrOk;
@@ -175,6 +175,7 @@ begin
     f.ClientHeight := y + 6 + 30 + 16;
 
     ApplyUiFont(f);
+    DialogKeys(f);
     f.ShowModal;
   finally
     f.Free;

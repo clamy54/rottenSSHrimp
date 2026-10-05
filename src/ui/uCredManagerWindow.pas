@@ -3,13 +3,12 @@ unit uCredManagerWindow;
 {$mode objfpc}{$H+}
 
 // Credentials PARTAGES (managed=1) seulement.
-// Controles NATIFS clairs: sous Cocoa, un theme sombre les rend illisibles.
 
 interface
 
 uses
-  Classes, SysUtils, Controls, Forms, StdCtrls, Buttons, Graphics, Dialogs,
-  LCLType, uRshDocument, uRshModel;
+  uRtMessage, Classes, SysUtils, Controls, Forms, StdCtrls, ExtCtrls, Graphics, Dialogs,
+  LCLType, uThemedControls, uRshDocument, uRshModel;
 
 procedure ShowCredentialManager(AOwner: TCustomForm; ADoc: TRshDocument;
   AModel: TRshModel; ASaveProc: TNotifyEvent);
@@ -17,7 +16,7 @@ procedure ShowCredentialManager(AOwner: TCustomForm; ADoc: TRshDocument;
 implementation
 
 uses
-  Clipbrd, uSecureBytes, uCryptoPolicy, uSshKeyGen, uSshCopyIdConnect,
+  Clipbrd, uTheme, uSecureBytes, uCryptoPolicy, uSshKeyGen, uSshCopyIdConnect,
   uNodeDialogs, uFidoPrompt, uSshFido, uFido2Api;
 
 const
@@ -32,7 +31,7 @@ type
     FSaveProc: TNotifyEvent;
     FList: TListBox;
     FCreds: TRshCredentialList;
-    FBtnNew, FBtnEdit, FBtnDup, FBtnRotate, FBtnDelete: TButton;
+    FBtnNew, FBtnEdit, FBtnDup, FBtnRotate, FBtnDelete: TThemedButton;
     FBusy: Boolean;
     procedure PersistAndReload(const APreferUuid: string = '');
     procedure Reload(const APreferUuid: string = '');
@@ -59,11 +58,11 @@ type
     FUuid: string;          // '' = creation
     FNameEdit, FUserEdit, FDomainEdit, FPassEdit, FKeyEdit, FPhraseEdit: TEdit;
     FPubEdit: TEdit;
-    FAuthCombo: TComboBox;
-    FPassEye, FKeyBrowse, FPubCopy: TSpeedButton;
+    FAuthCombo: TThemedCombo;
+    FPassEye, FKeyBrowse, FPubCopy: TThemedButton;
     FLblUser, FLblDomain, FLblPass, FLblKey, FLblPhrase,
       FLblPub, FLblPubHint: TLabel;
-    FUvCheck: TCheckBox;
+    FUvCheck: TThemedCheck;
     FHasStoredKey: Boolean;
     FPublicKey: string;
     // Changer de type repart de zero (un PEM ne devient pas un key handle
@@ -79,6 +78,8 @@ type
     procedure CopyPubClick(Sender: TObject);
     procedure OkClick(Sender: TObject);
     procedure UpdateRows;
+  protected
+    procedure KeyDown(var Key: Word; Shift: TShiftState); override;
   public
     constructor CreateFor(AOwner: TComponent; AModel: TRshModel;
       const AUuid: string);
@@ -180,6 +181,7 @@ begin
   Result.Left := 20;
   Result.Top := ATop;
   Result.Width := AWidth;
+  Result.Height := 26;
   Result.Anchors := [akLeft, akTop, akRight];
   if APassword then Result.PasswordChar := '*';
 end;
@@ -207,7 +209,7 @@ begin
   FNameEdit := MakeEdit(Self, 30, fullW, False);
 
   MakeLabel(Self, 'Authentication', 20, 62);
-  FAuthCombo := TComboBox.Create(Self);
+  FAuthCombo := TThemedCombo.Create(Self);
   FAuthCombo.Parent := Self;
   FAuthCombo.Left := 20;
   FAuthCombo.Top := 80;
@@ -229,13 +231,13 @@ begin
   authY := 224;
   FLblPass := MakeLabel(Self, 'Password', 20, authY);
   FPassEdit := MakeEdit(Self, authY + 18, fullW - 30, True);
-  FPassEye := TSpeedButton.Create(Self);
+  FPassEye := TThemedButton.Create(Self);
   FPassEye.Parent := Self;
-  FPassEye.SetBounds(ClientWidth - 20 - 24, authY + 17, 24, 24);
+  FPassEye.SetBounds(ClientWidth - 20 - 26, authY + 18, 26, 26);
   FPassEye.Anchors := [akTop, akRight];
-  FPassEye.Flat := True;
+  FPassEye.TabStop := False;
   FPassEye.OnClick := @EyeClick;
-  MakeEyeGlyph(FPassEye.Glyph, False);
+  FPassEye.Glyph := tbgEye;
 
   FLblKey := MakeLabel(Self, 'Private key file', 20, authY);
   FKeyEdit := TEdit.Create(Self);
@@ -243,11 +245,12 @@ begin
   FKeyEdit.Left := 20;
   FKeyEdit.Top := authY + 18;
   FKeyEdit.Width := fullW - 92;
+  FKeyEdit.Height := 26;
   FKeyEdit.Anchors := [akLeft, akTop, akRight];
-  FKeyBrowse := TSpeedButton.Create(Self);
+  FKeyBrowse := TThemedButton.Create(Self);
   FKeyBrowse.Parent := Self;
   FKeyBrowse.Caption := 'Browse…';
-  FKeyBrowse.SetBounds(ClientWidth - 20 - 84, authY + 17, 84, 26);
+  FKeyBrowse.SetBounds(ClientWidth - 20 - 84, authY + 18, 84, 26);
   FKeyBrowse.Anchors := [akTop, akRight];
   FKeyBrowse.OnClick := @BrowseClick;
   FLblPhrase := MakeLabel(Self, 'Key passphrase (optional)', 20, authY + 52);
@@ -260,36 +263,40 @@ begin
   FPubEdit.Left := 20;
   FPubEdit.Top := authY + 18;
   FPubEdit.Width := fullW - 72;
+  FPubEdit.Height := 26;
   FPubEdit.Anchors := [akLeft, akTop, akRight];
   FPubEdit.ReadOnly := True;
-  FPubCopy := TSpeedButton.Create(Self);
+  FPubCopy := TThemedButton.Create(Self);
   FPubCopy.Parent := Self;
   FPubCopy.Caption := 'Copy';
-  FPubCopy.SetBounds(ClientWidth - 20 - 64, authY + 17, 64, 26);
+  FPubCopy.SetBounds(ClientWidth - 20 - 64, authY + 18, 64, 26);
   FPubCopy.Anchors := [akTop, akRight];
   FPubCopy.OnClick := @CopyPubClick;
   FLblPubHint := MakeLabel(Self, '', 20, authY + 52);
+  FLblPubHint.AutoSize := False;
+  FLblPubHint.WordWrap := True;
+  FLblPubHint.SetBounds(20, authY + 52, fullW, 36);
+  FLblPubHint.Tag := THEME_TAG_SECONDARY;
 
   // Decochee, comme ssh-keygen: le toucher suffit contre l'usage a distance,
   // le PIN ne sert que contre le vol du token.
-  FUvCheck := TCheckBox.Create(Self);
+  FUvCheck := TThemedCheck.Create(Self);
   FUvCheck.Parent := Self;
   FUvCheck.Left := 20;
-  FUvCheck.Width := 360;
+  FUvCheck.Width := fullW;
   FUvCheck.Caption := 'Require the security key PIN on every use';
   FUvCheck.Visible := False;
-  FUvCheck.Top := authY + 88;
+  FUvCheck.Top := authY + 92;
 
-  btnY := authY + 88 + 26 + 16;
-  with TButton.Create(Self) do
+  btnY := authY + 92 + 26 + 16;
+  with TThemedButton.Create(Self) do
   begin
     Parent := Self;
     Caption := 'Cancel';
     ModalResult := mrCancel;
-    Cancel := True;
     SetBounds(20 + fullW - 96 - 10 - 96, btnY, 96, 30);
   end;
-  with TButton.Create(Self) do
+  with TThemedButton.Create(Self) do
   begin
     Parent := Self;
     Caption := 'Save';
@@ -298,6 +305,9 @@ begin
     OnClick := @OkClick;
   end;
   ClientHeight := btnY + 30 + 16;
+  ApplyUiFont(Self);
+  ThemeControls(Self);
+  KeyPreview := True;
 
   FAuthCombo.ItemIndex := 0;
   if AUuid <> '' then
@@ -378,6 +388,7 @@ begin
   else FLblUser.Caption := 'Username (optional)';
   FLblDomain.Visible := not hidePass;
   FDomainEdit.Visible := not hidePass;
+  Invalidate;
 end;
 
 procedure TCredEditForm.AuthChanged(Sender: TObject);
@@ -396,17 +407,35 @@ begin
   UpdateRows;
 end;
 
+procedure TCredEditForm.KeyDown(var Key: Word; Shift: TShiftState);
+begin
+  if (Key = VK_ESCAPE) and (Shift = []) then
+  begin
+    Key := 0;
+    ModalResult := mrCancel;
+    Exit;
+  end;
+  if (Key = VK_RETURN) and (Shift = []) and
+     not (ActiveControl is TThemedButton) then
+  begin
+    Key := 0;
+    OkClick(nil);
+    Exit;
+  end;
+  inherited KeyDown(Key, Shift);
+end;
+
 procedure TCredEditForm.EyeClick(Sender: TObject);
 begin
   if FPassEdit.PasswordChar = #0 then
   begin
     FPassEdit.PasswordChar := '*';
-    MakeEyeGlyph(FPassEye.Glyph, False);
+    FPassEye.Glyph := tbgEye;
   end
   else
   begin
     FPassEdit.PasswordChar := #0;
-    MakeEyeGlyph(FPassEye.Glyph, True);
+    FPassEye.Glyph := tbgEyeCrossed;
   end;
 end;
 
@@ -440,7 +469,7 @@ begin
   dispName := Trim(FNameEdit.Text);
   if dispName = '' then
   begin
-    MessageDlg('Credential Manager', 'A name is required.', mtError, [mbOK], 0);
+    RtMessageDlg('Credential Manager', 'A name is required.', mtError, [mbOK], 0);
     Exit;
   end;
   user := Trim(FUserEdit.Text);
@@ -451,13 +480,13 @@ begin
   isFido := authType = atFidoKey;
   if (isManaged or isFido) and (user = '') then
   begin
-    MessageDlg('Credential Manager',
+    RtMessageDlg('Credential Manager',
       'A username is required for a managed SSH key.', mtError, [mbOK], 0);
     Exit;
   end;
   if isFido and (not FidoAvailable) then
   begin
-    MessageDlg('Credential Manager', FidoUnavailableMessage,
+    RtMessageDlg('Credential Manager', FidoUnavailableMessage,
       mtError, [mbOK], 0);
     Exit;
   end;
@@ -470,7 +499,7 @@ begin
       pem, pubLine, algName, err) then
     begin
       if err <> '' then
-        MessageDlg('Credential Manager', err, mtError, [mbOK], 0);
+        RtMessageDlg('Credential Manager', err, mtError, [mbOK], 0);
       Exit;
     end;
   end;
@@ -488,13 +517,13 @@ begin
       begin
         if not LoadKeyFile(keyPath, key, err) then
         begin
-          MessageDlg('Credential Manager', err, mtError, [mbOK], 0);
+          RtMessageDlg('Credential Manager', err, mtError, [mbOK], 0);
           Exit;
         end;
       end
       else if (FUuid = '') or (not FHasStoredKey) then
       begin
-        MessageDlg('Credential Manager', 'Pick a private key file.',
+        RtMessageDlg('Credential Manager', 'Pick a private key file.',
           mtError, [mbOK], 0);
         Exit;
       end;
@@ -536,7 +565,7 @@ begin
     except
       on E: Exception do
       begin
-        MessageDlg('Credential Manager', E.Message, mtError, [mbOK], 0);
+        RtMessageDlg('Credential Manager', E.Message, mtError, [mbOK], 0);
         Exit;
       end;
     end;
@@ -562,9 +591,9 @@ const
 var
   bx: Integer;
 
-  function AddBtn(const ACap: string; AHandler: TNotifyEvent): TButton;
+  function AddBtn(const ACap: string; AHandler: TNotifyEvent): TThemedButton;
   begin
-    Result := TButton.Create(Self);
+    Result := TThemedButton.Create(Self);
     Result.Parent := Self;
     Result.Caption := ACap;
     Result.SetBounds(bx, BTN_Y, 96, 30);
@@ -586,6 +615,8 @@ begin
   FList.Parent := Self;
   FList.SetBounds(14, 14, W - 28, BTN_Y - 14 - 10);
   FList.Style := lbOwnerDrawFixed;
+  FList.BorderStyle := bsNone;
+  FList.Color := clPanelBg;
   FList.ItemHeight := ROW_H;
   FList.OnDrawItem := @ListDrawItem;
   FList.OnDblClick := @ListDblClick;
@@ -598,6 +629,8 @@ begin
   FBtnRotate := AddBtn('Rotate', @RotateClick);
   FBtnDelete := AddBtn('Delete', @DeleteClick);
   ClientHeight := H;
+  ApplyUiFont(Self);
+  ThemeControls(Self);
 
   Reload;
 end;
@@ -674,8 +707,8 @@ var
 begin
   cv := FList.Canvas;
   cv.Brush.Style := bsSolid;
-  if (odSelected in State) then cv.Brush.Color := clHighlight
-  else cv.Brush.Color := clWindow;
+  if (odSelected in State) then cv.Brush.Color := clSelActive
+  else cv.Brush.Color := clPanelBg;
   cv.FillRect(ARect);
   if (Index < 0) or (Index >= FCreds.Count) then Exit;
   c := FCreds[Index];
@@ -683,7 +716,7 @@ begin
 
   cv.Brush.Style := bsClear;
   cv.Font := FList.Font;
-  if selected then cv.Font.Color := clHighlightText else cv.Font.Color := clWindowText;
+  if selected then cv.Font.Color := clSelText else cv.Font.Color := clAppFg;
   cv.Font.Style := [fsBold];
   cv.TextOut(ARect.Left + 12, ARect.Top + 6, c.DisplayName);
   cv.Font.Style := [];
@@ -707,11 +740,11 @@ begin
   if c.Username <> '' then sub := sub + '   ·   ' + c.Username;
   if users = 1 then sub := sub + '   ·   1 host'
   else sub := sub + Format('   ·   %d hosts', [users]);
-  if selected then cv.Font.Color := clHighlightText
-  else cv.Font.Color := clGrayText;
+  if selected then cv.Font.Color := clSelText
+  else cv.Font.Color := clTextSecondary;
   cv.TextOut(ARect.Left + 12, ARect.Top + 25, sub);
 
-  cv.Pen.Color := clSilver;
+  cv.Pen.Color := clPanelGrid;
   cv.Line(ARect.Left, ARect.Bottom - 1, ARect.Right, ARect.Bottom - 1);
 end;
 
@@ -761,7 +794,7 @@ begin
     newUuid := FModel.DuplicateCredential(uuid);
   except
     on E: Exception do
-      MessageDlg('Credential Manager', E.Message, mtError, [mbOK], 0);
+      RtMessageDlg('Credential Manager', E.Message, mtError, [mbOK], 0);
   end;
   PersistAndReload(newUuid);
 end;
@@ -782,7 +815,7 @@ begin
     if (not IsManagedKeyType(c.AuthType)) or (c.PublicKey = '') or
        (not c.HasPrivateKey) then
     begin
-      MessageDlg('Rotate Managed Key',
+      RtMessageDlg('Rotate Managed Key',
         'Only a managed SSH key with a generated pair can be rotated.',
         mtError, [mbOK], 0);
       Exit;
@@ -807,7 +840,7 @@ begin
       'A new key is enrolled on your security key, then every host is ' +
       'contacted twice: expect one touch for the enrolment and one per host ' +
       'and per pass.';
-  if MessageDlg('Rotate Managed Key', msg, mtConfirmation,
+  if RtMessageDlg('Rotate Managed Key', msg, mtConfirmation,
     [mbYes, mbNo], 0) <> mrYes then Exit;
 
   // FBusy: la fenetre d'attente pompe les messages, un second clic s'y imbrique
@@ -817,14 +850,14 @@ begin
     if RotateManagedKey(FDoc, FModel, uuid, FSaveProc, summary, err) then
     begin
       PersistAndReload(uuid);
-      MessageDlg('Rotate Managed Key', summary, mtInformation, [mbOK], 0);
+      RtMessageDlg('Rotate Managed Key', summary, mtInformation, [mbOK], 0);
     end
     else
     begin
       // meme en echec: des cles d'hote ont pu etre approuvees en route
       PersistAndReload(uuid);
       if err <> '' then
-        MessageDlg('Rotate Managed Key', err, mtError, [mbOK], 0);
+        RtMessageDlg('Rotate Managed Key', err, mtError, [mbOK], 0);
     end;
   finally
     FBusy := False;
@@ -852,20 +885,20 @@ begin
       hosts := hosts + usage[i];
       if i >= 5 then begin hosts := hosts + '…'; Break; end;
     end;
-    MessageDlg('Credential Manager',
+    RtMessageDlg('Credential Manager',
       Format('This credential is still assigned to %d host(s): %s' + LineEnding +
         LineEnding + 'Unassign it from them first, then delete it.',
         [Length(usage), hosts]), mtError, [mbOK], 0);
     Exit;
   end;
-  if QuestionDlg('Credential Manager', 'Delete this managed credential?',
+  if RtQuestionDlg('Credential Manager', 'Delete this managed credential?',
      mtConfirmation, [mrYes, 'Delete', mrNo, 'Cancel', 'IsCancel'], 0)
      <> mrYes then Exit;
   try
     FModel.DeleteCredential(uuid, dsFail);
   except
     on E: Exception do
-      MessageDlg('Credential Manager', E.Message, mtError, [mbOK], 0);
+      RtMessageDlg('Credential Manager', E.Message, mtError, [mbOK], 0);
   end;
   PersistAndReload;
 end;

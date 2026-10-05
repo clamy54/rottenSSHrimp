@@ -8,7 +8,7 @@ unit uClusterSshTab;
 interface
 
 uses
-  Classes, SysUtils, Controls, ComCtrls, Forms, Dialogs, Graphics, StdCtrls,
+  uRtMessage, Classes, SysUtils, Controls, ComCtrls, Forms, Dialogs, Graphics, StdCtrls,
   ExtCtrls, LCLType, Clipbrd,
   uTermControl, uSshTransport, uSshKnownHosts, uSessionState,
   uSessionManager, uRshDocument, uSessionTabBase, uSshTunnel,
@@ -574,7 +574,7 @@ function TClusterSshTab.ConfirmClose: Boolean;
 begin
   if ActiveCount = 0 then
     Exit(True);
-  Result := QuestionDlg('Disconnect',
+  Result := RtQuestionDlg('Disconnect',
     Format('Disconnect %d session(s)?', [ActiveCount]),
     mtConfirmation,
     [mrOK, 'Disconnect', mrCancel, 'Cancel', 'IsCancel'], 0) = mrOK;
@@ -896,7 +896,7 @@ begin
     if cleaned[i] = #13 then
       Inc(lineCount);
   if (lineCount > 1) and
-     (QuestionDlg('Paste',
+     (RtQuestionDlg('Paste',
        Format('Broadcast %d lines to all sessions?', [lineCount]) + LineEnding +
        'Pasting multiple commands can be dangerous.',
        mtWarning, [mrOK, 'Paste', mrCancel, 'Cancel', 'IsCancel'], 0) <> mrOK) then

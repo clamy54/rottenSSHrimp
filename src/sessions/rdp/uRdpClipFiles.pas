@@ -94,7 +94,7 @@ implementation
 
 {$IFNDEF WINDOWS}
 uses
-  BaseUnix{$IFDEF LINUX}, Syscall{$ENDIF}, uSafeSave;
+  BaseUnix{$IFDEF LINUX}, Syscall{$ENDIF}, uRshSafeSave;
 {$ENDIF}
 
 {$IFDEF WINDOWS}

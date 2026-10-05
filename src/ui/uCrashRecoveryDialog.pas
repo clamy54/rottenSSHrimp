@@ -7,7 +7,7 @@ unit uCrashRecoveryDialog;
 interface
 
 uses
-  uCrashRecovery;
+  uRtMessage, uCrashRecovery;
 
 type
   TRecoveryChoice = (rcIgnore, rcRecover, rcSaveCopy, rcDelete);
@@ -18,7 +18,7 @@ function ShowCrashRecovery(const AItems: TRecoveryItems;
 implementation
 
 uses
-  SysUtils, Classes, Forms, Controls, StdCtrls, Buttons, Dialogs, uTheme,
+  uThemedControls, SysUtils, Classes, Forms, Controls, StdCtrls, Buttons, Dialogs, uTheme,
   uVersion;
 
 type
@@ -49,7 +49,7 @@ end;
 constructor TRecoveryForm.CreateWith(const AItems: TRecoveryItems);
 var
   info: TLabel;
-  btnRec, btnSave, btnDel, btnIgn: TBitBtn;
+  btnRec, btnSave, btnDel, btnIgn: TThemedButton;
   i: Integer;
   line: string;
 begin
@@ -82,26 +82,26 @@ begin
   if FList.Items.Count > 0 then
     FList.ItemIndex := 0;
 
-  btnRec := TBitBtn.Create(Self);
+  btnRec := TThemedButton.Create(Self);
   btnRec.Parent := Self;
   btnRec.SetBounds(16, Height - 48, 110, 30);
   btnRec.Caption := 'Recover';
   btnRec.Default := True;
   btnRec.OnClick := @RecoverClick;
 
-  btnSave := TBitBtn.Create(Self);
+  btnSave := TThemedButton.Create(Self);
   btnSave.Parent := Self;
   btnSave.SetBounds(134, Height - 48, 130, 30);
   btnSave.Caption := 'Save a Copy…';
   btnSave.OnClick := @SaveCopyClick;
 
-  btnDel := TBitBtn.Create(Self);
+  btnDel := TThemedButton.Create(Self);
   btnDel.Parent := Self;
   btnDel.SetBounds(272, Height - 48, 90, 30);
   btnDel.Caption := 'Delete';
   btnDel.OnClick := @DeleteClick;
 
-  btnIgn := TBitBtn.Create(Self);
+  btnIgn := TThemedButton.Create(Self);
   btnIgn.Parent := Self;
   btnIgn.SetBounds(Width - 116, Height - 48, 100, 30);
   btnIgn.Caption := 'Ignore';
@@ -133,7 +133,7 @@ end;
 procedure TRecoveryForm.DeleteClick(Sender: TObject);
 begin
   if FList.ItemIndex < 0 then Exit;
-  if MessageDlg(RSSH_APP_NAME, 'Delete this recovery permanently?',
+  if RtMessageDlg(RSSH_APP_NAME, 'Delete this recovery permanently?',
     mtConfirmation, [mbYes, mbCancel], 0) <> mrYes then Exit;
   FChoice := rcDelete;
   ModalResult := mrOk;
@@ -156,7 +156,7 @@ begin
   if Length(AItems) = 0 then Exit;
   f := TRecoveryForm.CreateWith(AItems);
   try
-    ApplyUiFont(f);
+    ThemeDialog(f);
     if f.ShowModal = mrOk then
     begin
       AIndex := f.SelectedIndex;

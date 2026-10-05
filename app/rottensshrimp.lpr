@@ -48,6 +48,9 @@ begin
   EmbeddedFontManager.RegisterFonts;
   ApplyDefaultFonts; // avant la fenetre: lu a la creation des controles
   LoadPreferences;
+  ThemesUserDir := AppDataDir + PathDelim + 'themes';
+  ThemesEmbedded := False;
+  PrefUiFontSize := 0;
   InitThemes(PrefThemeName);
   LogInfo('application demarree, version ' + RSSH_VERSION);
   {$IF defined(LINUX) or defined(DARWIN)}

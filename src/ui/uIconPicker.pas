@@ -15,7 +15,7 @@ function ChooseTreeIcon(AOwner: TComponent; const ACurrentId: string;
 implementation
 
 uses
-  uTreeIcons, uTheme, uFontEmbed;
+  uThemedControls, uTreeIcons, uTheme, uFontEmbed;
 
 const
   ICON_SIZE = 48;
@@ -47,7 +47,7 @@ constructor TIconPickerForm.CreateFor(AOwner: TComponent;
   const ACurrentId: string);
 var
   bar: TPanel;
-  bOk, bCancel: TButton;
+  bOk, bCancel: TThemedButton;
   rows, contentW, contentH: Integer;
 begin
   inherited CreateNew(AOwner);
@@ -73,7 +73,7 @@ begin
   bar.Color := clAppBg;
   bar.ParentColor := False;
 
-  bCancel := TButton.Create(Self);
+  bCancel := TThemedButton.Create(Self);
   bCancel.Parent := bar;
   bCancel.Caption := 'Cancel';
   bCancel.ModalResult := mrCancel;
@@ -81,7 +81,7 @@ begin
   bCancel.SetBounds(bar.Width - 200, 12, 88, 28);
   bCancel.Anchors := [akTop, akRight];
 
-  bOk := TButton.Create(Self);
+  bOk := TThemedButton.Create(Self);
   bOk.Parent := bar;
   bOk.Caption := 'OK';
   bOk.ModalResult := mrOk;
@@ -106,6 +106,7 @@ begin
   FGrid.OnDblClick := @GridDblClick;
 
   ApplyUiFont(Self);
+  DialogKeys(Self);
   ScrollToSelected;
 end;
 

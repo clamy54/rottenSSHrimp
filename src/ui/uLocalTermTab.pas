@@ -8,7 +8,7 @@ unit uLocalTermTab;
 interface
 
 uses
-  Classes, SysUtils, Controls, ComCtrls, Forms, Dialogs, Graphics,
+  uRtMessage, Classes, SysUtils, Controls, ComCtrls, Forms, Dialogs, Graphics,
   uTermControl, uLocalPty, uSessionState, uSessionTabBase;
 
 type
@@ -147,7 +147,7 @@ function TLocalTermTab.ConfirmClose: Boolean;
 begin
   if FExited or (FPty = nil) or (not FPty.Running) then
     Exit(True);
-  Result := QuestionDlg('Local Terminal',
+  Result := RtQuestionDlg('Local Terminal',
     'A shell is still running. Close the terminal?', mtConfirmation,
     [mrOK, 'Close', mrCancel, 'Cancel', 'IsCancel'], 0) = mrOK;
 end;

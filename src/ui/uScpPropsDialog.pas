@@ -12,7 +12,7 @@ unit uScpPropsDialog;
 interface
 
 uses
-  Classes, SysUtils, Controls, Forms, StdCtrls, ExtCtrls, Graphics,
+  uRtMessage, Classes, SysUtils, Controls, Forms, StdCtrls, ExtCtrls, Graphics,
   uScpBackend, uScpPaths, uTransferQueue, uTheme;
 
 type
@@ -31,12 +31,12 @@ function ShowScpProperties(const ALocation: string;
 implementation
 
 uses
-  DateUtils, Dialogs;
+  uThemedControls, DateUtils, Dialogs;
 
 type
   // Ordre des bits du mode: 0..8 = rwx (others d'abord), 9 sticky,
   // 10 setgid, 11 setuid.
-  TPermBoxes = array[0..11] of TCheckBox;
+  TPermBoxes = array[0..11] of TThemedCheck;
 
   TPropsForm = class
   private
@@ -44,8 +44,8 @@ type
     FResult: TScpPropsResult;
     FBoxes: TPermBoxes;
     FOctal: TEdit;
-    FRecursive: TCheckBox;
-    FDirX: TCheckBox;
+    FRecursive: TThemedCheck;
+    FDirX: TThemedCheck;
     // cases <-> octal: sans lui, boucle infinie
     FSyncing: Boolean;
     procedure BoxChanged(Sender: TObject);
@@ -145,9 +145,9 @@ var
   end;
 
   function AddBtn(const ACaption: string; ALeft, AWidth: Integer;
-    AHandler: TNotifyEvent): TButton;
+    AHandler: TNotifyEvent): TThemedButton;
   begin
-    Result := TButton.Create(FForm);
+    Result := TThemedButton.Create(FForm);
     Result.Parent := FForm;
     Result.Caption := ACaption;
     Result.Left := ALeft;
@@ -158,9 +158,9 @@ var
     Result.OnClick := AHandler;
   end;
 
-  function AddBox(ALeft, AWidth: Integer; const ACaption: string): TCheckBox;
+  function AddBox(ALeft, AWidth: Integer; const ACaption: string): TThemedCheck;
   begin
-    Result := TCheckBox.Create(FForm);
+    Result := TThemedCheck.Create(FForm);
     Result.Parent := FForm;
     Result.Left := ALeft;
     Result.Top := y - 2;
@@ -311,6 +311,7 @@ begin
   AddBtn('Cancel', 122, 100, @CancelClick);
 
   ApplyUiFont(FForm);
+  DialogKeys(FForm);
 end;
 
 destructor TPropsForm.Destroy;
@@ -379,7 +380,7 @@ begin
   begin
     if not ScpOctalToMode(FOctal.Text, m) then
     begin
-      MessageDlg('Properties', 'Enter an octal mode from 0000 to 7777.',
+      RtMessageDlg('Properties', 'Enter an octal mode from 0000 to 7777.',
         mtError, [mbOK], 0);
       FOctal.SetFocus;
       Exit;

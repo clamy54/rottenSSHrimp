@@ -5,7 +5,7 @@ unit uContainerDialog;
 interface
 
 uses
-  uRshModel;
+  uRtMessage, uRshModel;
 
 // AParentGroupUuid '' = racine; rend l'uuid cree, '' si annule
 function ShowNewContainerDialog(AModel: TRshModel;
@@ -17,7 +17,7 @@ function ShowContainerProperties(AModel: TRshModel;
 implementation
 
 uses
-  Classes, SysUtils, Forms, Controls, StdCtrls, Dialogs, uTheme, uRshValidation;
+  uThemedControls, Classes, SysUtils, Forms, Controls, StdCtrls, Dialogs, uTheme, uRshValidation;
 
 const
   DLG_W = 460;
@@ -31,11 +31,11 @@ type
   TContainerForm = class(TForm)
   public
     NameEdit: TEdit;
-    ParentCombo: TComboBox;
+    ParentCombo: TThemedCombo;
     ParentUuids: TStringList;
-    EngineCombo: TComboBox;
+    EngineCombo: TThemedCombo;
     CNameEdit: TEdit;
-    ShellCombo: TComboBox;
+    ShellCombo: TThemedCombo;
     Y: Integer;
     constructor CreateShell(const ATitle: string);
     destructor Destroy; override;
@@ -129,9 +129,9 @@ var
     Result.Width := EDIT_W;
   end;
 
-  function MakeCombo: TComboBox;
+  function MakeCombo: TThemedCombo;
   begin
-    Result := TComboBox.Create(f);
+    Result := TThemedCombo.Create(f);
     Result.Parent := f;
     Result.Left := EDIT_X;
     Result.Top := f.Y;
@@ -144,7 +144,7 @@ var
   end;
 
 var
-  ok, cancel: TButton;
+  ok, cancel: TThemedButton;
 begin
   f := TContainerForm.CreateShell(ATitle);
 
@@ -180,7 +180,7 @@ begin
   f.FillParents(AModel, ASelfUuid, ACfg.ParentUuid);
 
   Inc(f.Y, 8);
-  ok := TButton.Create(f);
+  ok := TThemedButton.Create(f);
   ok.Parent := f;
   ok.Caption := 'OK';
   ok.ModalResult := mrOk;
@@ -189,7 +189,7 @@ begin
   ok.Top := f.Y;
   ok.Left := DLG_W - MARGIN - 2 * 90 - 8;
 
-  cancel := TButton.Create(f);
+  cancel := TThemedButton.Create(f);
   cancel.Parent := f;
   cancel.Caption := 'Cancel';
   cancel.ModalResult := mrCancel;
@@ -199,7 +199,7 @@ begin
   cancel.Left := DLG_W - MARGIN - 90;
 
   f.ClientHeight := f.Y + 40;
-  ApplyUiFont(f);
+  ThemeDialog(f);
   Result := f;
 end;
 
@@ -213,12 +213,12 @@ begin
   AName := f.NameEdit.Text;
   if not ValidateName(AName, err) then
   begin
-    MessageDlg('Container', err, mtError, [mbOK], 0);
+    RtMessageDlg('Container', err, mtError, [mbOK], 0);
     Exit;
   end;
   if f.ParentCombo.ItemIndex < 0 then
   begin
-    MessageDlg('Container', 'Choose an SSH host to connect via.',
+    RtMessageDlg('Container', 'Choose an SSH host to connect via.',
       mtError, [mbOK], 0);
     Exit;
   end;
@@ -227,7 +227,7 @@ begin
   ACfg.ContainerName := f.CNameEdit.Text;
   if not ValidateContainerName(ACfg.ContainerName, err) then
   begin
-    MessageDlg('Container', err, mtError, [mbOK], 0);
+    RtMessageDlg('Container', err, mtError, [mbOK], 0);
     Exit;
   end;
   ACfg.Shell := TContainerShell(f.ShellCombo.ItemIndex);
@@ -268,7 +268,7 @@ begin
   Result := False;
   if not AModel.GetContainerConfig(AUuid, cfg) then
   begin
-    MessageDlg('Container',
+    RtMessageDlg('Container',
       'This container cannot be edited (older document format).',
       mtError, [mbOK], 0);
     Exit;

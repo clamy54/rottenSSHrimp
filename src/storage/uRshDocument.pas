@@ -144,7 +144,7 @@ implementation
 uses
   {$IFDEF UNIX}BaseUnix, Unix,{$ENDIF}
   uSqlite3Api, uSodiumApi, uDocCrypto, uRshSchema, uRshEnvelope,
-  uRsUtil, uAppPaths, uSafeSave, uLog;
+  uRsUtil, uAppPaths, uRshSafeSave, uLog;
 
 const
   MSG_BAD_PASSWORD_OR_CORRUPT =

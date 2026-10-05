@@ -8,7 +8,7 @@ unit uTermControl;
 interface
 
 uses
-  Classes, SysUtils, Controls, Graphics, LCLType, LCLIntf, Forms, ExtCtrls,
+  uRtMessage, Classes, SysUtils, Controls, Graphics, LCLType, LCLIntf, Forms, ExtCtrls,
   Clipbrd, Dialogs, LMessages,
   uTermTypes, uTermScreen, uTermEmulator, uFontEmbed, uTheme, uTreeScrollBar,
   uKeyCompat;
@@ -742,7 +742,7 @@ begin
     finally
       previewLines.Free;
     end;
-    if QuestionDlg('Paste',
+    if RtQuestionDlg('Paste',
       Format('The clipboard contains %d lines.', [lineCount]) + LineEnding +
       'Pasting multiple commands can be dangerous.' + LineEnding +
       LineEnding + preview,

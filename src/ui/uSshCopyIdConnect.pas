@@ -23,7 +23,7 @@ function RotateManagedKey(ADoc: TRshDocument; AModel: TRshModel;
 implementation
 
 uses
-  Forms, Controls, StdCtrls, Dialogs,
+  uThemedControls, Forms, Controls, StdCtrls, Dialogs,
   uSecureBytes, uSshTransport, uSshTunnel, uSshTunnelConnect, uSshConnect,
   uSshKeyGen, uAuthPrompt, uFidoPrompt, uSshSkKeyGen;
 
@@ -86,7 +86,7 @@ end;
 constructor TCopyIdWaitDialog.Create(const ACaption: string);
 var
   lbl: TLabel;
-  btn: TButton;
+  btn: TThemedButton;
 begin
   inherited Create;
   FCancelled := False;
@@ -108,7 +108,7 @@ begin
   lbl.Height := 40;
   lbl.Caption := ACaption;
 
-  btn := TButton.Create(FForm);
+  btn := TThemedButton.Create(FForm);
   btn.Parent := FForm;
   btn.Caption := 'Cancel';
   btn.Width := 90;
@@ -119,6 +119,7 @@ begin
   btn.Cancel := True;
   btn.OnClick := @CancelClick;
 
+  ThemeDialog(FForm);
   FForm.Show;
   // Non modale, mais le reste dort: sinon ProcessMessages livre les clics et
   // une seconde rotation s'imbrique dans la premiere.

@@ -7,7 +7,7 @@ unit uSshSessionTab;
 interface
 
 uses
-  Classes, SysUtils, Controls, ComCtrls, Forms, Dialogs, Graphics,
+  uRtMessage, Classes, SysUtils, Controls, ComCtrls, Forms, Dialogs, Graphics,
   uTermControl, uSshTransport, uSshKnownHosts, uSessionState,
   uSessionManager, uRshDocument, uSessionTabBase, uSshTunnel, uSshTunnelConnect,
   uTreeScrollBar, uTheme, uSecureBytes, uSshForward, uNoticeBanner;
@@ -561,7 +561,7 @@ function TSshSessionTab.ConfirmClose: Boolean;
 begin
   if IsTerminalState(FState) then
     Exit(True);
-  Result := QuestionDlg('Disconnect',
+  Result := RtQuestionDlg('Disconnect',
     Format('Disconnect from %s?', [FDisplayName]), mtConfirmation,
     [mrOK, 'Disconnect', mrCancel, 'Cancel', 'IsCancel'], 0) = mrOK;
 end;

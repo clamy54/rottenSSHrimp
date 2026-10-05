@@ -11,7 +11,7 @@ unit uScpTab;
 interface
 
 uses
-  Classes, SysUtils, Controls, ComCtrls, Forms, Dialogs, ExtCtrls, StdCtrls,
+  uThemedControls, uRtMessage, Classes, SysUtils, Controls, ComCtrls, Forms, Dialogs, ExtCtrls, StdCtrls,
   Graphics, LCLType,
   uSessionTabBase, uSessionState, uSessionManager, uRshDocument, uRshModel,
   uSshTransport, uSshKnownHosts, uSshTunnel, uSshTunnelConnect, uSecureBytes,
@@ -90,8 +90,8 @@ type
 
     FHeader: TPanel;
     FHeaderInfo: TLabel;
-    FBtnReconnect: TButton;
-    FBtnClose: TButton;
+    FBtnReconnect: TThemedButton;
+    FBtnClose: TThemedButton;
     FSplit: TThemedSplitter;
     FQueueSplit: TThemedSplitter;
     FLocalPanel: TFilePanel;
@@ -479,7 +479,7 @@ begin
   FHeader.ParentBackground := False;
   FHeader.ParentColor := False;
 
-  FBtnClose := TButton.Create(Self);
+  FBtnClose := TThemedButton.Create(Self);
   FBtnClose.Parent := FHeader;
   FBtnClose.Align := alRight;
   FBtnClose.Caption := 'Close';
@@ -487,7 +487,7 @@ begin
   FBtnClose.BorderSpacing.Around := 4;
   FBtnClose.OnClick := @CloseClick;
 
-  FBtnReconnect := TButton.Create(Self);
+  FBtnReconnect := TThemedButton.Create(Self);
   FBtnReconnect.Parent := FHeader;
   FBtnReconnect.Align := alRight;
   FBtnReconnect.Caption := 'Reconnect';
@@ -898,7 +898,7 @@ begin
     fpaNewFolder:
       begin
         newName := '';
-        if not InputQuery('New folder', 'Name of the new folder:',
+        if not RtInputQuery('New folder', 'Name of the new folder:',
            newName) then Exit;
         newName := Trim(newName);
         if newName = '' then Exit;
@@ -908,7 +908,7 @@ begin
           v := CheckRemoteChildName(newName);
         if v <> nvOk then
         begin
-          MessageDlg(RSSH_APP_NAME,
+          RtMessageDlg(RSSH_APP_NAME,
             NameVerdictText(v, DisplaySafeName(newName)), mtError, [mbOK], 0);
           Exit;
         end;
@@ -922,7 +922,7 @@ begin
         if panel.List.FocusedIsParent then Exit;
         if not panel.List.FocusedEntry(entry) then Exit;
         newName := entry.Name;
-        if not InputQuery('Rename',
+        if not RtInputQuery('Rename',
            Format('New name for "%s":', [DisplaySafeName(entry.Name)]),
            newName) then Exit;
         newName := Trim(newName);
@@ -933,7 +933,7 @@ begin
           v := CheckRemoteChildName(newName);
         if v <> nvOk then
         begin
-          MessageDlg(RSSH_APP_NAME,
+          RtMessageDlg(RSSH_APP_NAME,
             NameVerdictText(v, DisplaySafeName(newName)), mtError, [mbOK], 0);
           Exit;
         end;
@@ -956,7 +956,7 @@ begin
         msg := msg + LineEnding + LineEnding +
           'Folders are deleted with everything they contain. This cannot ' +
           'be undone.';
-        if QuestionDlg('Delete', msg, mtWarning,
+        if RtQuestionDlg('Delete', msg, mtWarning,
            [mrNo, 'Cancel', 'IsCancel', 'IsDefault',
             mrYes, 'Delete'], 0) <> mrYes then Exit;
         for i := 0 to High(names) do
@@ -1515,7 +1515,7 @@ begin
       [partials]);
   msg := msg + LineEnding + LineEnding +
     'No destination file has been replaced by an incomplete transfer.';
-  Result := QuestionDlg('Close file transfer', msg, mtConfirmation,
+  Result := RtQuestionDlg('Close file transfer', msg, mtConfirmation,
     [mrCancel, 'Keep open', 'IsCancel', 'IsDefault',
      mrOK, 'Close anyway'], 0) = mrOK;
   if Result and (FTransport <> nil) then

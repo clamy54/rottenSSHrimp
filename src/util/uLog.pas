@@ -39,7 +39,7 @@ procedure LogShutdown;
 implementation
 
 uses
-  Classes, uAppPaths, uSafeSave;
+  Classes, uAppPaths, uRshSafeSave;
 
 const
   DEFAULT_MAX_BYTES = 1024 * 1024;

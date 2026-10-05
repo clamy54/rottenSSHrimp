@@ -275,8 +275,17 @@ begin
   begin
     msg := 'No tunnel yet. Fill in the fields below, then click Add.';
     Canvas.Font.Color := clTextSecondary;
-    Canvas.TextOut((r.Width - Canvas.TextWidth(msg)) div 2,
-      hh + (r.Height - hh - th) div 2, msg);
+    if Canvas.TextWidth(msg) <= r.Width - 16 then
+      Canvas.TextOut((r.Width - Canvas.TextWidth(msg)) div 2,
+        hh + (r.Height - hh - th) div 2, msg)
+    else
+    begin
+      y := hh + (r.Height - hh - 2 * th) div 2;
+      msg := 'No tunnel yet.';
+      Canvas.TextOut((r.Width - Canvas.TextWidth(msg)) div 2, y, msg);
+      msg := 'Fill in the fields below, then click Add.';
+      Canvas.TextOut((r.Width - Canvas.TextWidth(msg)) div 2, y + th, msg);
+    end;
     Canvas.Brush.Style := bsSolid;
     Exit;
   end;

@@ -7,7 +7,7 @@ unit uFrmMain;
 interface
 
 uses
-  Classes, SysUtils, Forms, Controls, Menus, ComCtrls, ExtCtrls, StdCtrls,
+  uThemedControls, uRtMessage, Classes, SysUtils, Forms, Controls, Menus, ComCtrls, ExtCtrls, StdCtrls,
   Graphics, LCLType, LMessages, uRshDocument, uRshModel, uSessionManager,
   uSessionState, uSessionTabBase, uSshSessionTab, uSshTransport,
   uRdpSessionTab, uVncSessionTab, uVncConnect, uClusterSshTab, uCrashRecovery,
@@ -134,7 +134,7 @@ type
     procedure TreeAdvancedDrawItem(Sender: TCustomTreeView; Node: TTreeNode;
       State: TCustomDrawState; Stage: TCustomDrawStage;
       var PaintImages, DefaultDraw: Boolean);
-    {$IFDEF WINDOWS}
+    {$IF DEFINED(WINDOWS) OR DEFINED(LCLGtk3)}
     // la StatusBar native Win32 ignore Font.Color: illisible en theme sombre
     procedure StatusDrawPanel(AStatusBar: TStatusBar; APanel: TStatusPanel;
       const ARect: TRect);
@@ -269,8 +269,9 @@ implementation
 
 uses
   Math, Dialogs, Clipbrd, LCLIntf, LazFileUtils, uTheme, uAbout, uVersion,
+  {$IFDEF LCLGtk3}uUiKit,{$ENDIF}
   uPasswordDialog, uTreeIcons, uIconPicker, uNodeDialogs, uLocalTermTab, uPingTab,
-  uSshConnect, uSafeSave, uRdpConnect, uPrefsDialog, uPreferences, uLog,
+  uSshConnect, uRshSafeSave, uRdpConnect, uPrefsDialog, uPreferences, uLog,
   uCrashRecoveryDialog, uThemeLoad, uTermControl, uRdpControl, uVncControl,
   uSshKnownHosts, uHostKeyDialog, uContainerConnect, uContainerDialog,
   uPodConnect, uPodDialog, uSshTunnel, uSshTunnelConnect, uAppPaths,
@@ -677,7 +678,7 @@ begin
     Width := 380;
     Text := '';
   end;
-  {$IFDEF WINDOWS}
+  {$IF DEFINED(WINDOWS) OR DEFINED(LCLGtk3)}
   FStatusBar.OnDrawPanel := @StatusDrawPanel;
   FStatusBar.Panels[0].Style := psOwnerDraw;
   FStatusBar.Panels[1].Style := psOwnerDraw;
@@ -723,7 +724,7 @@ end;
 procedure TfrmMain.BuildLockPanel;
 var
   lbl: TLabel;
-  btn: TButton;
+  btn: TThemedButton;
 begin
   FLockPanel.Color := clSideBg;
   lbl := TLabel.Create(Self);
@@ -739,7 +740,7 @@ begin
     'The encryption key has been wiped from memory. ' +
     'The master password is required to resume.';
 
-  btn := TButton.Create(Self);
+  btn := TThemedButton.Create(Self);
   btn.Parent := FLockPanel;
   btn.Top := 1000;
   btn.Align := alTop;
@@ -763,7 +764,7 @@ begin
 
   policy := PrefLockSessionPolicy;
   if (policy = lspAsk) and (FPages.PageCount > 0) then
-    case QuestionDlg('Lock Document',
+    case RtQuestionDlg('Lock Document',
       'Sessions are open. What should happen when locking?', mtConfirmation,
       [mrYes, 'Disconnect and Lock', mrNo, 'Keep Sessions',
        mrCancel, 'Cancel'], 0) of
@@ -1297,7 +1298,7 @@ begin
       end;
     end;
   if n = 0 then Exit;
-  Result := QuestionDlg(RSSH_APP_NAME,
+  Result := RtQuestionDlg(RSSH_APP_NAME,
     Format('%d active session(s) will be disconnected:%s%sDisconnect all and close?',
       [n, list, LineEnding + LineEnding]),
     mtConfirmation,
@@ -1472,7 +1473,7 @@ begin
       msg := msg + Copy(AReport.Messages.Text, 1, 1200) + LineEnding +
         Format('… and %d more.', [AReport.Messages.Count - 12]);
   end;
-  MessageDlg('Import', msg, mtInformation, [mbOK], 0);
+  RtMessageDlg('Import', msg, mtInformation, [mbOK], 0);
 end;
 
 // borne la taille AVANT de charger: une entree non fiable ne remplit pas la RAM
@@ -1529,7 +1530,7 @@ begin
 
     if not ReadFileCapped(dlg.FileName, MAX_IMPORT_FILE_BYTES, data, err) then
     begin
-      MessageDlg('Import', err, mtError, [mbOK], 0);
+      RtMessageDlg('Import', err, mtError, [mbOK], 0);
       Exit;
     end;
     src := TStringList.Create;
@@ -1541,7 +1542,7 @@ begin
       except
         on E: EImportExportError do
         begin
-          MessageDlg('Import', E.Message, mtError, [mbOK], 0);
+          RtMessageDlg('Import', E.Message, mtError, [mbOK], 0);
           Exit;
         end;
         on E: EModelError do
@@ -1585,7 +1586,7 @@ begin
 
     if not ReadFileCapped(dlg.FileName, MAX_IMPORT_FILE_BYTES, data, err) then
     begin
-      MessageDlg('Import', err, mtError, [mbOK], 0);
+      RtMessageDlg('Import', err, mtError, [mbOK], 0);
       Exit;
     end;
     src := TStringList.Create;
@@ -1597,7 +1598,7 @@ begin
       except
         on E: EImportExportError do
         begin
-          MessageDlg('Import', E.Message, mtError, [mbOK], 0);
+          RtMessageDlg('Import', E.Message, mtError, [mbOK], 0);
           Exit;
         end;
         on E: EModelError do
@@ -1644,7 +1645,7 @@ begin
 
     if not ReadFileCapped(dlg.FileName, MAX_IMPORT_FILE_BYTES, data, err) then
     begin
-      MessageDlg('Import', err, mtError, [mbOK], 0);
+      RtMessageDlg('Import', err, mtError, [mbOK], 0);
       Exit;
     end;
 
@@ -1653,7 +1654,7 @@ begin
     except
       on E: EImportExportError do
       begin
-        MessageDlg('Import', E.Message, mtError, [mbOK], 0);
+        RtMessageDlg('Import', E.Message, mtError, [mbOK], 0);
         Exit;
       end;
       on E: EModelError do
@@ -1694,7 +1695,7 @@ begin
   except
     on E: Exception do
     begin
-      MessageDlg('Export', E.Message, mtError, [mbOK], 0);
+      RtMessageDlg('Export', E.Message, mtError, [mbOK], 0);
       Exit;
     end;
   end;
@@ -1715,7 +1716,7 @@ begin
       except
         on E: Exception do
         begin
-          MessageDlg('Export', 'Cannot write file: ' + E.Message,
+          RtMessageDlg('Export', 'Cannot write file: ' + E.Message,
             mtError, [mbOK], 0);
           Exit;
         end;
@@ -1723,7 +1724,7 @@ begin
     finally
       outFile.Free;
     end;
-    MessageDlg('Export',
+    RtMessageDlg('Export',
       'Export complete.' + LineEnding + LineEnding +
       'This file contains NO password and NO private key: ' +
       'only the names, hosts, ports and the name of the associated credential.',
@@ -1844,7 +1845,7 @@ end;
 procedure TfrmMain.ClearRecentClick(Sender: TObject);
 begin
   if FModel = nil then Exit;
-  if MessageDlg('Recent Connections',
+  if RtMessageDlg('Recent Connections',
     'Clear the list of recent connections?', mtConfirmation,
     [mbYes, mbNo], 0) <> mrYes then Exit;
   try
@@ -1898,7 +1899,7 @@ begin
   // disparu: on le dit et on retire l'entree morte
   if not FileExists(path) then
   begin
-    MessageDlg('Document not found',
+    RtMessageDlg('Document not found',
       'This document is no longer at:' + LineEnding + LineEnding + path +
       LineEnding + LineEnding + 'It has been removed from the recent list.',
       mtWarning, [mbOK], 0);
@@ -1910,7 +1911,7 @@ end;
 
 procedure TfrmMain.ClearOpenRecentClick(Sender: TObject);
 begin
-  if MessageDlg('Open Recent',
+  if RtMessageDlg('Open Recent',
     'Clear the list of recently opened documents?', mtConfirmation,
     [mbYes, mbNo], 0) <> mrYes then Exit;
   RecentClear;
@@ -2076,7 +2077,7 @@ begin
     RecordAttempt(AConnUuid, srFailed);
 
   if err <> '' then
-    MessageDlg(RSSH_APP_NAME, err, mtError, [mbOK], 0);
+    RtMessageDlg(RSSH_APP_NAME, err, mtError, [mbOK], 0);
   UpdateSessionUi;
 end;
 
@@ -2147,12 +2148,12 @@ end;
 
 procedure TfrmMain.ShowDocError(const AErr: TDocError);
 begin
-  MessageDlg(RSSH_APP_NAME, AErr.UserMessage, mtError, [mbOK], 0);
+  RtMessageDlg(RSSH_APP_NAME, AErr.UserMessage, mtError, [mbOK], 0);
 end;
 
 procedure TfrmMain.ShowModelError(const AMsg: string);
 begin
-  MessageDlg(RSSH_APP_NAME, AMsg, mtError, [mbOK], 0);
+  RtMessageDlg(RSSH_APP_NAME, AMsg, mtError, [mbOK], 0);
 end;
 
 // dossiers d'abord puis alphabetique: le sort_order manuel ne se voit plus
@@ -2409,7 +2410,7 @@ begin
   Sender.Canvas.TextOut(tr.Left + 2, ty, Node.Text);
 end;
 
-{$IFDEF WINDOWS}
+{$IF DEFINED(WINDOWS) OR DEFINED(LCLGtk3)}
 procedure TfrmMain.StatusDrawPanel(AStatusBar: TStatusBar;
   APanel: TStatusPanel; const ARect: TRect);
 var
@@ -2419,6 +2420,10 @@ begin
   begin
     Brush.Color := clStatusBg;
     Brush.Style := bsSolid;
+    {$IFDEF LCLGtk3}
+    FillRect(ARect);
+    Font.Assign(AStatusBar.Font);
+    {$ENDIF}
     Font.Color := clStatusText;
     ty := ARect.Top + (ARect.Bottom - ARect.Top - TextHeight('Ag')) div 2;
     TextRect(ARect, ARect.Left + 4, ty, APanel.Text);
@@ -2735,7 +2740,7 @@ var
   groupName, uuid: string;
 begin
   groupName := '';
-  if not InputQuery('New Group', 'Group name:', groupName) then Exit;
+  if not RtInputQuery('New Group', 'Group name:', groupName) then Exit;
   try
     uuid := FModel.CreateGroup(SelectedUuid, groupName);
     BuildTree;
@@ -2849,7 +2854,7 @@ begin
       uuids.Add(list[i].ConnUuid);
     nb := CountLiveSessionsIn(uuids);
     if nb = 0 then Exit;
-    if QuestionDlg('Disconnect All',
+    if RtQuestionDlg('Disconnect All',
       Format('Disconnect %d session(s) in this folder?', [nb]),
       mtConfirmation,
       [mrOK, 'Disconnect', mrCancel, 'Cancel', 'IsCancel'], 0) <> mrOK then
@@ -2967,7 +2972,7 @@ begin
       live := CountLiveSessionsInNode(AUuids[i], False);
       if live > 0 then
       begin
-        MessageDlg(RSSH_APP_NAME, Format('"%s" is still open. Disconnect ' +
+        RtMessageDlg(RSSH_APP_NAME, Format('"%s" is still open. Disconnect ' +
           'it before deleting it.', [NodeDisplayName(AUuids[i])]),
           mtWarning, [mbOK], 0);
         Exit;
@@ -2976,23 +2981,23 @@ begin
     FModel.CountExternalDependentsOfSet(AUuids, jumps, conts, pods);
     if jumps > 0 then
     begin
-      MessageDlg(RSSH_APP_NAME, Format('%d connection(s) outside this ' +
+      RtMessageDlg(RSSH_APP_NAME, Format('%d connection(s) outside this ' +
         'selection use one of these hosts as their jump host. Deleting it ' +
         'would silently turn them into direct, unencrypted connections. ' +
         'Point them elsewhere first.', [jumps]), mtWarning, [mbOK], 0);
       Exit;
     end;
     if conts > 0 then
-      if MessageDlg(RSSH_APP_NAME, Format('%d container(s) outside this ' +
+      if RtMessageDlg(RSSH_APP_NAME, Format('%d container(s) outside this ' +
         'selection use one of these hosts. Deleting it will leave them ' +
         'unusable. Delete anyway?', [conts]), mtWarning, [mbYes, mbCancel],
         0) <> mrYes then Exit;
     if pods > 0 then
-      if MessageDlg(RSSH_APP_NAME, Format('%d pod(s) outside this ' +
+      if RtMessageDlg(RSSH_APP_NAME, Format('%d pod(s) outside this ' +
         'selection use one of these hosts. Deleting it will leave them ' +
         'unusable. Delete anyway?', [pods]), mtWarning, [mbYes, mbCancel],
         0) <> mrYes then Exit;
-    if MessageDlg(RSSH_APP_NAME, Format('Delete these %d hosts?',
+    if RtMessageDlg(RSSH_APP_NAME, Format('Delete these %d hosts?',
       [AUuids.Count]), mtConfirmation, [mbYes, mbCancel], 0) <> mrYes then
       Exit;
     try
@@ -3083,7 +3088,7 @@ begin
   // le message generique parle au pluriel: ici, un seul hote
   if SshConnectWouldPrompt(FModel, ref.Uuid) then
   begin
-    MessageDlg('Connect Side by Side', 'This host asks for credentials at ' +
+    RtMessageDlg('Connect Side by Side', 'This host asks for credentials at ' +
       'connect time, and this view opens its sessions without dialogs. ' +
       'Give it a stored or inherited credential first.',
       mtInformation, [mbOK], 0);
@@ -3164,13 +3169,13 @@ begin
       end;
     if totalSsh = 0 then
     begin
-      MessageDlg(title, 'No SSH connection here.',
+      RtMessageDlg(title, 'No SSH connection here.',
         mtInformation, [mbOK], 0);
       Exit;
     end;
     if cnt = 0 then
     begin
-      MessageDlg(title, Format('None of these SSH connections ' +
+      RtMessageDlg(title, Format('None of these SSH connections ' +
         'can be opened here: %d ask for credentials at connect time. ' +
         'Give them a stored or inherited credential first.', [nbPrompt]),
         mtInformation, [mbOK], 0);
@@ -3178,7 +3183,7 @@ begin
     end;
     // FIDO2: N hotes = N touchers en serie; les derniers sshd peuvent tomber
     // avant leur tour (LoginGraceTime, 120 s). A l'utilisateur de choisir.
-    if (nbFido > 0) and (MessageDlg(title, Format(
+    if (nbFido > 0) and (RtMessageDlg(title, Format(
       '%d of these hosts authenticate with a FIDO2 security key: expect one ' +
       'touch per host, one after the other. Hosts left waiting too long may ' +
       'time out on the server side.' + LineEnding + LineEnding + 'Continue?',
@@ -3186,7 +3191,7 @@ begin
       Exit;
     if cnt > CLUSTER_MAX_SESSIONS then
     begin
-      MessageDlg(title, Format(
+      RtMessageDlg(title, Format(
         '%d SSH connections here; this view is limited to %d.',
         [cnt, CLUSTER_MAX_SESSIONS]), mtWarning, [mbOK], 0);
       Exit;
@@ -3194,7 +3199,7 @@ begin
     // en amont: sinon la (N+1)e inscription leve en pleine grille
     if FSessions.Count + cnt > FSessions.MaxSessions then
     begin
-      MessageDlg(title, Format(
+      RtMessageDlg(title, Format(
         'Not enough session slots: %d needed, %d available.',
         [cnt, FSessions.MaxSessions - FSessions.Count]), mtWarning, [mbOK], 0);
       Exit;
@@ -3353,11 +3358,11 @@ begin
   if live > 0 then
   begin
     if ref.Kind = nkGroup then
-      MessageDlg(RSSH_APP_NAME, Format('This folder still has %d open ' +
+      RtMessageDlg(RSSH_APP_NAME, Format('This folder still has %d open ' +
         'session(s). Disconnect them before deleting it.', [live]),
         mtWarning, [mbOK], 0)
     else
-      MessageDlg(RSSH_APP_NAME, 'This connection is still open. Disconnect ' +
+      RtMessageDlg(RSSH_APP_NAME, 'This connection is still open. Disconnect ' +
         'it before deleting it.', mtWarning, [mbOK], 0);
     Exit;
   end;
@@ -3366,18 +3371,18 @@ begin
   FModel.CountExternalDependents(ref.Uuid, jumps, conts, pods);
   if jumps > 0 then
   begin
-    MessageDlg(RSSH_APP_NAME, Format('%d connection(s) outside use a host ' +
+    RtMessageDlg(RSSH_APP_NAME, Format('%d connection(s) outside use a host ' +
       'in here as their jump host. Deleting it would silently turn them ' +
       'into direct, unencrypted connections. Point them elsewhere first.',
       [jumps]), mtWarning, [mbOK], 0);
     Exit;
   end;
   if conts > 0 then
-    if MessageDlg(RSSH_APP_NAME, Format('%d container(s) outside use a ' +
+    if RtMessageDlg(RSSH_APP_NAME, Format('%d container(s) outside use a ' +
       'host in here. Deleting it will leave them unusable. Delete anyway?',
       [conts]), mtWarning, [mbYes, mbCancel], 0) <> mrYes then Exit;
   if pods > 0 then
-    if MessageDlg(RSSH_APP_NAME, Format('%d pod(s) outside use a host in ' +
+    if RtMessageDlg(RSSH_APP_NAME, Format('%d pod(s) outside use a host in ' +
       'here. Deleting it will leave them unusable. Delete anyway?',
       [pods]), mtWarning, [mbYes, mbCancel], 0) <> mrYes then Exit;
   if ref.Kind = nkGroup then
@@ -3388,7 +3393,7 @@ begin
     msg := 'Delete this pod?'
   else
     msg := 'Delete this connection?';
-  if MessageDlg(RSSH_APP_NAME, msg, mtConfirmation, [mbYes, mbCancel], 0)
+  if RtMessageDlg(RSSH_APP_NAME, msg, mtConfirmation, [mbYes, mbCancel], 0)
     <> mrYes then Exit;
   try
     FModel.DeleteNode(ref.Uuid);
@@ -3555,7 +3560,7 @@ procedure TfrmMain.TerminalFontClick(Sender: TObject);
 begin
   if not ShowTerminalFontDialog then
     Exit;
-  MessageDlg(RSSH_APP_NAME,
+  RtMessageDlg(RSSH_APP_NAME,
     'The new font will apply to the next sessions.',
     mtInformation, [mbOK], 0);
 end;
@@ -3604,7 +3609,7 @@ begin
   bmp := TSessionTabBase(FPages.ActivePage).GrabThumbnail;
   if bmp = nil then
   begin
-    MessageDlg(RSSH_APP_NAME, 'This session has nothing to capture yet.',
+    RtMessageDlg(RSSH_APP_NAME, 'This session has nothing to capture yet.',
       mtInformation, [mbOK], 0);
     Exit;
   end;
@@ -3633,7 +3638,7 @@ begin
           end;
         except
           on E: Exception do
-            MessageDlg(RSSH_APP_NAME, 'Cannot write image: ' + E.Message,
+            RtMessageDlg(RSSH_APP_NAME, 'Cannot write image: ' + E.Message,
               mtError, [mbOK], 0);
         end;
       finally
@@ -3660,7 +3665,7 @@ begin
   if not tab.Start(err) then
   begin
     tab.Free;
-    MessageDlg(RSSH_APP_NAME, 'Cannot start shell: ' + err, mtError, [mbOK], 0);
+    RtMessageDlg(RSSH_APP_NAME, 'Cannot start shell: ' + err, mtError, [mbOK], 0);
     Exit;
   end;
   UpdateSessionUi;
@@ -3704,7 +3709,7 @@ begin
     tab.OnStatusChanged := @SessionStatusChanged;
   end;
   if err <> '' then
-    MessageDlg(RSSH_APP_NAME, err, mtError, [mbOK], 0);
+    RtMessageDlg(RSSH_APP_NAME, err, mtError, [mbOK], 0);
   UpdateSessionUi;
 end;
 
@@ -3734,7 +3739,7 @@ begin
     end;
   if count >= PING_MAX_TABS then
   begin
-    MessageDlg('Ping Host', Format('At most %d ping tabs can run at the ' +
+    RtMessageDlg('Ping Host', Format('At most %d ping tabs can run at the ' +
       'same time. Close one first.', [PING_MAX_TABS]), mtInformation,
       [mbOK], 0);
     Exit;
@@ -3757,7 +3762,7 @@ begin
   if host = '' then Exit;
   if FModel.ResolveJumpVia(ref.Uuid) <> '' then
   begin
-    MessageDlg('Ping Host', Format('%s is reached through a jump host: it ' +
+    RtMessageDlg('Ping Host', Format('%s is reached through a jump host: it ' +
       'cannot be pinged from this machine.', [dispName]), mtInformation,
       [mbOK], 0);
     Exit;
@@ -3787,17 +3792,18 @@ begin
   ref := SelectedRef;
   if (ref = nil) or (ref.Kind <> nkConnection) then Exit;
   if CopySshIdToHost(FDoc, FModel, ref.Uuid, err) then
-    MessageDlg('Copy SSH ID',
+    RtMessageDlg('Copy SSH ID',
       'The public key is now installed on this host.' + LineEnding +
       'New SSH sessions will authenticate with the managed key.',
       mtInformation, [mbOK], 0)
   else if err <> '' then
-    MessageDlg('Copy SSH ID', err, mtError, [mbOK], 0);
+    RtMessageDlg('Copy SSH ID', err, mtError, [mbOK], 0);
 end;
 
 procedure TfrmMain.ApplyThemeToUi;
 begin
   Color := clAppBg;
+  {$IFDEF LCLGtk3}ApplyNativeAppearance;{$ENDIF}
   if FLeftPanel <> nil then
     FLeftPanel.Color := clSideBg;
   if FSessionPanel <> nil then
@@ -3807,6 +3813,11 @@ begin
     FTree.Color := clSideBg;
     FTree.Font.Color := clSideText;
     FTree.BackgroundColor := clSideBg;
+    {$IFDEF LCLGtk3}
+    FTree.Options := FTree.Options - [tvoThemedDraw];
+    FTree.ExpandSignType := tvestPlusMinus;
+    FTree.ExpandSignColor := clSideText;
+    {$ENDIF}
   end;
   if FTreeScroll <> nil then
     FTreeScroll.ApplyTheme(clSideBg,
@@ -3956,7 +3967,7 @@ begin
   if FDoc = nil then Exit;
   // decider AVANT de fermer, un Cancel doit tout laisser intact
   if FDoc.Dirty then
-    case QuestionDlg(RSSH_APP_NAME, 'The document has been modified.',
+    case RtQuestionDlg(RSSH_APP_NAME, 'The document has been modified.',
       mtConfirmation,
       [mrYes, 'Save', mrNo, 'Don''t Save',
        mrCancel, 'Cancel', 'IsCancel'], 0) of
@@ -4099,7 +4110,7 @@ begin
   end;
   // l'ouverture reussirait, seul le Save echouerait plus tard
   if not DirectoryIsWritable(ExtractFilePath(ExpandFileNameUTF8(path))) then
-    if MessageDlg('Read-only location',
+    if RtMessageDlg('Read-only location',
       'This document is on a read-only location and cannot be saved back here.'
       + LineEnding + LineEnding + 'Open read-only?',
       mtWarning, [mbOK, mbCancel], 0) = mrOK then
@@ -4141,7 +4152,7 @@ begin
       end;
       if err.Code = decLocked then
       begin
-        if MessageDlg('Document already open', err.UserMessage + LineEnding +
+        if RtMessageDlg('Document already open', err.UserMessage + LineEnding +
           LineEnding + 'Open read-only?', mtWarning,
           [mbOK, mbCancel], 0) = mrOK then
         begin
@@ -4177,7 +4188,7 @@ begin
   begin
     case err.Code of
       decConflict:
-        case QuestionDlg('External change', err.UserMessage + LineEnding +
+        case RtQuestionDlg('External change', err.UserMessage + LineEnding +
           LineEnding + 'What do you want to do?', mtWarning,
           [mrYes, 'Overwrite', mrNo, 'Save As…', mrCancel, 'Cancel'], 0) of
           mrYes:
@@ -4187,7 +4198,7 @@ begin
             SaveAsInteractive;
         end;
       decReadOnly:
-        if MessageDlg('Read-only document', err.UserMessage, mtInformation,
+        if RtMessageDlg('Read-only document', err.UserMessage, mtInformation,
           [mbOK, mbCancel], 0) = mrOK then
           SaveAsInteractive;
     else
@@ -4205,7 +4216,7 @@ begin
     Exit;
   APath := APath + '.rsh';
   if FileExists(APath) then
-    Result := MessageDlg('Replace file',
+    Result := RtMessageDlg('Replace file',
       Format('%s already exists. Replace it?', [ExtractFileName(APath)]),
       mtConfirmation, [mbYes, mbNo], 0) = mrYes;
 end;
@@ -4261,7 +4272,7 @@ begin
       Screen.Cursor := crHourGlass;
       try
         if FDoc.ChangeMasterPassword(oldPw, newPw, err) then
-          MessageDlg(RSSH_APP_NAME, 'Master password changed.',
+          RtMessageDlg(RSSH_APP_NAME, 'Master password changed.',
             mtInformation, [mbOK], 0)
         else
           ShowDocError(err);
@@ -4285,10 +4296,10 @@ begin
   Screen.Cursor := crHourGlass;
   try
     if FDoc.Db.IntegrityCheckOk then
-      MessageDlg(RSSH_APP_NAME, 'Integrity check passed.', mtInformation,
+      RtMessageDlg(RSSH_APP_NAME, 'Integrity check passed.', mtInformation,
         [mbOK], 0)
     else
-      MessageDlg(RSSH_APP_NAME, 'Integrity check FAILED. Save a copy with' +
+      RtMessageDlg(RSSH_APP_NAME, 'Integrity check FAILED. Save a copy with' +
         ' Save Document As… and stop using the original file.',
         mtError, [mbOK], 0);
   finally
@@ -4320,12 +4331,12 @@ begin
   report := WriteCrashReport(E, ctx);
   LogError('unhandled exception: ' + E.ClassName);
   if report <> '' then
-    MessageDlg(RSSH_APP_NAME,
+    RtMessageDlg(RSSH_APP_NAME,
       Format('An unexpected error occurred:'#10'%s'#10#10 +
         'A crash report was saved to:'#10'%s', [E.Message, report]),
       mtError, [mbOK], 0)
   else
-    MessageDlg(RSSH_APP_NAME,
+    RtMessageDlg(RSSH_APP_NAME,
       'An unexpected error occurred:'#10 + E.Message, mtError, [mbOK], 0);
 end;
 
@@ -4354,7 +4365,7 @@ begin
     begin
       // la valeur brute n'est jamais reaffichee: un nom maquille reste cache
       LogInfo('document argument refused: ' + reason);
-      MessageDlg('Cannot open document',
+      RtMessageDlg('Cannot open document',
         'The document was not opened because ' + reason + '.',
         mtWarning, [mbOK], 0);
     end;
@@ -4443,7 +4454,7 @@ begin
       LogInfo('document recovered after an abnormal shutdown');
       DiscardRecovery(AItem);
       if doc.RecoveredUnsaved then
-        MessageDlg(RSSH_APP_NAME,
+        RtMessageDlg(RSSH_APP_NAME,
           'Recovered unsaved changes. Use Save Document As… to keep them.',
           mtInformation, [mbOK], 0);
     end

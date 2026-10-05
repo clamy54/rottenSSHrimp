@@ -10,7 +10,7 @@ unit uFilePanel;
 interface
 
 uses
-  Classes, SysUtils, Types, Controls, Graphics, Forms, StdCtrls, ExtCtrls,
+  uThemedControls, Classes, SysUtils, Types, Controls, Graphics, Forms, StdCtrls, ExtCtrls,
   Menus, LCLType, LCLIntf, uScpBackend, uScpErrors, uScpPaths, uTheme,
   uScpIcons, uTreeScrollBar, uMenuBar;
 
@@ -49,13 +49,13 @@ type
     FSide: TFilePanelSide;
     FTitle: TLabel;
     FPathEdit: TEdit;
-    FVolumeBox: TComboBox;
+    FVolumeBox: TThemedCombo;
     FToolbar: TPaintBox;
     FList: TFileListView;
     FScroll: TTreeScrollBar;
     FBanner: TPanel;
     FBannerText: TLabel;
-    FBannerRetry: TButton;
+    FBannerRetry: TThemedButton;
     FBusy: TLabel;
     FMenu: TPopupMenu;
     FMiTransfer: TMenuItem;
@@ -1264,7 +1264,7 @@ begin
 
   if ASide = fpsLocal then
   begin
-    FVolumeBox := TComboBox.Create(Self);
+    FVolumeBox := TThemedCombo.Create(Self);
     FVolumeBox.Parent := topRow;
     FVolumeBox.Align := alLeft;
     FVolumeBox.Width := 170;
@@ -1298,7 +1298,7 @@ begin
   FBanner.ParentColor := False;
   FBanner.Visible := False;
 
-  FBannerRetry := TButton.Create(Self);
+  FBannerRetry := TThemedButton.Create(Self);
   FBannerRetry.Parent := FBanner;
   FBannerRetry.Align := alRight;
   FBannerRetry.Width := 70;

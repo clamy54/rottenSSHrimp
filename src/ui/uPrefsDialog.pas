@@ -12,15 +12,15 @@ function ShowTerminalFontDialog: Boolean;
 implementation
 
 uses
-  Classes, SysUtils, Forms, Controls, StdCtrls, Graphics, Dialogs,
+  uThemedControls, uRtMessage, Classes, SysUtils, Forms, Controls, StdCtrls, Graphics, Dialogs,
   uFontEmbed, uTheme, uPreferences;
 
 type
   TFontPrefsForm = class(TForm)
   private
-    FFamily: TComboBox;
+    FFamily: TThemedCombo;
     FKeys: TStringList;   // cle par ligne du combo
-    FSize: TComboBox;
+    FSize: TThemedCombo;
     FPreview: TLabel;
     procedure ChoiceChanged(Sender: TObject);
     procedure UpdatePreview;
@@ -55,14 +55,14 @@ function ShowTerminalFontDialog: Boolean;
 var
   f: TFontPrefsForm;
   lbl: TLabel;
-  btnOk, btnCancel: TButton;
+  btnOk, btnCancel: TThemedButton;
   i, sz: Integer;
   key, cur: string;
 begin
   Result := False;
   if not MonaspaceAvailable then
   begin
-    MessageDlg('Terminal Font',
+    RtMessageDlg('Terminal Font',
       'The embedded Monaspace fonts are not available in this ' +
       'binary: the system default font is used instead.',
       mtInformation, [mbOK], 0);
@@ -82,7 +82,7 @@ begin
     lbl.SetBounds(16, 20, 90, 18);
     lbl.Caption := 'Family:';
 
-    f.FFamily := TComboBox.Create(f);
+    f.FFamily := TThemedCombo.Create(f);
     f.FFamily.Parent := f;
     f.FFamily.SetBounds(112, 16, 240, 26);
     f.FFamily.Style := csDropDownList;
@@ -108,7 +108,7 @@ begin
     lbl.SetBounds(16, 58, 90, 18);
     lbl.Caption := 'Size:';
 
-    f.FSize := TComboBox.Create(f);
+    f.FSize := TThemedCombo.Create(f);
     f.FSize.Parent := f;
     f.FSize.SetBounds(112, 54, 80, 26);
     f.FSize.Style := csDropDownList;
@@ -133,14 +133,14 @@ begin
     f.FFamily.OnChange := @f.ChoiceChanged;
     f.FSize.OnChange := @f.ChoiceChanged;
 
-    btnOk := TButton.Create(f);
+    btnOk := TThemedButton.Create(f);
     btnOk.Parent := f;
     btnOk.SetBounds(244, 174, 88, 30);
     btnOk.Caption := 'OK';
     btnOk.ModalResult := mrOK;
     btnOk.Default := True;
 
-    btnCancel := TButton.Create(f);
+    btnCancel := TThemedButton.Create(f);
     btnCancel.Parent := f;
     btnCancel.SetBounds(336, 174, 88, 30);
     btnCancel.Caption := 'Cancel';
@@ -148,7 +148,7 @@ begin
     btnCancel.Cancel := True;
 
     f.ClientHeight := 220;
-    ApplyUiFont(f);
+    ThemeDialog(f);
     // ApplyUiFont ecrase la police de l'apercu
     f.UpdatePreview;
 

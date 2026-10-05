@@ -28,7 +28,7 @@ type
     FOnKey: TRdpKeyEvent;
     FOnEscapeCapture: TNotifyEvent;
     FOnSyncLocks: TNotifyEvent;
-    {$IF defined(LCLGtk2) or defined(LCLCocoa)}
+    {$IF defined(LCLGtk2) or defined(LCLGtk3) or defined(LCLCocoa)}
     FHwKeycode: Integer;   // vide = -1, PAS 0: 0 est un keycode Cocoa reel
     {$ENDIF}
     {$IFDEF LCLCocoa}
@@ -59,7 +59,7 @@ type
     procedure DoEnter; override;
     procedure DoExit; override;
     procedure WMGetDlgCode(var Message: TLMNoParams); message LM_GETDLGCODE;
-    {$IF defined(LCLGtk2) or defined(LCLCocoa)}
+    {$IF defined(LCLGtk2) or defined(LCLGtk3) or defined(LCLCocoa)}
     // KeyDown ne voit que la virtuelle; ceux-ci arrivent avant, avec la position.
     procedure CaptureKeycode(AVk: Word; AKeyData: PtrInt; ADown: Boolean);
     procedure CNKeyDown(var Message: TLMKeyDown); message CN_KEYDOWN;
@@ -90,7 +90,8 @@ implementation
 uses
   uFreeRdpApi, uRdpScancodes, uTheme
   {$IFDEF LCLCocoa}, uMacKbdLayout{$ENDIF}
-  {$IFDEF LCLGtk2}, x, xlib, xkblib{$ENDIF};
+  {$IFDEF LCLGtk2}, x, xlib, xkblib{$ENDIF}
+  {$IFDEF LCLGtk3}, LazGtk3, LazGdk3{$ENDIF};
 
 {$IFDEF LCLGtk2}
 var
@@ -127,7 +128,7 @@ begin
   ControlStyle := ControlStyle + [csOpaque];
   TabStop := True;
   Color := clBlack;
-  {$IF defined(LCLGtk2) or defined(LCLCocoa)}
+  {$IF defined(LCLGtk2) or defined(LCLGtk3) or defined(LCLCocoa)}
   FHwKeycode := -1;
   {$ENDIF}
   FBitmap := TBitmap.Create;
@@ -244,6 +245,10 @@ begin
 end;
 
 function TRottenRdpControl.LockFlags: Cardinal;
+{$IFDEF LCLGtk3}
+var
+  km: PGdkKeymap;
+{$ENDIF}
 begin
   Result := 0;
   {$IF defined(DARWIN)}
@@ -254,6 +259,15 @@ begin
     Result := Result or KBD_SYNC_NUM_LOCK;
   if X11LockOn('Scroll Lock', VK_SCROLL) then
     Result := Result or KBD_SYNC_SCROLL_LOCK;
+  {$ELSEIF defined(LCLGtk3)}
+  km := gdk_keymap_get_for_display(gdk_display_get_default);
+  if gdk_keymap_get_num_lock_state(km) then
+    Result := Result or KBD_SYNC_NUM_LOCK;
+  if gdk_keymap_get_scroll_lock_state(km) then
+    Result := Result or KBD_SYNC_SCROLL_LOCK;
+  if gdk_keymap_get_caps_lock_state(km) then
+    Result := Result or KBD_SYNC_CAPS_LOCK;
+  Exit;
   {$ELSE}
   if (GetKeyState(VK_NUMLOCK) and 1) <> 0 then
     Result := Result or KBD_SYNC_NUM_LOCK;
@@ -381,7 +395,7 @@ begin
     FOnMouse(flags, rx, ry);
 end;
 
-{$IF defined(LCLGtk2) or defined(LCLCocoa)}
+{$IF defined(LCLGtk2) or defined(LCLGtk3) or defined(LCLCocoa)}
 // Bits 16..23 de KeyData = keycode natif, GTK2 comme Cocoa; les KF_* sont plus haut.
 function HwKeycodeOf(AKeyData: PtrInt): Integer; inline;
 begin
@@ -451,7 +465,22 @@ var
   idx: Integer;
   right: Boolean;
 {$ENDIF}
+{$IFDEF LCLGtk3}
+var
+  ev: PGdkEvent;
+{$ENDIF}
 begin
+  {$IFDEF LCLGtk3}
+  // KeyData ne porte pas le keycode
+  ev := gtk_get_current_event;
+  if ev <> nil then
+  begin
+    if ev^.type_ in [GDK_KEY_PRESS, GDK_KEY_RELEASE] then
+      FHwKeycode := ev^.key.hardware_keycode;
+    gdk_event_free(ev);
+  end;
+  Exit;
+  {$ENDIF}
   {$IFDEF LCLCocoa}
   idx := ModIndexOf(AVk);
   if idx >= 0 then
@@ -498,11 +527,11 @@ end;
 function TRottenRdpControl.ResolveScancode(AKey: Word; out ASc: Integer;
   out AExt: Boolean): Boolean;
 begin
-  {$IF defined(LCLGtk2) or defined(LCLCocoa)}
+  {$IF defined(LCLGtk2) or defined(LCLGtk3) or defined(LCLCocoa)}
   // usage unique: un keycode perime enverrait la touche du coup d'avant
   if FHwKeycode >= 0 then
   begin
-    {$IFDEF LCLGtk2}
+    {$IF defined(LCLGtk2) or defined(LCLGtk3)}
     Result := X11KeycodeToScancode(Word(FHwKeycode), ASc, AExt);
     {$ELSE}
     Result := MacKeycodeToScancode(Word(FHwKeycode), ASc, AExt);

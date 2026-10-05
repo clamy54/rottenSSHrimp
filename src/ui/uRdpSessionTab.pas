@@ -5,7 +5,7 @@ unit uRdpSessionTab;
 interface
 
 uses
-  Classes, SysUtils, Controls, ComCtrls, Forms, Dialogs, Menus, Graphics,
+  uRtMessage, Classes, SysUtils, Controls, ComCtrls, Forms, Dialogs, Menus, Graphics,
   ExtCtrls, StdCtrls, Clipbrd, uRshDocument, uRdpControl, uRemoteSurface, uRdpTransport,
   uRdpKnownCerts, uSessionState, uSessionManager, uSessionTabBase,
   uClipboardBridge, uSshTunnel, uSshTunnelConnect;
@@ -778,7 +778,7 @@ function TRdpSessionTab.ConfirmClose: Boolean;
 begin
   if IsTerminalState(FState) then
     Exit(True);
-  Result := QuestionDlg('Disconnect',
+  Result := RtQuestionDlg('Disconnect',
     Format('Disconnect from %s?', [FDisplayName]), mtConfirmation,
     [mrOK, 'Disconnect', mrCancel, 'Cancel', 'IsCancel'], 0) = mrOK;
 end;

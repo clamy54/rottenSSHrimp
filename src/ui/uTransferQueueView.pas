@@ -10,7 +10,7 @@ unit uTransferQueueView;
 interface
 
 uses
-  Classes, SysUtils, Types, Controls, Graphics, Forms, StdCtrls, ExtCtrls,
+  uThemedControls, Classes, SysUtils, Types, Controls, Graphics, Forms, StdCtrls, ExtCtrls,
   LCLType, uTransferQueue, uScpErrors, uScpPaths, uTheme, uScpIcons,
   uTreeScrollBar;
 
@@ -27,7 +27,7 @@ type
     FQueue: TTransferQueue;
     FHeader: TPanel;
     FSummary: TLabel;
-    FBtnPause, FBtnResume, FBtnCancel, FBtnClear, FBtnRetry: TButton;
+    FBtnPause, FBtnResume, FBtnCancel, FBtnClear, FBtnRetry: TThemedButton;
     FList: TQueueListView;
     FScroll: TTreeScrollBar;
     FOnCommand: TQueueCommandEvent;
@@ -609,9 +609,9 @@ end;
 constructor TTransferQueueView.CreateView(AOwner: TComponent;
   AQueue: TTransferQueue);
 
-  function AddBtn(const ACaption: string; ATag: Integer): TButton;
+  function AddBtn(const ACaption: string; ATag: Integer): TThemedButton;
   begin
-    Result := TButton.Create(Self);
+    Result := TThemedButton.Create(Self);
     Result.Parent := FHeader;
     Result.Align := alRight;
     Result.Caption := ACaption;
@@ -702,7 +702,7 @@ end;
 procedure TTransferQueueView.CommandClick(Sender: TObject);
 begin
   if Assigned(FOnCommand) then
-    FOnCommand(TQueueCommand(TButton(Sender).Tag));
+    FOnCommand(TQueueCommand(TThemedButton(Sender).Tag));
 end;
 
 procedure TTransferQueueView.Refresh;

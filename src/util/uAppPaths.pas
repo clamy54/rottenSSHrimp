@@ -23,7 +23,7 @@ procedure PurgeStaleDocumentLocks;
 implementation
 
 uses
-  SysUtils, sha1, uVersion, uSafeSave, uRsUtil
+  SysUtils, sha1, uVersion, uRshSafeSave, uRsUtil
   {$IFDEF UNIX}, BaseUnix, ctypes{$ENDIF};
 
 {$IF DEFINED(UNIX) AND NOT DEFINED(DARWIN)}

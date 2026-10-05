@@ -7,7 +7,7 @@ unit uPodDialog;
 interface
 
 uses
-  uRshModel;
+  uRtMessage, uRshModel;
 
 // AParentGroupUuid '' = racine; rend l'uuid cree, '' si annule
 function ShowNewPodDialog(AModel: TRshModel;
@@ -18,7 +18,7 @@ function ShowPodProperties(AModel: TRshModel; const AUuid: string): Boolean;
 implementation
 
 uses
-  Classes, SysUtils, Forms, Controls, StdCtrls, Dialogs, uTheme, uRshValidation;
+  uThemedControls, Classes, SysUtils, Forms, Controls, StdCtrls, Dialogs, uTheme, uRshValidation;
 
 const
   DLG_W = 460;
@@ -32,12 +32,12 @@ type
   TPodForm = class(TForm)
   public
     NameEdit: TEdit;
-    ParentCombo: TComboBox;
+    ParentCombo: TThemedCombo;
     ParentUuids: TStringList;
     NsEdit: TEdit;
     PodEdit: TEdit;
     ContEdit: TEdit;
-    ShellCombo: TComboBox;
+    ShellCombo: TThemedCombo;
     Y: Integer;
     constructor CreateShell(const ATitle: string);
     destructor Destroy; override;
@@ -131,9 +131,9 @@ var
     Result.TextHint := AHint;
   end;
 
-  function MakeCombo: TComboBox;
+  function MakeCombo: TThemedCombo;
   begin
-    Result := TComboBox.Create(f);
+    Result := TThemedCombo.Create(f);
     Result.Parent := f;
     Result.Left := EDIT_X;
     Result.Top := f.Y;
@@ -146,7 +146,7 @@ var
   end;
 
 var
-  ok, cancel: TButton;
+  ok, cancel: TThemedButton;
 begin
   f := TPodForm.CreateShell(ATitle);
 
@@ -185,7 +185,7 @@ begin
   f.FillParents(AModel, ASelfUuid, ACfg.ParentUuid);
 
   Inc(f.Y, 8);
-  ok := TButton.Create(f);
+  ok := TThemedButton.Create(f);
   ok.Parent := f;
   ok.Caption := 'OK';
   ok.ModalResult := mrOk;
@@ -194,7 +194,7 @@ begin
   ok.Top := f.Y;
   ok.Left := DLG_W - MARGIN - 2 * 90 - 8;
 
-  cancel := TButton.Create(f);
+  cancel := TThemedButton.Create(f);
   cancel.Parent := f;
   cancel.Caption := 'Cancel';
   cancel.ModalResult := mrCancel;
@@ -204,7 +204,7 @@ begin
   cancel.Left := DLG_W - MARGIN - 90;
 
   f.ClientHeight := f.Y + 40;
-  ApplyUiFont(f);
+  ThemeDialog(f);
   Result := f;
 end;
 
@@ -218,12 +218,12 @@ begin
   AName := f.NameEdit.Text;
   if not ValidateName(AName, err) then
   begin
-    MessageDlg('Pod', err, mtError, [mbOK], 0);
+    RtMessageDlg('Pod', err, mtError, [mbOK], 0);
     Exit;
   end;
   if f.ParentCombo.ItemIndex < 0 then
   begin
-    MessageDlg('Pod', 'Choose an SSH host to connect via.',
+    RtMessageDlg('Pod', 'Choose an SSH host to connect via.',
       mtError, [mbOK], 0);
     Exit;
   end;
@@ -231,21 +231,21 @@ begin
   s := f.PodEdit.Text;
   if not ValidateK8sName(s, err) then
   begin
-    MessageDlg('Pod', err, mtError, [mbOK], 0);
+    RtMessageDlg('Pod', err, mtError, [mbOK], 0);
     Exit;
   end;
   ACfg.PodName := s;
   s := Trim(f.NsEdit.Text);
   if (s <> '') and not ValidateK8sLabel(s, err) then
   begin
-    MessageDlg('Pod', 'Namespace: ' + err, mtError, [mbOK], 0);
+    RtMessageDlg('Pod', 'Namespace: ' + err, mtError, [mbOK], 0);
     Exit;
   end;
   ACfg.Namespace := s;
   s := Trim(f.ContEdit.Text);
   if (s <> '') and not ValidateK8sLabel(s, err) then
   begin
-    MessageDlg('Pod', 'Container: ' + err, mtError, [mbOK], 0);
+    RtMessageDlg('Pod', 'Container: ' + err, mtError, [mbOK], 0);
     Exit;
   end;
   ACfg.ContainerName := s;
@@ -285,7 +285,7 @@ begin
   Result := False;
   if not AModel.GetPodConfig(AUuid, cfg) then
   begin
-    MessageDlg('Pod',
+    RtMessageDlg('Pod',
       'This pod cannot be edited (older document format).',
       mtError, [mbOK], 0);
     Exit;

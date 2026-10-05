@@ -17,17 +17,17 @@ function AskUnlockPassword(out APassword: RawByteString): Boolean;
 implementation
 
 uses
-  Classes, SysUtils, Math, Forms, Controls, StdCtrls, ComCtrls, Graphics,
-  uTheme;
+  Classes, SysUtils, Math, Forms, Controls, StdCtrls, Graphics,
+  uTheme, uThemedControls;
 
 type
   TPasswordDialog = class(TForm)
   private
     FEdit: TEdit;
     FConfirm: TEdit;          // nil en mode saisie simple
-    FGauge: TProgressBar;
+    FGauge: TThemedGauge;
     FGaugeLabel: TLabel;
-    FOkButton: TButton;
+    FOkButton: TThemedButton;
     procedure EditsChanged(Sender: TObject);
     procedure UpdateState;
   public
@@ -91,7 +91,7 @@ constructor TPasswordDialog.CreateNewDoc(AOwner: TComponent;
 var
   y: Integer;
   lbl, warn: TLabel;
-  cancelBtn: TButton;
+  cancelBtn: TThemedButton;
 begin
   inherited CreateNew(AOwner, 0);
   Caption := ATitle;
@@ -126,10 +126,9 @@ begin
   FConfirm.OnChange := @EditsChanged;
   Inc(y, 34);
 
-  FGauge := TProgressBar.Create(Self);
+  FGauge := TThemedGauge.Create(Self);
   FGauge.Parent := Self;
   FGauge.SetBounds(MARGIN, y, DLG_W - 2 * MARGIN, 12);
-  FGauge.Min := 0;
   FGauge.Max := 100;
   Inc(y, 16);
 
@@ -145,12 +144,11 @@ begin
   warn.AutoSize := False;
   warn.WordWrap := True;
   warn.SetBounds(MARGIN, y, DLG_W - 2 * MARGIN, 66);
-  warn.Font.Color := clAccent;
   warn.Caption := 'If you lose this password, the document is permanently' +
     ' unrecoverable. There is no recovery procedure.';
   Inc(y, 74);
 
-  FOkButton := TButton.Create(Self);
+  FOkButton := TThemedButton.Create(Self);
   FOkButton.Parent := Self;
   FOkButton.SetBounds(DLG_W - MARGIN - 110, y, 110, 30);
   FOkButton.Caption := AOkCaption;
@@ -158,7 +156,7 @@ begin
   FOkButton.Default := True;
   FOkButton.Enabled := False;
 
-  cancelBtn := TButton.Create(Self);
+  cancelBtn := TThemedButton.Create(Self);
   cancelBtn.Parent := Self;
   cancelBtn.SetBounds(DLG_W - MARGIN - 230, y, 110, 30);
   cancelBtn.Caption := 'Cancel';
@@ -167,6 +165,8 @@ begin
   Inc(y, 30 + MARGIN);
 
   ClientHeight := y;
+  ThemeDialog(Self);
+  warn.Font.Color := clAccent;
 end;
 
 constructor TPasswordDialog.CreateSingle(AOwner: TComponent;
@@ -174,7 +174,7 @@ constructor TPasswordDialog.CreateSingle(AOwner: TComponent;
 var
   y: Integer;
   lbl: TLabel;
-  cancelBtn: TButton;
+  cancelBtn: TThemedButton;
 begin
   inherited CreateNew(AOwner, 0);
   Caption := ATitle;
@@ -196,7 +196,7 @@ begin
   FEdit.OnChange := @EditsChanged;
   Inc(y, 38);
 
-  FOkButton := TButton.Create(Self);
+  FOkButton := TThemedButton.Create(Self);
   FOkButton.Parent := Self;
   FOkButton.SetBounds(DLG_W - MARGIN - 110, y, 110, 30);
   FOkButton.Caption := AOkCaption;
@@ -204,7 +204,7 @@ begin
   FOkButton.Default := True;
   FOkButton.Enabled := False;
 
-  cancelBtn := TButton.Create(Self);
+  cancelBtn := TThemedButton.Create(Self);
   cancelBtn.Parent := Self;
   cancelBtn.SetBounds(DLG_W - MARGIN - 230, y, 110, 30);
   cancelBtn.Caption := 'Cancel';
@@ -213,6 +213,7 @@ begin
   Inc(y, 30 + MARGIN);
 
   ClientHeight := y;
+  ThemeDialog(Self);
 end;
 
 procedure TPasswordDialog.EditsChanged(Sender: TObject);

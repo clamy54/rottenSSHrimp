@@ -8,7 +8,7 @@ unit uVncSessionTab;
 interface
 
 uses
-  Classes, SysUtils, Controls, ComCtrls, Forms, Dialogs, Graphics,
+  uRtMessage, Classes, SysUtils, Controls, ComCtrls, Forms, Dialogs, Graphics,
   ExtCtrls, StdCtrls, Clipbrd, SyncObjs, uVncControl, uRemoteSurface, uVncTransport,
   uSessionState, uSessionManager, uSecureBytes, uSessionTabBase,
   uClipboardBridge, uSshTunnel, uSshTunnelConnect;
@@ -309,7 +309,7 @@ function TVncSessionTab.ConfirmClose: Boolean;
 begin
   if IsTerminalState(FState) then
     Exit(True);
-  Result := QuestionDlg('Disconnect',
+  Result := RtQuestionDlg('Disconnect',
     Format('Disconnect from %s?', [FDisplayName]), mtConfirmation,
     [mrOK, 'Disconnect', mrCancel, 'Cancel', 'IsCancel'], 0) = mrOK;
 end;

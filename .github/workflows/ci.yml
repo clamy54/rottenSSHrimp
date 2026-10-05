@@ -19,6 +19,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - name: Cache des paquets FPC et Lazarus
         uses: actions/cache@v4
         with:
@@ -39,6 +41,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - name: Cache de l'installeur Lazarus
         uses: actions/cache@v4
         with:
@@ -61,6 +65,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - name: Cache des installeurs FPC et Lazarus
         uses: actions/cache@v4
         with:
@@ -91,6 +97,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - name: Dependances de construction de libvncclient
         run: ${{ matrix.install }}
       - name: Construire la lib epinglee et comparer les offsets en dur
@@ -128,6 +136,8 @@ jobs:
     continue-on-error: ${{ matrix.informational == true }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - name: Installer les en-tetes FreeRDP
         run: ${{ matrix.install }}
       - name: Comparer les offsets en dur aux en-tetes installes

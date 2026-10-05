@@ -9,7 +9,7 @@ unit uScpConflictDialog;
 interface
 
 uses
-  Classes, SysUtils, Controls, Forms, StdCtrls, ExtCtrls, Graphics, Dialogs,
+  uRtMessage, Classes, SysUtils, Controls, Forms, StdCtrls, ExtCtrls, Graphics, Dialogs,
   uTransferQueue, uScpPaths, uTheme;
 
 // Fermer vaut cnSkip: ne rien decider n'ecrase jamais rien.
@@ -21,7 +21,7 @@ function AskNonAtomicReplace(const ATargetPath: string): Boolean;
 implementation
 
 uses
-  DateUtils;
+  uThemedControls, DateUtils;
 
 function StampText(AUnixUtc: Int64): string;
 begin
@@ -41,7 +41,7 @@ type
   private
     FForm: TForm;
     FDecision: TConflictDecision;
-    FApplyAll: TCheckBox;
+    FApplyAll: TThemedCheck;
     procedure BtnClick(Sender: TObject);
     procedure FormClose(Sender: TObject; var CloseAction: TCloseAction);
   public
@@ -53,7 +53,7 @@ type
 constructor TConflictForm.Create(const AInfo: TConflictInfo);
 var
   y: Integer;
-  resumeBtn: TButton;
+  resumeBtn: TThemedButton;
 
   function AddLabel(const AText: string; ABold: Boolean;
     AColor: TColor): TLabel;
@@ -73,9 +73,9 @@ var
   end;
 
   function AddBtn(const ACaption: string; ATag: Integer;
-    ALeft, AWidth: Integer): TButton;
+    ALeft, AWidth: Integer): TThemedButton;
   begin
-    Result := TButton.Create(FForm);
+    Result := TThemedButton.Create(FForm);
     Result.Parent := FForm;
     Result.Caption := ACaption;
     Result.Tag := ATag;
@@ -123,7 +123,7 @@ begin
       clTextSecondary);
 
   Inc(y, 8);
-  FApplyAll := TCheckBox.Create(FForm);
+  FApplyAll := TThemedCheck.Create(FForm);
   FApplyAll.Parent := FForm;
   FApplyAll.Left := 16;
   FApplyAll.Top := y;
@@ -140,6 +140,7 @@ begin
   AddBtn('Cancel queue', Ord(cnCancelQueue), 410, 120);
 
   ApplyUiFont(FForm);
+  DialogKeys(FForm);
 end;
 
 destructor TConflictForm.Destroy;
@@ -150,7 +151,7 @@ end;
 
 procedure TConflictForm.BtnClick(Sender: TObject);
 begin
-  FDecision.Action := TConflictAction(TButton(Sender).Tag);
+  FDecision.Action := TConflictAction(TThemedButton(Sender).Tag);
   FDecision.ApplyToAll := FApplyAll.Checked;
   FForm.ModalResult := mrOK;
 end;
@@ -187,7 +188,7 @@ end;
 
 function AskNonAtomicReplace(const ATargetPath: string): Boolean;
 begin
-  Result := QuestionDlg('Atomic replacement not available',
+  Result := RtQuestionDlg('Atomic replacement not available',
     Format('%s cannot be replaced atomically here.' + LineEnding + LineEnding +
       'Continuing means deleting the existing file first and then renaming ' +
       'the new one into place. If the connection drops in between, the old ' +

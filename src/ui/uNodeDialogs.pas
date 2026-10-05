@@ -8,7 +8,7 @@ unit uNodeDialogs;
 interface
 
 uses
-  Graphics, uRshModel;
+  uRtMessage, Graphics, uRshModel;
 
 procedure MakeEyeGlyph(ABmp: TBitmap; ACrossed: Boolean);
 
@@ -719,7 +719,7 @@ end;
 
 function ShowError(const AMsg: string): Boolean;
 begin
-  MessageDlg(RSSH_APP_NAME, AMsg, mtError, [mbOK], 0);
+  RtMessageDlg(RSSH_APP_NAME, AMsg, mtError, [mbOK], 0);
   Result := False;
 end;
 
@@ -1820,7 +1820,7 @@ begin
          and AModel.IsJumpHostOffered(AUuid) then
       begin
         deps := AModel.CountJumpDependents(AUuid);
-        if (deps > 0) and (MessageDlg('Jump host', Format(
+        if (deps > 0) and (RtMessageDlg('Jump host', Format(
           '%d connection(s) still use this host as their jump host.' +
           LineEnding + 'They keep working; it just stops being offered when ' +
           'configuring other connections.' + LineEnding + LineEnding +

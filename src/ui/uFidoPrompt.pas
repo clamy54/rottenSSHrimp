@@ -8,7 +8,7 @@ unit uFidoPrompt;
 interface
 
 uses
-  Classes, SysUtils, Forms, Controls, StdCtrls, ExtCtrls, Graphics,
+  uRtMessage, Classes, SysUtils, Forms, Controls, StdCtrls, ExtCtrls, Graphics,
   uSecureBytes, uSshFido, uSshSkKeyGen;
 
 type
@@ -54,11 +54,11 @@ function EnrollFidoKeyWithDialog(AOwner: TCustomForm;
 implementation
 
 uses
-  SyncObjs, uTheme, uAuthPrompt, uSshKeyGen, uSodiumApi, Dialogs;
+  SyncObjs, uTheme, uThemedControls, uAuthPrompt, uSshKeyGen, uSodiumApi, Dialogs;
 
 constructor TFidoTouchNotice.Create(const AText: string; AOnCancel: TNotifyEvent);
 var
-  btn: TButton;
+  btn: TThemedButton;
 begin
   inherited Create;
   FOnCancel := AOnCancel;
@@ -78,15 +78,16 @@ begin
   FLabel.WordWrap := True;
   FLabel.Caption := AText;
 
-  btn := TButton.Create(FForm);
+  btn := TThemedButton.Create(FForm);
   btn.Parent := FForm;
   btn.Caption := 'Cancel';
   btn.Left := 276;
   btn.Top := 68;
   btn.Width := 88;
+  btn.Cancel := True;
   btn.OnClick := @CancelClick;
 
-  ApplyUiFont(FForm);
+  ThemeDialog(FForm);
   // pas ShowOnTop: il volerait le focus au terminal
   FForm.Visible := True;
 end;
@@ -324,7 +325,7 @@ begin
       // Windows Hello range la cle dans le TPM: elle ne quittera jamais ce
       // poste, le document si.
       if th.FResult.PlatformBound then
-        if MessageDlg('Security key',
+        if RtMessageDlg('Security key',
           'This key was created inside Windows Hello (this computer), not on ' +
           'your removable security key.' + LineEnding + LineEnding +
           'It will work on this machine only: sharing the document with ' +
