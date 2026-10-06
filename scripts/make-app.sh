@@ -70,6 +70,7 @@ alias_of() {
 }
 
 bundled=""   # noms de base deja traites, separes par des espaces
+crypto_src=""   # le libcrypto embarque, pour retrouver SON provider legacy
 
 is_external() {
   case "$1" in
@@ -85,6 +86,7 @@ bundle_one() {
   bundled="$bundled $base"
 
   [ -f "$src" ] || { echo "  MANQUE: $src" >&2; return 1; }
+  case "$base" in libcrypto.*) crypto_src="$src" ;; esac
   cp -L "$src" "$fw/$base"
   chmod u+w "$fw/$base"
   install_name_tool -id "@loader_path/$base" "$fw/$base" 2>/dev/null || true
@@ -104,6 +106,16 @@ bundle_one() {
 
 echo "embarquement des bibliotheques natives..."
 for s in "${seeds[@]}"; do bundle_one "$s"; done
+
+# Provider legacy d'OpenSSL (MD4/RC4): NTLM, donc NLA, en depend. libcrypto le
+# cherche au chemin fige du Cellar de CETTE machine: ailleurs, RDP echoue sur
+# « transport layer failed ». Celui du libcrypto embarque, pas un autre;
+# l'app pointe OPENSSL_MODULES sur Frameworks/ (uRdpTransport).
+if [ -z "$crypto_src" ]; then
+  echo "ECHEC: aucun libcrypto embarque, provider legacy introuvable." >&2
+  exit 1
+fi
+bundle_one "$(dirname "$crypto_src")/ossl-modules/legacy.dylib"
 
 # Shim OBLIGATOIRE et RECONSTRUIT: un shim d'avant le brew upgrade serait ecarte.
 echo "construction du shim RDP (obligatoire dans l'app)..."
@@ -269,7 +281,7 @@ sbom_desc_of() {  # <basename de dylib> -> "nom|version|licence"
     libwinpr*)          echo "WinPR|${fr_ver}|Apache-2.0" ;;
     libssh2*)           echo "libssh2||BSD-3-Clause" ;;
     libsodium*)         echo "libsodium||ISC" ;;
-    libcrypto*|libssl*) echo "OpenSSL||Apache-2.0" ;;
+    libcrypto*|libssl*|legacy.dylib) echo "OpenSSL||Apache-2.0" ;;
     libjpeg*|libturbojpeg*) echo "libjpeg-turbo||BSD-3-Clause AND IJG" ;;
     libz.*)             echo "zlib||Zlib" ;;
     libcjson*)          echo "cJSON||MIT" ;;

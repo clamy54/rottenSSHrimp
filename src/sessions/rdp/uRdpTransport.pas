@@ -2606,6 +2606,25 @@ end;
 
 {$ENDIF}
 
+{$IFDEF DARWIN}
+function c_setenv(AName, AValue: PAnsiChar; AOverwrite: cint): cint; cdecl;
+  external 'c' name 'setenv';
+
+// Meme exil sous macOS: le chemin fige est le Cellar Homebrew de la machine
+// de build. Sans ca, hors de cette machine: « transport layer failed ».
+// Bundle seulement (legacy.dylib embarque): un build de dev garde son Homebrew.
+procedure EnsureOpenSslModulesPath;
+var
+  dir: AnsiString;
+begin
+  dir := AnsiString(ExcludeTrailingPathDelimiter(ExpandFileName(
+    ExtractFilePath(ParamStr(0)) + '../Frameworks/')));
+  if FileExists(string(dir) + '/legacy.dylib') then
+    c_setenv('OPENSSL_MODULES', PAnsiChar(dir), 1);
+end;
+
+{$ENDIF}
+
 function TRdpTransport.RunSession: Boolean;
 var
   rhost, rport, resErr: string;
@@ -2728,5 +2747,11 @@ begin
       Queue(@PublishFinished);
   end;
 end;
+
+{$IFDEF DARWIN}
+initialization
+  // au demarrage, sur le fil principal: setenv ne supporte pas la concurrence
+  EnsureOpenSslModulesPath;
+{$ENDIF}
 
 end.
