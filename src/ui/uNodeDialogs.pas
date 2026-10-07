@@ -25,7 +25,7 @@ implementation
 uses
   Classes, SysUtils, Forms, Controls, StdCtrls, ExtCtrls, Dialogs, LCLType,
   IntfGraphics, fpImage, uRshValidation, uTheme, uVersion, uSecureBytes,
-  uSecretClipGuard, uThemedControls, uForwardList;
+  uSecretClipGuard, uThemedControls, uForwardList, uRtSecretEdit;
 
 const
   DLG_W = 520;
@@ -51,7 +51,8 @@ type
     MgrCombo: TThemedCombo;
     MgrUuids: TStringList;
     UserLbl, DomainLbl, PassLbl, KeyLbl, PhraseLbl: TLabel;
-    UserEdit, DomainEdit, PassEdit, KeyEdit, PhraseEdit: TEdit;
+    UserEdit, DomainEdit, KeyEdit: TEdit;
+    PassEdit, PhraseEdit: TRtSecretEdit;
     KeyBrowse: TThemedButton;
     CurCred: string;
     HasStoredPassword: Boolean;
@@ -72,7 +73,8 @@ type
     FJumpCombo: TThemedCombo;
     FJumpUuids: TStringList;
     FUserLbl, FDomainLbl, FPassLbl, FKeyLbl, FPhraseLbl: TLabel;
-    FUserEdit, FDomainEdit, FPassEdit, FKeyEdit, FPhraseEdit: TEdit;
+    FUserEdit, FDomainEdit, FKeyEdit: TEdit;
+    FPassEdit, FPhraseEdit: TRtSecretEdit;
     FInheritHint: string;
     FInheritAvailable: Boolean;
     FSections: array of TFolderCredSection;
@@ -328,11 +330,9 @@ end;
 
 destructor TNodeDialog.Destroy;
 
-  procedure Wipe(AEdit: TEdit);
+  procedure Wipe(AEdit: TRtSecretEdit);
   begin
-    if AEdit = nil then Exit;
-    AEdit.Text := StringOfChar('*', Length(AEdit.Text));
-    AEdit.Text := '';
+    if AEdit <> nil then AEdit.Wipe;
   end;
 
 var
@@ -646,10 +646,9 @@ begin
     Inc(FY, 34);
   end;
   sec.PassLbl := AddRow('Password:');
-  sec.PassEdit := TEdit.Create(Self);
+  sec.PassEdit := TRtSecretEdit.Create(Self);
   sec.PassEdit.Parent := FPage;
   sec.PassEdit.SetBounds(EDIT_X, FY, EDIT_W, 26);
-  sec.PassEdit.PasswordChar := '*';
   if AProto = rpSsh then
   begin
     sec.KeyLbl := AddRow('Private key:');
@@ -663,10 +662,9 @@ begin
     sec.KeyBrowse.OnClick := @FolderBrowseClick;
     Inc(FY, 34);
     sec.PhraseLbl := AddRow('Passphrase:');
-    sec.PhraseEdit := TEdit.Create(Self);
+    sec.PhraseEdit := TRtSecretEdit.Create(Self);
     sec.PhraseEdit.Parent := FPage;
     sec.PhraseEdit.SetBounds(EDIT_X, FY, EDIT_W, 26);
-    sec.PhraseEdit.PasswordChar := '*';
     Inc(FY, 34);
   end
   else
@@ -679,9 +677,9 @@ end;
 
 procedure TNodeDialog.PassEyeClick(Sender: TObject);
 begin
-  if FPassEdit.PasswordChar = #0 then
+  if FPassEdit.Revealed then
   begin
-    FPassEdit.PasswordChar := '*';
+    FPassEdit.Revealed := False;
     FPassEye.Glyph := tbgEye;
     if FPassRevealed then
     begin
@@ -691,7 +689,7 @@ begin
   end
   else
   begin
-    FPassEdit.PasswordChar := #0;
+    FPassEdit.Revealed := True;
     FPassEye.Glyph := tbgEyeCrossed;
     // en clair, le champ redevient copiable: on gele le partage presse-papiers
     if not FPassRevealed then
@@ -743,19 +741,18 @@ begin
     and (Length(AModel.CredentialUsage(ACredUuid)) <= 1);
 end;
 
-function TakeSecret(AEdit: TEdit): TSecureBytes;
+function TakeSecret(AEdit: TRtSecretEdit): TSecureBytes;
 var
   raw: RawByteString;
 begin
   Result := nil;
-  raw := RawByteString(AEdit.Text);
+  AEdit.GetSecret(raw);
   if raw = '' then
     Exit;
   try
     Result := TSecureBytes.CreateFrom(raw[1], Length(raw));
   finally
-    FillChar(raw[1], Length(raw), 0);
-    raw := '';
+    RtWipeSecret(raw);
   end;
 end;
 
@@ -807,7 +804,7 @@ begin
 end;
 
 procedure PreloadSecret(AModel: TRshModel; const ACredUuid, AField: string;
-  AEdit: TEdit);
+  AEdit: TRtSecretEdit);
 var
   secret: TSecureBytes;
   raw: RawByteString;
@@ -819,10 +816,9 @@ begin
     SetLength(raw, secret.Len);
     Move(secret.Data^, raw[1], secret.Len);
     try
-      AEdit.Text := raw;
+      AEdit.SetSecret(raw);
     finally
-      FillChar(raw[1], Length(raw), 0);
-      raw := '';
+      RtWipeSecret(raw);
     end;
   except
   end;
@@ -1483,10 +1479,9 @@ begin
     Inc(Result.FY, 34);
 
   Result.FPassLbl := Result.AddRow('Password:');
-  Result.FPassEdit := TEdit.Create(Result);
+  Result.FPassEdit := TRtSecretEdit.Create(Result);
   Result.FPassEdit.Parent := Result.FPage;
   Result.FPassEdit.SetBounds(EDIT_X, Result.FY, EDIT_W - 32, 26);
-  Result.FPassEdit.PasswordChar := '*';
   Result.FPassEye := TThemedButton.Create(Result);
   Result.FPassEye.Parent := Result.FPage;
   Result.FPassEye.SetBounds(EDIT_X + EDIT_W - 26, Result.FY, 26, 26);
@@ -1506,10 +1501,9 @@ begin
   Inc(Result.FY, 34);
 
   Result.FPhraseLbl := Result.AddRow('Passphrase:');
-  Result.FPhraseEdit := TEdit.Create(Result);
+  Result.FPhraseEdit := TRtSecretEdit.Create(Result);
   Result.FPhraseEdit.Parent := Result.FPage;
   Result.FPhraseEdit.SetBounds(EDIT_X, Result.FY, EDIT_W, 26);
-  Result.FPhraseEdit.PasswordChar := '*';
   Inc(Result.FY, 32);
 
   Result.FHintLbl := TLabel.Create(Result);

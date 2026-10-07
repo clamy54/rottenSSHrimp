@@ -17,7 +17,7 @@ implementation
 
 uses
   Clipbrd, uTheme, uSecureBytes, uCryptoPolicy, uSshKeyGen, uSshCopyIdConnect,
-  uNodeDialogs, uFidoPrompt, uSshFido, uFido2Api;
+  uNodeDialogs, uFidoPrompt, uSshFido, uFido2Api, uRtSecretEdit;
 
 const
   MAX_KEY_BYTES = 512 * 1024;
@@ -56,7 +56,8 @@ type
   private
     FModel: TRshModel;
     FUuid: string;          // '' = creation
-    FNameEdit, FUserEdit, FDomainEdit, FPassEdit, FKeyEdit, FPhraseEdit: TEdit;
+    FNameEdit, FUserEdit, FDomainEdit, FKeyEdit: TEdit;
+    FPassEdit, FPhraseEdit: TRtSecretEdit;
     FPubEdit: TEdit;
     FAuthCombo: TThemedCombo;
     FPassEye, FKeyBrowse, FPubCopy: TThemedButton;
@@ -88,27 +89,23 @@ type
 
 { dupliques de uNodeDialogs, prives la-bas }
 
-function TakeSecret(AEdit: TEdit): TSecureBytes;
+function TakeSecret(AEdit: TRtSecretEdit): TSecureBytes;
 var
   raw: RawByteString;
 begin
   Result := nil;
-  raw := RawByteString(AEdit.Text);
+  AEdit.GetSecret(raw);
   if raw = '' then Exit;
   try
     Result := TSecureBytes.CreateFrom(raw[1], Length(raw));
   finally
-    FillChar(raw[1], Length(raw), 0);
-    raw := '';
+    RtWipeSecret(raw);
   end;
 end;
 
-// ecrase avant de vider: le champ a porte du clair
-procedure WipeEdit(AEdit: TEdit);
+procedure WipeEdit(AEdit: TRtSecretEdit);
 begin
-  if AEdit = nil then Exit;
-  AEdit.Text := StringOfChar('*', Length(AEdit.Text));
-  AEdit.Text := '';
+  if AEdit <> nil then AEdit.Wipe;
 end;
 
 // seule source de l'ordre du combo: ne jamais coder un indice en dur ailleurs
@@ -176,14 +173,14 @@ end;
 function MakeEdit(AParent: TWinControl; ATop, AWidth: Integer;
   APassword: Boolean): TEdit;
 begin
-  Result := TEdit.Create(AParent);
+  if APassword then Result := TRtSecretEdit.Create(AParent)
+  else Result := TEdit.Create(AParent);
   Result.Parent := AParent;
   Result.Left := 20;
   Result.Top := ATop;
   Result.Width := AWidth;
   Result.Height := 26;
   Result.Anchors := [akLeft, akTop, akRight];
-  if APassword then Result.PasswordChar := '*';
 end;
 
 constructor TCredEditForm.CreateFor(AOwner: TComponent; AModel: TRshModel;
@@ -230,7 +227,7 @@ begin
 
   authY := 224;
   FLblPass := MakeLabel(Self, 'Password', 20, authY);
-  FPassEdit := MakeEdit(Self, authY + 18, fullW - 30, True);
+  FPassEdit := TRtSecretEdit(MakeEdit(Self, authY + 18, fullW - 30, True));
   FPassEye := TThemedButton.Create(Self);
   FPassEye.Parent := Self;
   FPassEye.SetBounds(ClientWidth - 20 - 26, authY + 18, 26, 26);
@@ -254,7 +251,7 @@ begin
   FKeyBrowse.Anchors := [akTop, akRight];
   FKeyBrowse.OnClick := @BrowseClick;
   FLblPhrase := MakeLabel(Self, 'Key passphrase (optional)', 20, authY + 52);
-  FPhraseEdit := MakeEdit(Self, authY + 70, fullW, True);
+  FPhraseEdit := TRtSecretEdit(MakeEdit(Self, authY + 70, fullW, True));
 
   // seule la PUBLIQUE s'affiche et se copie; la privee reste scellee
   FLblPub := MakeLabel(Self, 'Public key', 20, authY);
@@ -328,8 +325,9 @@ begin
          FModel.GetSecret(AUuid, FIELD_CRED_PASSWORD, back) then
         try
           SetString(s, PAnsiChar(back.Data), back.Len);
-          FPassEdit.Text := s;
+          FPassEdit.SetSecret(s);
         finally
+          RtWipeSecret(s);
           back.Free;
         end;
     finally
@@ -427,16 +425,11 @@ end;
 
 procedure TCredEditForm.EyeClick(Sender: TObject);
 begin
-  if FPassEdit.PasswordChar = #0 then
-  begin
-    FPassEdit.PasswordChar := '*';
-    FPassEye.Glyph := tbgEye;
-  end
+  FPassEdit.Revealed := not FPassEdit.Revealed;
+  if FPassEdit.Revealed then
+    FPassEye.Glyph := tbgEyeCrossed
   else
-  begin
-    FPassEdit.PasswordChar := #0;
-    FPassEye.Glyph := tbgEyeCrossed;
-  end;
+    FPassEye.Glyph := tbgEye;
 end;
 
 procedure TCredEditForm.CopyPubClick(Sender: TObject);

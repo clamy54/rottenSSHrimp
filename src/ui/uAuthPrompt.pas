@@ -20,13 +20,13 @@ function AskSecret(const APrompt: string; out ASecret: TSecureBytes): Boolean;
 implementation
 
 uses
-  uTheme, uThemedControls;
+  uTheme, uThemedControls, uRtSecretEdit;
 
 function AskSecret(const APrompt: string; out ASecret: TSecureBytes): Boolean;
 var
   f: TForm;
   lbl: TLabel;
-  ed: TEdit;
+  ed: TRtSecretEdit;
   btnOk, btnCancel: TThemedButton;
   raw: RawByteString;
 begin
@@ -47,13 +47,12 @@ begin
     lbl.WordWrap := True;
     lbl.Caption := APrompt;
 
-    ed := TEdit.Create(f);
+    ed := TRtSecretEdit.Create(f);
     ed.Parent := f;
     ed.Left := 16;
     ed.Top := 52;
     ed.Width := 388;
     ed.Height := 26;
-    ed.PasswordChar := '*';
 
     btnOk := TThemedButton.Create(f);
     btnOk.Parent := f;
@@ -78,16 +77,15 @@ begin
 
     if f.ShowModal <> mrOK then
       Exit;
-    raw := RawByteString(ed.Text);
+    ed.GetSecret(raw);
     try
       if raw = '' then
         Exit;
       ASecret := TSecureBytes.CreateFrom(raw[1], Length(raw));
       Result := True;
     finally
-      if raw <> '' then
-        FillChar(raw[1], Length(raw), 0);
-      ed.Text := '';
+      RtWipeSecret(raw);
+      ed.Wipe;
     end;
   finally
     f.Free;
@@ -101,7 +99,8 @@ function AskLogin(const ATitle, APrompt: string; AAskDomain: Boolean;
 var
   f: TForm;
   lbl: TLabel;
-  edUser, edDomain, edPass: TEdit;
+  edUser, edDomain: TEdit;
+  edPass: TRtSecretEdit;
   btnOk, btnCancel: TThemedButton;
   raw: RawByteString;
   y: Integer;
@@ -114,15 +113,16 @@ var
     lbl.Top := y + 4;
     lbl.Width := 90;
     lbl.Caption := ACaption;
-    Result := TEdit.Create(f);
+    if AIsPassword then
+      Result := TRtSecretEdit.Create(f)
+    else
+      Result := TEdit.Create(f);
     Result.Parent := f;
     Result.Left := 112;
     Result.Top := y;
     Result.Width := 292;
     Result.Height := 26;
     Result.Text := AValue;
-    if AIsPassword then
-      Result.PasswordChar := '*';
     Inc(y, 32);
   end;
 
@@ -155,7 +155,7 @@ begin
       edUser := AddField('Username:', AUsername, False);
     if AAskDomain then
       edDomain := AddField('Domain:', ADomain, False);
-    edPass := AddField('Password:', '', True);
+    edPass := TRtSecretEdit(AddField('Password:', '', True));
     Inc(y, 8);
 
     btnOk := TThemedButton.Create(f);
@@ -193,7 +193,7 @@ begin
     if edDomain <> nil then
       ADomain := Trim(edDomain.Text);
 
-    raw := RawByteString(edPass.Text);
+    edPass.GetSecret(raw);
     try
       if raw <> '' then
         APassword := TSecureBytes.CreateFrom(raw[1], Length(raw))
@@ -201,10 +201,8 @@ begin
         APassword := TSecureBytes.Create(0);
       Result := True;
     finally
-      if raw <> '' then
-        FillChar(raw[1], Length(raw), 0);
-      raw := '';
-      edPass.Text := '';
+      RtWipeSecret(raw);
+      edPass.Wipe;
     end;
   finally
     f.Free;

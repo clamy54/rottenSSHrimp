@@ -18,13 +18,13 @@ implementation
 
 uses
   Classes, SysUtils, Math, Forms, Controls, StdCtrls, Graphics,
-  uTheme, uThemedControls;
+  uTheme, uThemedControls, uRtSecretEdit;
 
 type
   TPasswordDialog = class(TForm)
   private
-    FEdit: TEdit;
-    FConfirm: TEdit;          // nil en mode saisie simple
+    FEdit: TRtSecretEdit;
+    FConfirm: TRtSecretEdit;  // nil en mode saisie simple
     FGauge: TThemedGauge;
     FGaugeLabel: TLabel;
     FOkButton: TThemedButton;
@@ -106,10 +106,9 @@ begin
   lbl.Caption := 'Master password:';
   Inc(y, 22);
 
-  FEdit := TEdit.Create(Self);
+  FEdit := TRtSecretEdit.Create(Self);
   FEdit.Parent := Self;
   FEdit.SetBounds(MARGIN, y, DLG_W - 2 * MARGIN, 26);
-  FEdit.EchoMode := emPassword;
   FEdit.OnChange := @EditsChanged;
   Inc(y, 34);
 
@@ -119,10 +118,9 @@ begin
   lbl.Caption := 'Confirm password:';
   Inc(y, 22);
 
-  FConfirm := TEdit.Create(Self);
+  FConfirm := TRtSecretEdit.Create(Self);
   FConfirm.Parent := Self;
   FConfirm.SetBounds(MARGIN, y, DLG_W - 2 * MARGIN, 26);
-  FConfirm.EchoMode := emPassword;
   FConfirm.OnChange := @EditsChanged;
   Inc(y, 34);
 
@@ -189,10 +187,9 @@ begin
   lbl.Caption := APrompt;
   Inc(y, 22);
 
-  FEdit := TEdit.Create(Self);
+  FEdit := TRtSecretEdit.Create(Self);
   FEdit.Parent := Self;
   FEdit.SetBounds(MARGIN, y, DLG_W - 2 * MARGIN, 26);
-  FEdit.EchoMode := emPassword;
   FEdit.OnChange := @EditsChanged;
   Inc(y, 38);
 
@@ -224,34 +221,32 @@ end;
 procedure TPasswordDialog.UpdateState;
 var
   bits: Double;
-  txt: string;
+  txt, probe: string;
   pct: Integer;
 begin
   if FConfirm = nil then
   begin
-    FOkButton.Enabled := FEdit.Text <> '';
+    FOkButton.Enabled := not FEdit.IsEmpty;
     Exit;
   end;
-  bits := EstimateBits(FEdit.Text);
+  // la jauge mesure une copie, effacee aussitot
+  FEdit.GetSecret(probe);
+  bits := EstimateBits(probe);
+  RtWipeSecret(probe);
   DescribeStrength(bits, txt, pct);
   FGauge.Position := pct;
-  if FEdit.Text = '' then
+  if FEdit.IsEmpty then
     FGaugeLabel.Caption := 'Long passphrases are encouraged.'
   else
     FGaugeLabel.Caption := txt;
-  FOkButton.Enabled := (FEdit.Text <> '') and (FEdit.Text = FConfirm.Text);
+  FOkButton.Enabled := (not FEdit.IsEmpty) and FEdit.SameAs(FConfirm);
 end;
 
 procedure TPasswordDialog.WipeFields;
 begin
-  // Meilleur effort: Text realloue et abandonne l'ancienne string sans la zeroer.
-  FEdit.Text := StringOfChar('*', Length(FEdit.Text));
-  FEdit.Text := '';
+  FEdit.Wipe;
   if FConfirm <> nil then
-  begin
-    FConfirm.Text := StringOfChar('*', Length(FConfirm.Text));
-    FConfirm.Text := '';
-  end;
+    FConfirm.Wipe;
 end;
 
 function AskNewDocumentPassword(out APassword: RawByteString;
@@ -265,7 +260,7 @@ begin
     ApplyUiFont(dlg);
     Result := dlg.ShowModal = mrOk;
     if Result then
-      APassword := RawByteString(UTF8Encode(dlg.FEdit.Text));
+      dlg.FEdit.GetSecret(APassword);
     dlg.WipeFields;
   finally
     dlg.Free;
@@ -283,7 +278,7 @@ begin
     ApplyUiFont(dlg);
     Result := dlg.ShowModal = mrOk;
     if Result then
-      APassword := RawByteString(UTF8Encode(dlg.FEdit.Text));
+      dlg.FEdit.GetSecret(APassword);
     dlg.WipeFields;
   finally
     dlg.Free;

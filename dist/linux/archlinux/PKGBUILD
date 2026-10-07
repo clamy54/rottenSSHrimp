@@ -9,7 +9,7 @@
 # argv[0] resterait /usr/bin/rottensshrimp.
 
 pkgname=rottensshrimp
-pkgver=2.3
+pkgver=2.4
 pkgrel=1
 pkgdesc='SSH, RDP and VNC connection manager'
 arch=('x86_64')
@@ -51,7 +51,7 @@ optdepends=('libfido2: SSH authentication with FIDO2 security keys')
 
 _gitname=rottenSSHrimp
 # l'archive d'un tag ne contient pas le sous-module rottenui
-_uicommit=1c32c0ed04c8b7ec0875e5a50c9733ff3fbdc7ce
+_uicommit=d994ce3649350570b4ab69376cc0ef7249992e9a
 _lazcommit=39a5eec43c6846e8d63cbb6c5fd263db38c4ea5b
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz"
         "rottenUI-$_uicommit.tar.gz::https://github.com/clamy54/rottenUI/archive/$_uicommit.tar.gz"
