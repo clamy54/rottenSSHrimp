@@ -51,7 +51,7 @@ optdepends=('libfido2: SSH authentication with FIDO2 security keys')
 
 _gitname=rottenSSHrimp
 # l'archive d'un tag ne contient pas le sous-module rottenui
-_uicommit=d994ce3649350570b4ab69376cc0ef7249992e9a
+_uicommit=bdf70acfa46d749213cad96e9ba007e2ba427a13
 _lazcommit=39a5eec43c6846e8d63cbb6c5fd263db38c4ea5b
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz"
         "rottenUI-$_uicommit.tar.gz::https://github.com/clamy54/rottenUI/archive/$_uicommit.tar.gz"
