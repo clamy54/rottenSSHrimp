@@ -145,6 +145,9 @@ type
     FHoverHeader: Integer;
     FDragArmed: Boolean;
     FDragOrigin: TPoint;
+    // clic nu DANS la selection: elle ne se reduit qu'au relacher, si rien
+    // n'a ete glisse. -1 = rien en attente.
+    FCollapseOnUp: Integer;
     FDragOver: Boolean;
     FDropIndex: Integer;         // -1 = le dossier affiche
     // « .. » synthetique, vit dans FEntries: a EXCLURE partout. -1 = racine.
@@ -247,6 +250,7 @@ begin
   TabStop := True;
   FFocusIndex := -1;
   FAnchor := -1;
+  FCollapseOnUp := -1;
   FSortCol := fscName;
   FHoverHeader := -1;
   FDropIndex := -1;
@@ -971,6 +975,7 @@ var
 begin
   if CanFocus then SetFocus;
   FDragArmed := False;
+  FCollapseOnUp := -1;
   if Y < FHeaderHeight then
   begin
     x0 := 0;
@@ -1018,6 +1023,10 @@ begin
       FSelected[FOrder[idx]] := not FSelected[FOrder[idx]];
     FAnchor := idx;
   end
+  // deja selectionnee: peut-etre le depart d'un glisser, on tranche au relacher
+  else if (Button = mbLeft) and (not IsParentRow(idx)) and
+          FSelected[FOrder[idx]] then
+    FCollapseOnUp := idx
   else
     SelectSingle(idx);
   SetFocusIndex(idx);
@@ -1031,6 +1040,16 @@ procedure TFileListView.MouseUp(Button: TMouseButton; Shift: TShiftState;
   X, Y: Integer);
 begin
   FDragArmed := False;
+  if (Button = mbLeft) and (FCollapseOnUp >= 0) then
+  begin
+    if FCollapseOnUp = RowAt(Y) then
+    begin
+      SelectSingle(FCollapseOnUp);
+      Invalidate;
+      if Assigned(FOnViewChanged) then FOnViewChanged(Self);
+    end;
+    FCollapseOnUp := -1;
+  end;
   inherited MouseUp(Button, Shift, X, Y);
 end;
 
@@ -1071,6 +1090,7 @@ begin
       (Abs(Y - FDragOrigin.Y) >= DRAG_THRESHOLD)) then
   begin
     FDragArmed := False;
+    FCollapseOnUp := -1;
     if SelectionCount > 0 then
       BeginDrag(True, -1);
   end;
