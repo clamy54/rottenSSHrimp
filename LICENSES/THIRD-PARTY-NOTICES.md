@@ -8,6 +8,7 @@ RottenSSHrimp is distributed under GPL-3.0-or-later (see GPL-3.0-or-later.txt).
 |---|---|---|---|
 | Monaspace Frozen, 5 families x 4 styles (20 TTF) | frozen assets | SIL OFL 1.1 | Monaspace-OFL-1.1.txt |
 | JetBrainsMono NL Nerd Font Mono, 4 styles (4 TTF) | 2.304 / Nerd Fonts 3.5.1 | SIL OFL 1.1 | JetBrainsMono-OFL-1.1.txt |
+| Hack Nerd Font Mono, 4 styles (4 TTF) | 3.003 / Nerd Fonts 3.5.1 | MIT and Bitstream Vera License | Hack-MIT-Bitstream-Vera.txt |
 | Tabler Icons (monochrome tree and transfer icons) | 3.x | MIT | Tabler-MIT.txt |
 | Papirus icon theme (colour tree icons) | 20250501 | GPL-3.0 | GPL-3.0-or-later.txt |
 | Lazarus LCL | 4.x | modified LGPL with linking exception | FPC-LCL-modified-LGPL.txt |
@@ -171,6 +172,22 @@ The four faces (Regular, Bold, Italic, BoldItalic) are embedded as downloaded
 from the Nerd Fonts release. It is offered as a terminal font next to the
 Monaspace families (Tools > Terminal Font). Its licence text is in
 JetBrainsMono-OFL-1.1.txt.
+
+**Hack Nerd Font Mono** (https://www.nerdfonts.com/), the Nerd Fonts 3.5.1
+build of Hack 3.003 (https://sourcefoundry.org/hack/). Hack is copyright 2018
+Source Foundry Authors, under the MIT License; it derives from Bitstream Vera
+Sans Mono, copyright 2003 Bitstream, Inc., under the Bitstream Vera License
+(the DejaVu changes in between were committed to the public domain). Both
+licences apply and both ask for the same thing: their copyright and permission
+notices travel with every copy, which is what Hack-MIT-Bitstream-Vera.txt is
+for. The Bitstream Vera License adds two conditions. A modified font must not
+carry the words "Bitstream" or "Vera" in its name: neither Hack nor the Nerd
+Fonts build does. And the font may be sold as part of a larger software
+package but never by itself: here it is embedded in a program given away under
+the GPL. The Nerd Fonts patcher adds the same third-party icon glyphs, under
+the same licences, as listed above for JetBrainsMono. The four faces (Regular,
+Bold, Italic, BoldItalic) are embedded as downloaded from the Nerd Fonts
+release, and offered as a terminal font (Tools > Terminal Font).
 
 ## Tree node and file transfer icons
 

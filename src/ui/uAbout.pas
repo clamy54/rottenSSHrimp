@@ -144,7 +144,9 @@ begin
     Inc(y, 34);
     AddCredit(f, y, RSSH_APP_NAME + ' uses the Monaspace font family:',
       'https://monaspace.githubnext.com/');
-    AddCredit(f, y, 'and JetBrains Mono NL, Nerd Fonts patched (OFL-1.1):',
+    // une ligne pour deux polices: la boite frole deja le bas de l'ecran
+    AddCredit(f, y,
+      'and JetBrains Mono NL (OFL-1.1) and Hack (MIT), Nerd Fonts patched:',
       'https://www.nerdfonts.com/');
     AddCredit(f, y, 'Tree icons from the Tabler icon set (MIT):',
       'https://tabler.io/icons');
