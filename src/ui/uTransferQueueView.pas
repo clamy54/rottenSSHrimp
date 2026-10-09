@@ -58,6 +58,7 @@ type
     FAnchor: Integer;        // origine d'une plage au Maj+clic
     FTop: Integer;
     FRowHeight: Integer;
+    FFollowId: Int64;        // dernier transfert amene a l'ecran, -1 = aucun
     FOnViewChanged: TNotifyEvent;
     FOnSelectionChanged: TNotifyEvent;
     FOnCancelKey: TNotifyEvent;
@@ -86,6 +87,9 @@ type
     procedure SelectIds(const AIds: TStringArray; AFocusId: Int64);
     function FocusedId: Int64;
     procedure RecomputeMetrics;
+    // Amene a l'ecran le transfert en cours, une fois par element: entre deux
+    // fichiers l'utilisateur defile ou il veut.
+    procedure FollowRunning;
     property OnSelectionChanged: TNotifyEvent
       read FOnSelectionChanged write FOnSelectionChanged;
     // Suppr
@@ -148,6 +152,7 @@ begin
   FQueue := AQueue;
   FFocus := -1;
   FAnchor := -1;
+  FFollowId := -1;
   RecomputeMetrics;
 end;
 
@@ -258,6 +263,33 @@ begin
     ScrollSetTop(rowTop)
   else if rowTop + FRowHeight > FTop + ClientHeight then
     ScrollSetTop(rowTop + FRowHeight - ClientHeight);
+end;
+
+procedure TQueueListView.FollowRunning;
+var
+  i, idx: Integer;
+  id: Int64;
+begin
+  idx := -1;
+  id := -1;
+  FQueue.Lock;
+  try
+    // le DERNIER en cours: un dossier reste actif au-dessus de ses fichiers
+    for i := FQueue.Count - 1 downto 0 do
+      if FQueue.Items[i].State in [tsTransferring, tsEnumerating] then
+      begin
+        idx := i;
+        id := FQueue.Items[i].Id;
+        Break;
+      end;
+  finally
+    FQueue.Unlock;
+  end;
+  if id = FFollowId then Exit;
+  FFollowId := id;
+  if idx < 0 then Exit;
+  // une ligne terminee au-dessus pour le contexte, la suite en dessous
+  ScrollSetTop((idx - 1) * FRowHeight);
 end;
 
 function TQueueListView.FocusedId: Int64;
@@ -713,6 +745,7 @@ var
   eta: Int64;
 begin
   FList.SyncSelection;
+  FList.FollowRunning;
   s := FQueue.Summary;
   txt := FQueue.SummaryText;
 
