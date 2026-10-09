@@ -24,6 +24,7 @@ type
     FSbBytes: Int64;
     function ActiveLines: Integer;
     function GetLine(Y: Integer): TTermLine;
+    function EditLine(Y: Integer): TTermLine;
     procedure PushScrollback(const ALine: TTermLine);
     function NewBlankLine(const ABlank: TTermCell): TTermLine;
     function LineBytes(const ALine: TTermLine): Int64;
@@ -113,6 +114,19 @@ begin
     Result := FMain[Y];
 end;
 
+// Une ligne de l'ecran principal peut depasser FCols: la queue masquee par un
+// retrecissement, rendue si la fenetre regrandit. Une ligne MODIFIEE entre-temps
+// appartient a la largeur courante: sa queue part, sinon elle reviendrait
+// coller de vieux caracteres derriere du texte neuf.
+function TTermScreen.EditLine(Y: Integer): TTermLine;
+begin
+  if FOnAlt then
+    Exit(FAlt[Y]);
+  if Length(FMain[Y]) > FCols then
+    SetLength(FMain[Y], FCols);
+  Result := FMain[Y];
+end;
+
 function TTermScreen.LineRef(Y: Integer): TTermLine;
 begin
   if (Y < 0) or (Y >= FRows) then
@@ -131,7 +145,7 @@ procedure TTermScreen.SetCell(X, Y: Integer; const ACell: TTermCell);
 begin
   if (X < 0) or (X >= FCols) or (Y < 0) or (Y >= FRows) then
     Exit;
-  GetLine(Y)[X] := ACell;
+  EditLine(Y)[X] := ACell;
 end;
 
 procedure TTermScreen.UseAlt(AOn: Boolean; const ABlank: TTermCell);
@@ -236,7 +250,7 @@ begin
     Exit;
   if N > FCols - X then
     N := FCols - X;
-  line := GetLine(Y);
+  line := EditLine(Y);
   for i := FCols - 1 downto X + N do
     line[i] := line[i - N];
   for i := X to X + N - 1 do
@@ -252,7 +266,7 @@ begin
     Exit;
   if N > FCols - X then
     N := FCols - X;
-  line := GetLine(Y);
+  line := EditLine(Y);
   for i := X to FCols - 1 - N do
     line[i] := line[i + N];
   for i := FCols - N to FCols - 1 do
@@ -268,7 +282,7 @@ begin
     Exit;
   if N > FCols - X then
     N := FCols - X;
-  line := GetLine(Y);
+  line := EditLine(Y);
   for i := X to X + N - 1 do
     line[i] := ABlank;
 end;
@@ -282,7 +296,7 @@ begin
   if Y2 >= FRows then Y2 := FRows - 1;
   for y := Y1 to Y2 do
   begin
-    line := GetLine(y);
+    line := EditLine(y);
     if y = Y1 then sx := X1 else sx := 0;
     if y = Y2 then ex := X2 else ex := FCols - 1;
     if sx < 0 then sx := 0;
@@ -299,7 +313,7 @@ var
 begin
   for y := 0 to FRows - 1 do
   begin
-    line := GetLine(y);
+    line := EditLine(y);
     for x := 0 to FCols - 1 do
       line[x] := ACell;
   end;
@@ -310,13 +324,17 @@ var
   y, x, keep, excess: Integer;
   blank: TTermCell;
 
-  procedure ResizeLines(var Lines: array of TTermLine; NewCols: Integer);
+  // AKeepTail: une ligne plus longue que la nouvelle largeur garde sa queue.
+  procedure ResizeLines(var Lines: array of TTermLine; NewCols: Integer;
+    AKeepTail: Boolean);
   var
     i, oldLen, j: Integer;
   begin
     for i := 0 to High(Lines) do
     begin
       oldLen := Length(Lines[i]);
+      if AKeepTail and (oldLen >= NewCols) then
+        Continue;
       SetLength(Lines[i], NewCols);
       for j := oldLen to NewCols - 1 do
         Lines[i][j] := blank;
@@ -376,8 +394,9 @@ begin
   end;
   FRows := ANewRows;
 
-  ResizeLines(FMain, ANewCols);
-  ResizeLines(FAlt, ANewCols);
+  // L'ecran alternatif est redessine par son programme: rien a lui garder.
+  ResizeLines(FMain, ANewCols, True);
+  ResizeLines(FAlt, ANewCols, False);
   FCols := ANewCols;
 
   if ACursorY < 0 then ACursorY := 0;
