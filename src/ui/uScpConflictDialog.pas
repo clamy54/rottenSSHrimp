@@ -36,6 +36,98 @@ begin
   Result := Format('%s (%d bytes)', [FormatBytes(ASize), ASize]);
 end;
 
+const
+  // au-dela, le chemin perd son milieu: le nom du fichier est a la fin
+  PATH_MAX_LINES = 3;
+
+function Utf8Step(const S: string; AIndex: Integer): Integer;
+var
+  b: Byte;
+begin
+  b := Byte(S[AIndex]);
+  if b < $80 then Result := 1
+  else if b < $E0 then Result := 2
+  else if b < $F0 then Result := 3
+  else Result := 4;
+  if AIndex + Result - 1 > Length(S) then
+    Result := Length(S) - AIndex + 1;
+end;
+
+// Un chemin n'a pas d'espace: sans coupure forcee le libelle le rogne.
+// Coupe a l'espace, sinon apres un separateur, sinon ou ca casse.
+function WrapToWidth(const S: string; AWidth: Integer;
+  out ALines: Integer): string;
+var
+  cur: string;
+  i, n, cut, k: Integer;
+begin
+  Result := '';
+  ALines := 1;
+  cur := '';
+  i := 1;
+  while i <= Length(S) do
+  begin
+    n := Utf8Step(S, i);
+    if (cur <> '') and (UiTextWidth(cur + Copy(S, i, n)) > AWidth) then
+    begin
+      cut := 0;
+      for k := Length(cur) downto 2 do
+        if cur[k] = ' ' then
+        begin
+          cut := k;
+          Break;
+        end;
+      if cut = 0 then
+        for k := Length(cur) downto 2 do
+          if cur[k] in ['/', '\'] then
+          begin
+            cut := k;
+            Break;
+          end;
+      if cut = 0 then
+        cut := Length(cur);
+      Result := Result + TrimRight(Copy(cur, 1, cut)) + LineEnding;
+      cur := Copy(cur, cut + 1, MaxInt);
+      Inc(ALines);
+    end;
+    cur := cur + Copy(S, i, n);
+    Inc(i, n);
+  end;
+  Result := Result + cur;
+end;
+
+function WrapPath(const APath: string; AWidth: Integer;
+  out ALines: Integer): string;
+var
+  starts: array of Integer;
+  i, cnt, keep: Integer;
+begin
+  Result := WrapToWidth(APath, AWidth, ALines);
+  if ALines <= PATH_MAX_LINES then
+    Exit;
+  starts := nil;
+  cnt := 0;
+  i := 1;
+  while i <= Length(APath) do
+  begin
+    if cnt = Length(starts) then
+      SetLength(starts, 64 + cnt * 2);
+    starts[cnt] := i;
+    Inc(cnt);
+    Inc(i, Utf8Step(APath, i));
+  end;
+  keep := cnt div 2;
+  if keep > 200 then
+    keep := 200;
+  repeat
+    keep := keep * 9 div 10;
+    if keep < 4 then
+      Break;
+    Result := WrapToWidth(Copy(APath, 1, starts[keep] - 1) + '...' +
+      Copy(APath, starts[cnt - keep], MaxInt), AWidth, ALines);
+  until ALines <= PATH_MAX_LINES;
+end;
+
 type
   TConflictForm = class
   private
@@ -51,25 +143,33 @@ type
   end;
 
 constructor TConflictForm.Create(const AInfo: TConflictInfo);
+const
+  MARGIN = 16;
 var
-  y: Integer;
+  y, lineH, indent, avail: Integer;
   resumeBtn: TThemedButton;
 
-  function AddLabel(const AText: string; ABold: Boolean;
-    AColor: TColor): TLabel;
+  // Tout est MESURE: une hauteur fixe coupe la deuxieme ligne en deux.
+  function AddLabel(const AText: string; ABold: Boolean; AColor: TColor;
+    AIndent: Integer = 0; APath: Boolean = False): TLabel;
+  var
+    lines: Integer;
+    shown: string;
   begin
+    if APath then
+      shown := WrapPath(AText, avail - AIndent, lines)
+    else
+      shown := WrapToWidth(AText, avail - AIndent, lines);
     Result := TLabel.Create(FForm);
     Result.Parent := FForm;
-    Result.Left := 16;
-    Result.Top := y;
-    Result.Width := FForm.ClientWidth - 32;
     Result.AutoSize := False;
-    Result.WordWrap := True;
-    Result.Height := 17;
-    Result.Caption := AText;
+    Result.WordWrap := False;
+    Result.ShowAccelChar := False;
+    Result.SetBounds(MARGIN + AIndent, y, avail - AIndent, lines * lineH + 2);
+    Result.Caption := shown;
     Result.Font.Color := AColor;
     if ABold then Result.Font.Style := [fsBold];
-    Inc(y, 19);
+    Inc(y, lines * lineH + 4);
   end;
 
   function AddBtn(const ACaption: string; ATag: Integer;
@@ -79,11 +179,7 @@ var
     Result.Parent := FForm;
     Result.Caption := ACaption;
     Result.Tag := ATag;
-    Result.Left := ALeft;
-    Result.Width := AWidth;
-    Result.Height := 28;
-    Result.Top := FForm.ClientHeight - 40;
-    Result.Anchors := [akLeft, akBottom];
+    Result.SetBounds(ALeft, y, AWidth, 28);
     Result.OnClick := @BtnClick;
   end;
 
@@ -96,24 +192,29 @@ begin
   FForm.Caption := 'File already exists';
   FForm.Position := poScreenCenter;
   FForm.BorderStyle := bsDialog;
-  FForm.Width := 620;
-  FForm.Height := 330;
+  FForm.ClientWidth := 620;
   FForm.Color := clAppBg;
   FForm.Font.Color := clAppFg;
   FForm.OnClose := @FormClose;
 
+  avail := FForm.ClientWidth - 2 * MARGIN;
+  lineH := UiTextHeight('Ag');
+  indent := UiTextWidth('    ');
+
   y := 14;
   AddLabel('The destination already has a file with this name.', True,
     clAppFg);
-  Inc(y, 6);
-  AddLabel('Source: ' + DisplaySafeName(AInfo.SourcePath), False, clAppFg);
-  AddLabel('    size ' + SizeText(AInfo.SourceSize) +
-    ',  modified ' + StampText(AInfo.SourceTimeUtc), False, clTextSecondary);
-  Inc(y, 4);
-  AddLabel('Target: ' + DisplaySafeName(AInfo.TargetPath), False, clAppFg);
-  AddLabel('    size ' + SizeText(AInfo.TargetSize) +
-    ',  modified ' + StampText(AInfo.TargetTimeUtc), False, clTextSecondary);
   Inc(y, 8);
+  AddLabel('Source:', False, clAppFg);
+  AddLabel(DisplaySafeName(AInfo.SourcePath), False, clAppFg, indent, True);
+  AddLabel('size ' + SizeText(AInfo.SourceSize) + ',  modified ' +
+    StampText(AInfo.SourceTimeUtc), False, clTextSecondary, indent);
+  Inc(y, 6);
+  AddLabel('Target:', False, clAppFg);
+  AddLabel(DisplaySafeName(AInfo.TargetPath), False, clAppFg, indent, True);
+  AddLabel('size ' + SizeText(AInfo.TargetSize) + ',  modified ' +
+    StampText(AInfo.TargetTimeUtc), False, clTextSecondary, indent);
+  Inc(y, 10);
   if AInfo.ResumeAllowed then
     AddLabel(Format('A partial file from this session matches this source: ' +
       'resuming would continue at %s.', [FormatBytes(AInfo.ResumeOffset)]),
@@ -122,14 +223,15 @@ begin
     AddLabel('Resume is not available: ' + AInfo.ResumeRefusedWhy, False,
       clTextSecondary);
 
-  Inc(y, 8);
+  Inc(y, 10);
   FApplyAll := TThemedCheck.Create(FForm);
   FApplyAll.Parent := FForm;
-  FApplyAll.Left := 16;
+  FApplyAll.Left := MARGIN;
   FApplyAll.Top := y;
-  FApplyAll.Width := FForm.ClientWidth - 32;
+  FApplyAll.Width := avail;
   FApplyAll.Caption := 'Apply to all conflicts of this queue';
   FApplyAll.Font.Color := clAppFg;
+  Inc(y, FApplyAll.Height + 18);
 
   AddBtn('Overwrite', Ord(cnOverwrite), 16, 100);
   AddBtn('Skip', Ord(cnSkip), 122, 80);
@@ -138,6 +240,9 @@ begin
   // Desactive plutot qu'absent: la ligne au-dessus dit pourquoi.
   resumeBtn.Enabled := AInfo.ResumeAllowed;
   AddBtn('Cancel queue', Ord(cnCancelQueue), 410, 120);
+
+  // ClientHeight EN DERNIER: peu fiable a la creation sous Cocoa
+  FForm.ClientHeight := y + 28 + 14;
 
   ApplyUiFont(FForm);
   DialogKeys(FForm);
