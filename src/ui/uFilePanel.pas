@@ -142,6 +142,7 @@ type
     FOnActivate: TNotifyEvent;
     FOnAction: TFilePanelActionEvent;
     FOnDrop: TFileDropEvent;
+    FOnSelectionTaken: TNotifyEvent;
     FHoverHeader: Integer;
     FDragArmed: Boolean;
     FDragOrigin: TPoint;
@@ -163,6 +164,7 @@ type
     procedure LayoutColumns;
     procedure SelectSingle(AIndex: Integer);
     procedure SelectRange(AFrom, ATo: Integer);
+    procedure SelectionTaken;
     procedure SetFocusIndex(AValue: Integer);
     function EntryIcon(const AEntry: TScpEntry): TScpIcon;
     function EntryColor(const AEntry: TScpEntry): TColor;
@@ -217,6 +219,10 @@ type
     procedure SetOnScrollViewChanged(AHandler: TNotifyEvent);
 
     property OnActivate: TNotifyEvent read FOnActivate write FOnActivate;
+    // L'utilisateur vient de selectionner ICI: le panneau d'en face lache la
+    // sienne, on ne travaille que d'un cote a la fois.
+    property OnSelectionTaken: TNotifyEvent read FOnSelectionTaken
+      write FOnSelectionTaken;
     property OnAction: TFilePanelActionEvent read FOnAction write FOnAction;
     property OnDrop: TFileDropEvent read FOnDrop write FOnDrop;
     property EntryCount: Integer read VisibleCount;
@@ -560,6 +566,13 @@ begin
       FSelected[FOrder[i]] := True;
 end;
 
+// Gestes de l'utilisateur seulement: RestoreView ne passe pas par ici.
+procedure TFileListView.SelectionTaken;
+begin
+  if (SelectionCount > 0) and Assigned(FOnSelectionTaken) then
+    FOnSelectionTaken(Self);
+end;
+
 procedure TFileListView.SetFocusIndex(AValue: Integer);
 begin
   if Length(FOrder) = 0 then
@@ -870,6 +883,7 @@ begin
            (not IsParentRow(FFocusIndex)) then
           FSelected[FOrder[FFocusIndex]] :=
             not FSelected[FOrder[FFocusIndex]];
+        SelectionTaken;
         Invalidate;
         Key := 0;
         Exit;
@@ -921,6 +935,7 @@ begin
         if (ssCtrl in Shift) or (ssMeta in Shift) then
         begin
           SelectAll;
+          SelectionTaken;
           Key := 0;
           Exit;
         end;
@@ -950,6 +965,7 @@ begin
   else if not ((ssCtrl in Shift) or (ssMeta in Shift)) then
     SelectSingle(newIndex);
   SetFocusIndex(newIndex);
+  SelectionTaken;
   Invalidate;
   Key := 0;
 end;
@@ -1009,6 +1025,7 @@ begin
      FSelected[FOrder[idx]] then
   begin
     SetFocusIndex(idx);
+    SelectionTaken;
     Invalidate;
     Exit;
   end;
@@ -1030,6 +1047,7 @@ begin
   else
     SelectSingle(idx);
   SetFocusIndex(idx);
+  SelectionTaken;
   FDragArmed := (Button = mbLeft) and (SelectionCount > 0);
   FDragOrigin := Point(X, Y);
   Invalidate;

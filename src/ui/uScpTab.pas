@@ -139,6 +139,7 @@ type
     procedure UpdateHeader;
     procedure Note(const AText: string);
 
+    procedure PanelSelectionTaken(Sender: TObject);
     procedure LocalAction(AAction: TFilePanelAction);
     procedure RemoteAction(AAction: TFilePanelAction);
     procedure PanelAction(ASide: TFilePanelSide; AAction: TFilePanelAction);
@@ -538,6 +539,7 @@ begin
   FLocalPanel.OnNavigate := @LocalNavigate;
   FLocalPanel.OnDrop := @PanelDrop;
   FLocalPanel.List.OnAction := @LocalAction;
+  FLocalPanel.List.OnSelectionTaken := @PanelSelectionTaken;
 
   FSplit := TThemedSplitter.Create(Self);
   FSplit.Parent := FMiddle;
@@ -556,6 +558,7 @@ begin
   FRemotePanel.OnNavigate := @RemoteNavigate;
   FRemotePanel.OnDrop := @PanelDrop;
   FRemotePanel.List.OnAction := @RemoteAction;
+  FRemotePanel.List.OnSelectionTaken := @PanelSelectionTaken;
   // le vrai minimum exige les DEUX volets
   FSplit.MinSize := PaneMinW;
 
@@ -798,6 +801,15 @@ procedure TScpTab.RemoteNavigate(const APath: string);
 begin
   FActiveSide := fpsRemote;
   NavigateTo(fpsRemote, APath, True);
+end;
+
+procedure TScpTab.PanelSelectionTaken(Sender: TObject);
+begin
+  if FClosing then Exit;
+  if Sender = FLocalPanel.List then
+    FRemotePanel.List.ClearSelection
+  else
+    FLocalPanel.List.ClearSelection;
 end;
 
 procedure TScpTab.LocalAction(AAction: TFilePanelAction);
