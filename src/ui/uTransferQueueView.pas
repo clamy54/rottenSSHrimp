@@ -52,17 +52,23 @@ type
   TQueueListView = class(TCustomControl, IThemedScrollTarget)
   private
     FQueue: TTransferQueue;
-    // Par POSITION: ajout en queue seulement, retrait par le seul thread UI.
+    // Par POSITION dans la file: ajout en queue seulement, retrait par le seul
+    // thread UI. Selection, focus et ancre suivent l'ELEMENT, pas sa ligne.
     FSelected: array of Boolean;
-    FFocus: Integer;         // -1 = aucune ligne
+    FFocus: Integer;         // -1 = aucun
     FAnchor: Integer;        // origine d'une plage au Maj+clic
+    // Ordre d'AFFICHAGE: en cours, a venir, en echec, termines. Refait par
+    // Reorder seulement: un clic vise la ligne peinte, pas celle d'apres.
+    FOrder: array of Integer;   // ligne -> position dans la file
+    FRowOf: array of Integer;   // l'inverse
+    FHadRunning: Boolean;
     FTop: Integer;
     FRowHeight: Integer;
-    FFollowId: Int64;        // dernier transfert amene a l'ecran, -1 = aucun
     FOnViewChanged: TNotifyEvent;
     FOnSelectionChanged: TNotifyEvent;
     FOnCancelKey: TNotifyEvent;
-    procedure DrawRow(AIndex, AY: Integer);
+    procedure DrawRow(AIndex, ARow, AY: Integer);
+    function RowOf(AIndex: Integer): Integer;
     procedure SelectRange(AFrom, ATo: Integer);
     procedure SelectOnly(AIndex: Integer);
     procedure SetFocusRow(AIndex: Integer);
@@ -87,9 +93,11 @@ type
     procedure SelectIds(const AIds: TStringArray; AFocusId: Int64);
     function FocusedId: Int64;
     procedure RecomputeMetrics;
-    // Amene a l'ecran le transfert en cours, une fois par element: entre deux
-    // fichiers l'utilisateur defile ou il veut.
-    procedure FollowRunning;
+    // Le transfert en cours tient la premiere ligne, les termines coulent au
+    // fond: rien a chercher a la molette, et rien qui defile tout seul.
+    procedure Reorder;
+    // Position dans la file de la ligne affichee, -1 hors liste.
+    function ItemAtRow(ARow: Integer): Integer;
     property OnSelectionChanged: TNotifyEvent
       read FOnSelectionChanged write FOnSelectionChanged;
     // Suppr
@@ -152,7 +160,6 @@ begin
   FQueue := AQueue;
   FFocus := -1;
   FAnchor := -1;
-  FFollowId := -1;
   RecomputeMetrics;
 end;
 
@@ -173,6 +180,9 @@ begin
     SetLength(FSelected, c);
   if FFocus >= c then FFocus := c - 1;
   if FAnchor >= c then FAnchor := -1;
+  // la file a change de taille: l'ordre affiche ne la decrit plus
+  if Length(FOrder) <> c then
+    Reorder;
   if FTop > ScrollMaxTop then FTop := ScrollMaxTop;
   if Assigned(FOnViewChanged) then FOnViewChanged(Self);
 end;
@@ -240,12 +250,36 @@ begin
   FAnchor := AIndex;
 end;
 
+function TQueueListView.RowOf(AIndex: Integer): Integer;
+begin
+  if (AIndex >= 0) and (AIndex < Length(FRowOf)) then
+    Result := FRowOf[AIndex]
+  else
+    Result := -1;
+end;
+
+function TQueueListView.ItemAtRow(ARow: Integer): Integer;
+begin
+  if (ARow >= 0) and (ARow < Length(FOrder)) then
+    Result := FOrder[ARow]
+  else
+    Result := -1;
+end;
+
+// La plage suit ce que l'oeil voit: de la LIGNE de l'un a celle de l'autre.
 procedure TQueueListView.SelectRange(AFrom, ATo: Integer);
 var
-  i: Integer;
+  i, a, b, q: Integer;
 begin
-  for i := 0 to High(FSelected) do
-    FSelected[i] := (i >= Min(AFrom, ATo)) and (i <= Max(AFrom, ATo));
+  for i := 0 to High(FSelected) do FSelected[i] := False;
+  a := RowOf(AFrom);
+  b := RowOf(ATo);
+  if (a < 0) or (b < 0) then Exit;
+  for i := Min(a, b) to Max(a, b) do
+  begin
+    q := FOrder[i];
+    if q < Length(FSelected) then FSelected[q] := True;
+  end;
 end;
 
 procedure TQueueListView.SetFocusRow(AIndex: Integer);
@@ -258,38 +292,61 @@ begin
     Exit;
   end;
   FFocus := Max(0, Min(AIndex, High(FSelected)));
-  rowTop := FFocus * FRowHeight;
+  rowTop := Max(RowOf(FFocus), 0) * FRowHeight;
   if rowTop < FTop then
     ScrollSetTop(rowTop)
   else if rowTop + FRowHeight > FTop + ClientHeight then
     ScrollSetTop(rowTop + FRowHeight - ClientHeight);
 end;
 
-procedure TQueueListView.FollowRunning;
+procedure TQueueListView.Reorder;
+const
+  // tsFailed et tsInterrupted avant les termines: un echec enterre sous
+  // trois cents lignes vertes est un echec que personne ne relance
+  RANK: array[TTransferState] of Byte = (
+    1,   // tsPending
+    0,   // tsEnumerating
+    0,   // tsTransferring
+    1,   // tsPaused
+    2,   // tsInterrupted
+    1,   // tsRetrying
+    3,   // tsSkipped
+    2,   // tsFailed
+    3,   // tsCompleted
+    3);  // tsCanceled
 var
-  i, idx: Integer;
-  id: Int64;
+  i, c, n: Integer;
+  rk: Byte;
+  ranks: array of Byte;
+  running: Boolean;
 begin
-  idx := -1;
-  id := -1;
   FQueue.Lock;
   try
-    // le DERNIER en cours: un dossier reste actif au-dessus de ses fichiers
-    for i := FQueue.Count - 1 downto 0 do
-      if FQueue.Items[i].State in [tsTransferring, tsEnumerating] then
-      begin
-        idx := i;
-        id := FQueue.Items[i].Id;
-        Break;
-      end;
+    c := FQueue.Count;
+    ranks := nil;
+    SetLength(ranks, c);
+    for i := 0 to c - 1 do
+      ranks[i] := RANK[FQueue.Items[i].State];
   finally
     FQueue.Unlock;
   end;
-  if id = FFollowId then Exit;
-  FFollowId := id;
-  if idx < 0 then Exit;
-  // une ligne terminee au-dessus pour le contexte, la suite en dessous
-  ScrollSetTop((idx - 1) * FRowHeight);
+  SetLength(FOrder, c);
+  SetLength(FRowOf, c);
+  n := 0;
+  // stable: dans un groupe, l'ordre de la file
+  for rk := 0 to 3 do
+    for i := 0 to c - 1 do
+      if ranks[i] = rk then
+      begin
+        FOrder[n] := i;
+        FRowOf[i] := n;
+        Inc(n);
+      end;
+  running := (c > 0) and (ranks[FOrder[0]] = 0);
+  // un lot demarre: retour en haut, la ou il se passe quelque chose
+  if running and (not FHadRunning) then
+    FTop := 0;
+  FHadRunning := running;
 end;
 
 function TQueueListView.FocusedId: Int64;
@@ -357,13 +414,14 @@ var
 begin
   SyncSelection;
   page := Max(1, ClientHeight div Max(FRowHeight, 1));
+  target := RowOf(FFocus);
   case Key of
-    VK_UP: target := FFocus - 1;
-    VK_DOWN: target := FFocus + 1;
-    VK_PRIOR: target := FFocus - page;
-    VK_NEXT: target := FFocus + page;
+    VK_UP: Dec(target);
+    VK_DOWN: Inc(target);
+    VK_PRIOR: Dec(target, page);
+    VK_NEXT: Inc(target, page);
     VK_HOME: target := 0;
-    VK_END: target := High(FSelected);
+    VK_END: target := High(FOrder);
     VK_SPACE:
       begin
         if (FFocus >= 0) and (FFocus < Length(FSelected)) then
@@ -403,9 +461,10 @@ begin
     Exit;
   end;
   Key := 0;
-  if Length(FSelected) = 0 then Exit;
+  if Length(FOrder) = 0 then Exit;
   if FFocus < 0 then target := 0;
-  target := Max(0, Min(target, High(FSelected)));
+  // de la ligne visee a l'element qui l'occupe
+  target := FOrder[Max(0, Min(target, High(FOrder)))];
   if ssShift in Shift then
   begin
     if FAnchor < 0 then FAnchor := Max(FFocus, 0);
@@ -417,7 +476,7 @@ begin
   SelectionChanged;
 end;
 
-procedure TQueueListView.DrawRow(AIndex, AY: Integer);
+procedure TQueueListView.DrawRow(AIndex, ARow, AY: Integer);
 var
   it: TTransferItem;
   x, barX, pct, iconBox: Integer;
@@ -430,7 +489,7 @@ begin
   r := Rect(0, AY, ClientWidth, AY + FRowHeight);
   if (AIndex < Length(FSelected)) and FSelected[AIndex] then
     rowBg := clSelActive
-  else if Odd(AIndex) then
+  else if Odd(ARow) then
     rowBg := clPanelAltRow
   else
     rowBg := clPanelBg;
@@ -544,12 +603,14 @@ begin
     end;
     firstRow := FTop div FRowHeight;
     lastRow := (FTop + ClientHeight) div FRowHeight;
-    if lastRow > FQueue.Count - 1 then lastRow := FQueue.Count - 1;
+    if lastRow > High(FOrder) then lastRow := High(FOrder);
     for i := firstRow to lastRow do
     begin
       y := i * FRowHeight - FTop;
       if y > ClientHeight then Break;
-      DrawRow(i, y);
+      // ordre en retard d'un rafraichissement: la ligne attend le suivant
+      if FOrder[i] < FQueue.Count then
+        DrawRow(FOrder[i], i, y);
     end;
   finally
     FQueue.Unlock;
@@ -563,7 +624,7 @@ var
 begin
   if CanFocus then SetFocus;
   SyncSelection;
-  idx := (Y + FTop) div FRowHeight;
+  idx := ItemAtRow((Y + FTop) div FRowHeight);
   // FSelected, pas la file: elle a pu grossir depuis SyncSelection.
   if (idx < 0) or (idx >= Length(FSelected)) then Exit;
   if ssShift in Shift then
@@ -744,8 +805,8 @@ var
   remaining: Int64;
   eta: Int64;
 begin
+  FList.Reorder;
   FList.SyncSelection;
-  FList.FollowRunning;
   s := FQueue.Summary;
   txt := FQueue.SummaryText;
 
