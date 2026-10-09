@@ -69,6 +69,11 @@ type
     FShortcutsSuspended: Boolean;
     FSavedShortcutItems: array of TMenuItem;
     FSavedShortcutKeys: array of TShortCut;
+    {$IFNDEF DARWIN}
+    FQueuedShortcuts: array of TLMKey;
+    function MenuBarHasShortcut(AShortCut: TShortCut): Boolean;
+    procedure DeferredShortcut(Data: PtrInt);
+    {$ENDIF}
     procedure ActiveControlChanged(Sender: TObject; LastControl: TControl);
     procedure LayoutStatusBar;
     procedure SetSessionKeyCapture(ACaptured: Boolean);
@@ -327,6 +332,7 @@ end;
 destructor TfrmMain.Destroy;
 begin
   Screen.RemoveHandlerActiveControlChanged(@ActiveControlChanged);
+  Application.RemoveAsyncCalls(Self);
   // onglets et dashboard empruntent FDoc/FModel: ils meurent d'abord
   CloseAllSessions(False);
   CloseDashboard;
@@ -337,11 +343,57 @@ begin
 end;
 
 {$IFNDEF DARWIN}
+function TfrmMain.MenuBarHasShortcut(AShortCut: TShortCut): Boolean;
+
+  function Holds(AItem: TMenuItem): Boolean;
+  var
+    j: Integer;
+  begin
+    Result := AItem.ShortCut = AShortCut;
+    j := 0;
+    while (not Result) and (j < AItem.Count) do
+    begin
+      Result := Holds(AItem.Items[j]);
+      Inc(j);
+    end;
+  end;
+
+var
+  i: Integer;
+begin
+  Result := False;
+  if (AShortCut = 0) or (FMenuBar = nil) then Exit;
+  for i := 0 to FMenuBar.MenuCount - 1 do
+    if Holds(FMenuBar.MenuRoot(i)) then
+      Exit(True);
+end;
+
+// Le raccourci arrive DANS le traitement de la touche par le controle qui a
+// le focus. Ctrl+W ou Ctrl+O y detruisent l'onglet, donc ce controle, sous
+// ses propres pieds: la commande attend le tour de boucle suivant.
 function TfrmMain.IsShortcut(var Message: TLMKey): Boolean;
+var
+  n: Integer;
 begin
   Result := inherited IsShortcut(Message);
-  if (not Result) and (FMenuBar <> nil) then
-    Result := FMenuBar.DispatchShortcut(Message);
+  if Result or (FMenuBar = nil) then Exit;
+  if not MenuBarHasShortcut(ShortCut(Message.CharCode,
+       KeyDataToShiftState(Message.KeyData))) then Exit;
+  n := Length(FQueuedShortcuts);
+  SetLength(FQueuedShortcuts, n + 1);
+  FQueuedShortcuts[n] := Message;
+  Application.QueueAsyncCall(@DeferredShortcut, 0);
+  Result := True;
+end;
+
+procedure TfrmMain.DeferredShortcut(Data: PtrInt);
+var
+  msg: TLMKey;
+begin
+  if (Length(FQueuedShortcuts) = 0) or (FMenuBar = nil) then Exit;
+  msg := FQueuedShortcuts[0];
+  Delete(FQueuedShortcuts, 0, 1);
+  FMenuBar.DispatchShortcut(msg);
 end;
 {$ENDIF}
 
