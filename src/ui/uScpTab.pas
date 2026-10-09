@@ -140,6 +140,7 @@ type
     procedure Note(const AText: string);
 
     procedure PanelSelectionTaken(Sender: TObject);
+    procedure DeferredClose(Data: PtrInt);
     procedure LocalAction(AAction: TFilePanelAction);
     procedure RemoteAction(AAction: TFilePanelAction);
     procedure PanelAction(ASide: TFilePanelSide; AAction: TFilePanelAction);
@@ -1239,8 +1240,16 @@ begin
   finally
     FClosePending := False;
   end;
-  // Rien ne pompe la boucle entre ces deux lignes: destruction atomique.
-  if ok then Free;
+  if not ok then Exit;
+  // Pas de Free ici: on est DANS le clic du bouton que Free detruirait, et la
+  // LCL n'en a pas fini avec lui. FClosing fait taire les relais d'ici la.
+  FClosing := True;
+  Application.QueueAsyncCall(@DeferredClose, 0);
+end;
+
+procedure TScpTab.DeferredClose(Data: PtrInt);
+begin
+  Free;
 end;
 
 procedure TScpTab.LocalListed(const APath: string; ASerial: Int64;
