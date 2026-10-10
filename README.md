@@ -16,6 +16,16 @@ empty.
 The load average in that screenshot is 0.12, which is the only time anybody
 takes a screenshot.
 
+![A file transfer tab: local files on the left, the server's on the right, an empty queue below](resources/sftp-rottensshrimp.png)
+
+It also moves files, because sooner or later somebody wants the log, the dump,
+or the certificate that expired on Friday and that nobody will admit to having
+been in charge of. The traditional answer is a second program whose download
+page has four green buttons, three of which install something you will spend
+the afternoon removing. Here it is one more tab, already signed in, and it has
+never once offered a toolbar, a browser or a free antivirus trial as the price
+of copying a text file.
+
 ## Why
 
 The alternatives come in three families: the one that wants a subscription
