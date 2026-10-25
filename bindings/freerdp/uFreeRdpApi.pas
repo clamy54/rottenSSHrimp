@@ -21,7 +21,8 @@ const
   CTX_OFF_INPUT = 304;
   CTX_OFF_UPDATE = 312;
   CTX_OFF_SETTINGS = 320;
-  CTX_SIZE = 1024;
+  // sans shim: de quoi couvrir un rdpClientContext (3064 en 3.32 x64), large
+  CTX_SIZE = 4096;
 
   RDP_OFF_CONTEXT = 0;
   RDP_OFF_CLIENTENTRYPOINTS = 8;

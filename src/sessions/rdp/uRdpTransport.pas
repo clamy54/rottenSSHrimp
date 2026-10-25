@@ -2402,7 +2402,7 @@ var
 begin
   Result := False;
   FillChar(ep, SizeOf(ep), 0);
-  // le shim fait AUTORITE: sizeof(rdpContext) sous-estime = FreeRDP ecrase notre
+  // le shim fait AUTORITE: un contexte sous-estime = FreeRDP ecrase notre
   // pointeur de retour. Refus = pas de repli.
   selfOff := RdpContextSizeBytes;
   ctxSize := selfOff + SizeOf(Pointer);
@@ -2433,7 +2433,7 @@ begin
     Fail('Cannot create the FreeRDP context');
     Exit;
   end;
-  PPointer(PByte(FContext) + selfOff)^ := Self;   // juste apres le rdpContext
+  PPointer(PByte(FContext) + selfOff)^ := Self;   // juste apres le rdpClientContext
   FInstance := CtxInstance(FContext);
   if FInstance = nil then
   begin

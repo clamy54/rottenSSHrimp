@@ -44,12 +44,13 @@ RSSH_API uint32_t rssh_abi_version(void)
 	return RSSH_SHIM_ABI;
 }
 
-/* Tailles: sous-estimer sizeof(rdpContext) ferait ecrire FreeRDP par-dessus
- * ce que le transport range juste apres. On ne devine plus. */
+/* Tailles: sous-estimer le contexte ferait ecrire FreeRDP par-dessus ce que
+ * le transport range juste apres. C'est un rdpClientContext que le code client
+ * attend, pas un rdpContext nu: depuis la 3.32 il le verifie et boude. */
 
 RSSH_API size_t rssh_sizeof_context(void)
 {
-	return sizeof(rdpContext);
+	return sizeof(rdpClientContext);
 }
 
 RSSH_API size_t rssh_sizeof_entry_points(void)
@@ -80,7 +81,7 @@ RSSH_API int rssh_ep_init(void* buf, size_t buflen, size_t context_size)
 		return 0;
 	if (buflen < sizeof(RDP_CLIENT_ENTRY_POINTS))
 		return 0;
-	if (context_size < sizeof(rdpContext))
+	if (context_size < sizeof(rdpClientContext))
 		return 0;
 	/* ContextSize est 32 bits: tronquer ferait allouer trop petit, on refuse */
 	if (context_size > 0xFFFFFFFFu)
@@ -283,7 +284,7 @@ RSSH_API int rssh_instance_set_context_size(void* instance, size_t size)
 {
 	if (instance == NULL)
 		return 0;
-	if (size < sizeof(rdpContext))
+	if (size < sizeof(rdpClientContext))
 		return 0;
 	((freerdp*)instance)->ContextSize = size;
 	return 1;
