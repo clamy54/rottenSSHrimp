@@ -61,6 +61,21 @@ type
     property Generation: Int64 read FGeneration;
   end;
 
+  TRemoteCursorKind = (rckDefault, rckHidden, rckShape);
+
+  // Pixels en BGRA non premultiplie, Width*Height, immuables une fois publies.
+  TRemoteCursor = record
+    Kind: TRemoteCursorKind;
+    Width, Height: Integer;
+    HotX, HotY: Integer;
+    Pixels: array of LongWord;
+  end;
+  PRemoteCursor = ^TRemoteCursor;
+
+const
+  // le plus grand curseur que RDP sait decrire
+  REMOTE_CURSOR_MAX = 384;
+
 function RemoteRect(ALeft, ATop, ARight, ABottom: Integer): TRemoteRect;
 function RemoteRectIsEmpty(const AR: TRemoteRect): Boolean;
 function RemoteRectUnion(const A, B: TRemoteRect): TRemoteRect;

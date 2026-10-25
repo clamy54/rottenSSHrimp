@@ -71,6 +71,7 @@ type
   TRdpClipFilesEvent = procedure(const APaths: TStringArray) of object;
   TRdpClipNoteEvent = procedure(const AText: string) of object;
   TRdpReconnectEvent = procedure(const AStatus: string; AActive: Boolean) of object;
+  TRdpCursorEvent = procedure(const ACursor: TRemoteCursor) of object;
 
   TRdpTransport = class(TThread)
   private
@@ -119,6 +120,11 @@ type
     FClipIncomingFiles: TStringArray;   // sous FClipLock
     FClipNotes: TStringList;            // sous FClipLock
 
+    // le dernier curseur demande; l'UI saute les intermediaires
+    FCursorLock: TCriticalSection;
+    FCursorNext: TRemoteCursor;
+    FCursorQueued: Boolean;
+
     // sous FCtxLock: poses par l'UI, executes par le worker
     FReconnecting: Boolean;
     FReconnectInhibited: Boolean;  // document verrouille
@@ -162,7 +168,10 @@ type
     FOnClipFiles: TRdpClipFilesEvent;
     FOnClipNote: TRdpClipNoteEvent;
     FOnReconnect: TRdpReconnectEvent;
+    FOnCursor: TRdpCursorEvent;
 
+    procedure PostCursor(AKind: TRemoteCursorKind; AShape: Pointer);
+    procedure PublishCursor;
     procedure PublishState;
     procedure PublishError;
     procedure PublishFinished;
@@ -254,6 +263,7 @@ type
     property OnClipNote: TRdpClipNoteEvent read FOnClipNote
       write FOnClipNote;
     property OnReconnect: TRdpReconnectEvent read FOnReconnect write FOnReconnect;
+    property OnCursor: TRdpCursorEvent read FOnCursor write FOnCursor;
     procedure InhibitReconnect;   // definitif
   end;
 
@@ -610,6 +620,108 @@ begin
   end;
 end;
 
+// Curseur: un FALSE ici et FreeRDP coupe la session pour une fleche. Toute
+// forme illisible devient donc la fleche par defaut, en silence.
+function CbPointerNew(context: PRdpContext; pointer: Pointer): cint; cdecl;
+var
+  info: TRdpPointerInfo;
+  shape: PRemoteCursor;
+  pal: Pointer;
+begin
+  Result := 1;
+  try
+    PointerSetUser(pointer, nil);
+    if not PointerInfo(pointer, info) then Exit;
+    if (info.Width = 0) or (info.Height = 0) or
+       (info.Width > REMOTE_CURSOR_MAX) or (info.Height > REMOTE_CURSOR_MAX) then
+      Exit;
+    pal := GdiPalette(CtxGdi(context));
+    if (info.XorBpp = 8) and (pal = nil) then Exit;
+    New(shape);
+    shape^.Kind := rckShape;
+    shape^.Width := info.Width;
+    shape^.Height := info.Height;
+    shape^.HotX := Integer(Min(Int64(info.XPos), Int64(info.Width) - 1));
+    shape^.HotY := Integer(Min(Int64(info.YPos), Int64(info.Height) - 1));
+    SetLength(shape^.Pixels, info.Width * info.Height);
+    if freerdp_image_copy_from_pointer_data(@shape^.Pixels[0],
+         PIXEL_FORMAT_BGRA32, info.Width * 4, 0, 0, info.Width, info.Height,
+         info.XorMask, info.XorLength, info.AndMask, info.AndLength,
+         info.XorBpp, pal) = 0 then
+    begin
+      Dispose(shape);
+      Exit;
+    end;
+    if not PointerSetUser(pointer, shape) then
+      Dispose(shape);
+  except
+  end;
+end;
+
+procedure CbPointerFree(context: PRdpContext; pointer: Pointer); cdecl;
+var
+  shape: PRemoteCursor;
+begin
+  try
+    shape := PointerUser(pointer);
+    if shape = nil then Exit;
+    PointerSetUser(pointer, nil);
+    Dispose(shape);
+  except
+  end;
+end;
+
+function CbPointerSet(context: PRdpContext; pointer: Pointer): cint; cdecl;
+var
+  t: TRdpTransport;
+  shape: Pointer;
+begin
+  Result := 1;
+  try
+    t := TransportOf(context);
+    if t = nil then Exit;
+    shape := PointerUser(pointer);
+    if shape <> nil then
+      t.PostCursor(rckShape, shape)
+    else
+      t.PostCursor(rckDefault, nil);
+  except
+  end;
+end;
+
+function CbPointerSetNull(context: PRdpContext): cint; cdecl;
+var
+  t: TRdpTransport;
+begin
+  Result := 1;
+  try
+    t := TransportOf(context);
+    if t <> nil then
+      t.PostCursor(rckHidden, nil);
+  except
+  end;
+end;
+
+function CbPointerSetDefault(context: PRdpContext): cint; cdecl;
+var
+  t: TRdpTransport;
+begin
+  Result := 1;
+  try
+    t := TransportOf(context);
+    if t <> nil then
+      t.PostCursor(rckDefault, nil);
+  except
+  end;
+end;
+
+// le serveur ne deplace pas la souris du poste
+function CbPointerSetPosition(context: PRdpContext;
+  x, y: cuint32): cint; cdecl;
+begin
+  Result := 1;
+end;
+
 function CbPostConnect(instance: PFreeRdp): cint; cdecl;
 var
   t: TRdpTransport;
@@ -667,6 +779,15 @@ begin
     else
       LogError('rdp: unexpected memory layout (update), ' +
         'paint callbacks not installed');
+    if RdpPointerSupported then
+    begin
+      if not RdpRegisterPointer(ctx, @CbPointerNew, @CbPointerFree,
+           @CbPointerSet, @CbPointerSetNull, @CbPointerSetDefault,
+           @CbPointerSetPosition) then
+        LogError('rdp: server cursor not wired, local arrow only');
+    end
+    else
+      LogDebug('rdp: no shim pointer support, local arrow only');
     Result := 1;
   except
     Result := 0;
@@ -1000,6 +1121,7 @@ begin
   FCtxLock := TCriticalSection.Create;
   FStateLock := TCriticalSection.Create;
   FClipLock := TCriticalSection.Create;
+  FCursorLock := TCriticalSection.Create;
   FCertEvent := TEvent.Create(nil, True, False, '');
   FInputIdle := TEvent.Create(nil, True, True, '');   // manuel, SIGNALE au depart
   FClipNotes := TStringList.Create;
@@ -1036,6 +1158,7 @@ begin
   FInputIdle.Free;
   FCertEvent.Free;
   FClipLock.Free;
+  FCursorLock.Free;
   FStateLock.Free;
   FCtxLock.Free;
   FInputLock.Free;
@@ -1114,6 +1237,45 @@ procedure TRdpTransport.PublishPaint;
 begin
   if Assigned(FOnPaint) then
     FOnPaint();
+end;
+
+// Worker. AShape: PRemoteCursor ou nil. Les pixels ne bougent plus une fois
+// convertis, le compteur du tableau dynamique suffit au partage.
+procedure TRdpTransport.PostCursor(AKind: TRemoteCursorKind; AShape: Pointer);
+var
+  post: Boolean;
+begin
+  FCursorLock.Acquire;
+  try
+    if AShape <> nil then
+      FCursorNext := PRemoteCursor(AShape)^
+    else
+    begin
+      FCursorNext := Default(TRemoteCursor);
+      FCursorNext.Kind := AKind;
+    end;
+    post := not FCursorQueued;
+    FCursorQueued := True;
+  finally
+    FCursorLock.Release;
+  end;
+  if post then
+    Queue(@PublishCursor);
+end;
+
+procedure TRdpTransport.PublishCursor;
+var
+  c: TRemoteCursor;
+begin
+  FCursorLock.Acquire;
+  try
+    c := FCursorNext;
+    FCursorQueued := False;
+  finally
+    FCursorLock.Release;
+  end;
+  if Assigned(FOnCursor) then
+    FOnCursor(c);
 end;
 
 procedure TRdpTransport.PublishResize;

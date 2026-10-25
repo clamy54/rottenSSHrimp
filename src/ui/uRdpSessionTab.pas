@@ -77,6 +77,7 @@ type
     procedure TransportPaint;
     procedure TransportResized(AWidth, AHeight: Integer);
     procedure TransportFinished;
+    procedure TransportCursor(const ACursor: TRemoteCursor);
     procedure ClipboardFromRemote(const AText: UnicodeString);
     procedure ClipboardFilesFromRemote(const APaths: TStringArray);
     procedure ClipNoteFromTransport(const AText: string);
@@ -229,6 +230,7 @@ begin
   FTransport.OnClipboardFiles := @ClipboardFilesFromRemote;
   FTransport.OnClipNote := @ClipNoteFromTransport;
   FTransport.OnReconnect := @TransportReconnect;
+  FTransport.OnCursor := @TransportCursor;
 
   FHandle := TRdpSessionHandle.Create(Self);
   FManager.RegisterSession(FHandle);
@@ -467,7 +469,17 @@ begin
     end;
   end
   else
+  begin
     FClipTimer.Enabled := False;
+    FView.ResetRemoteCursor;   // pas de curseur fantome sur une session muette
+  end;
+end;
+
+procedure TRdpSessionTab.TransportCursor(const ACursor: TRemoteCursor);
+begin
+  // pas de filtre sur l'etat: le premier curseur arrive pendant la connexion
+  if not FClosing then
+    FView.SetRemoteCursor(ACursor);
 end;
 
 procedure TRdpSessionTab.TransportError(const AMessage: string);

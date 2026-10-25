@@ -399,6 +399,12 @@ type
   Tfreerdp_client_load_addins = function(channels: Pointer;
     settings: PRdpSettings): cint; cdecl;
 
+  Tgraphics_register_pointer = procedure(graphics, pointer: Pointer); cdecl;
+  Tfreerdp_image_copy_from_pointer_data = function(dst: PByte;
+    dstFormat, dstStep, xDst, yDst, width, height: cuint32;
+    xorMask: PByte; xorMaskLength: cuint32; andMask: PByte;
+    andMaskLength: cuint32; xorBpp: cuint32; palette: Pointer): cint; cdecl;
+
   TWaitForMultipleObjects = function(count: cuint32; handles: PPointer;
     waitAll: cint; ms: cuint32): cuint32; cdecl;
 
@@ -434,6 +440,10 @@ var
   freerdp_client_context_new: Tfreerdp_client_context_new = nil;
   freerdp_client_context_free: Tfreerdp_client_context_free = nil;
   freerdp_client_load_addins: Tfreerdp_client_load_addins = nil;
+  // Optionnels: sans eux, la fleche locale et rien d'autre
+  graphics_register_pointer: Tgraphics_register_pointer = nil;
+  freerdp_image_copy_from_pointer_data:
+    Tfreerdp_image_copy_from_pointer_data = nil;
   WaitForMultipleObjects: TWaitForMultipleObjects = nil;
   PubSub_Subscribe: TPubSub_Subscribe = nil;
 
@@ -525,6 +535,29 @@ function CliprdrCustom(ACtx: Pointer): Pointer; inline;
 procedure CliprdrSetHandler(ACtx: Pointer; AOffset: Integer; ACb: Pointer); inline;
 function CliprdrCall(ACtx: Pointer; AOffset: Integer): TCliprdrFn; inline;
 
+// Curseur du serveur: shim seulement, on n'ecrit pas un prototype a l'aveugle.
+type
+  TpPointerNew = function(context: PRdpContext; pointer: Pointer): cint; cdecl;
+  TpPointerFree = procedure(context: PRdpContext; pointer: Pointer); cdecl;
+  TpPointerSet = function(context: PRdpContext; pointer: Pointer): cint; cdecl;
+  TpPointerSetNull = function(context: PRdpContext): cint; cdecl;
+  TpPointerSetPosition = function(context: PRdpContext;
+    x, y: cuint32): cint; cdecl;
+
+  TRdpPointerInfo = record
+    XPos, YPos, Width, Height, XorBpp, AndLength, XorLength: cuint32;
+    XorMask, AndMask: PByte;
+  end;
+
+function RdpPointerSupported: Boolean;
+function RdpRegisterPointer(AContext: PRdpContext; ANew: TpPointerNew;
+  AFree: TpPointerFree; ASet: TpPointerSet; ASetNull,
+  ASetDefault: TpPointerSetNull; ASetPosition: TpPointerSetPosition): Boolean;
+function PointerInfo(APointer: Pointer; out AInfo: TRdpPointerInfo): Boolean;
+function PointerUser(APointer: Pointer): Pointer;
+function PointerSetUser(APointer, AData: Pointer): Boolean;
+function GdiPalette(AGdi: PRdpGdi): Pointer;
+
 implementation
 
 uses
@@ -542,7 +575,8 @@ var
 const
   // Autre version = shim ignore, offsets en dur. 2: rssh_instance_set_*.
   // 3: rssh_ep_set_client_*. 4: slots rdpgfx. 5: slots cliprdr FileContents.
-  RSSH_SHIM_ABI = 5;
+  // 6: classe Pointer.
+  RSSH_SHIM_ABI = 6;
 
 type
   Tsh_u32 = function: cuint32; cdecl;
@@ -560,6 +594,9 @@ type
     cdecl;
   Tsh_slot_get = function(p: Pointer; slot: cuint32): Pointer; cdecl;
   Tsh_slot_set = function(p: Pointer; slot: cuint32; cb: Pointer): cint; cdecl;
+  Tsh_buf_init = function(buf: Pointer; buflen: PtrUInt): cint; cdecl;
+  Tsh_pointer_info = function(p: Pointer; info: pcuint32; count: PtrUInt;
+    xorMask, andMask: PPointer): cint; cdecl;
 
 var
   GShim: TLibHandle = NilHandle;
@@ -608,6 +645,14 @@ var
   sh_gfx_set_handler: Tsh_slot_set = nil;
   sh_gfx_call: Tsh_slot_get = nil;
   sh_gfx_rdp_context: Tsh_ptr_of_ptr = nil;
+  sh_ctx_graphics: Tsh_ptr_of_ptr = nil;
+  sh_gdi_palette: Tsh_ptr_of_ptr = nil;
+  sh_sizeof_pointer: Tsh_size = nil;
+  sh_pointer_proto_init: Tsh_buf_init = nil;
+  sh_pointer_set_handler: Tsh_slot_set = nil;
+  sh_pointer_info: Tsh_pointer_info = nil;
+  sh_pointer_user: Tsh_ptr_of_ptr = nil;
+  sh_pointer_set_user: Tsh_set_cb = nil;
 
 // relatif = dylibs cherchees dans le cwd
 function AbsCandidateDir(const P: string): Boolean;
@@ -724,6 +769,10 @@ begin
     MustSym(GLibClient, 'freerdp_client_context_free');
   Pointer(freerdp_client_load_addins) :=
     MustSym(GLibClient, 'freerdp_client_load_addins');
+  Pointer(graphics_register_pointer) :=
+    GetProcAddress(GLibRdp, 'graphics_register_pointer');
+  Pointer(freerdp_image_copy_from_pointer_data) :=
+    GetProcAddress(GLibRdp, 'freerdp_image_copy_from_pointer_data');
   // winpr3.dll ne le reexporte pas; les handles FreeRDP sont de vrais handles
   {$IFDEF WINDOWS}
   Pointer(WaitForMultipleObjects) :=
@@ -932,6 +981,14 @@ begin
   Pointer(sh_gfx_set_handler) := Sym('rssh_gfx_set_handler');
   Pointer(sh_gfx_call) := Sym('rssh_gfx_call');
   Pointer(sh_gfx_rdp_context) := Sym('rssh_gfx_rdp_context');
+  Pointer(sh_ctx_graphics) := Sym('rssh_ctx_graphics');
+  Pointer(sh_gdi_palette) := Sym('rssh_gdi_palette');
+  Pointer(sh_sizeof_pointer) := Sym('rssh_sizeof_pointer');
+  Pointer(sh_pointer_proto_init) := Sym('rssh_pointer_proto_init');
+  Pointer(sh_pointer_set_handler) := Sym('rssh_pointer_set_handler');
+  Pointer(sh_pointer_info) := Sym('rssh_pointer_info');
+  Pointer(sh_pointer_user) := Sym('rssh_pointer_user');
+  Pointer(sh_pointer_set_user) := Sym('rssh_pointer_set_user');
 
   if GShimOk then
   begin
@@ -1557,6 +1614,88 @@ begin
     Exit;
   end;
   PPointer(PByte(AUpdate) + UPD_OFF_DESKTOPRESIZE)^ := ACb;
+end;
+
+const
+  // enum rssh_pointer_slot du shim
+  PTR_SLOT_NEW = 0;
+  PTR_SLOT_FREE = 1;
+  PTR_SLOT_SET = 2;
+  PTR_SLOT_SET_NULL = 3;
+  PTR_SLOT_SET_DEFAULT = 4;
+  PTR_SLOT_SET_POSITION = 5;
+  PTR_PROTO_BUF = 512;
+
+function RdpPointerSupported: Boolean;
+begin
+  Result := GShimOk and Assigned(graphics_register_pointer) and
+    Assigned(freerdp_image_copy_from_pointer_data);
+end;
+
+function RdpRegisterPointer(AContext: PRdpContext; ANew: TpPointerNew;
+  AFree: TpPointerFree; ASet: TpPointerSet; ASetNull,
+  ASetDefault: TpPointerSetNull; ASetPosition: TpPointerSetPosition): Boolean;
+var
+  proto: array[0..PTR_PROTO_BUF - 1] of Byte;
+  gfx: Pointer;
+begin
+  Result := False;
+  if not RdpPointerSupported then Exit;
+  gfx := sh_ctx_graphics(AContext);
+  if (gfx = nil) or (sh_sizeof_pointer() > SizeOf(proto)) then Exit;
+  if sh_pointer_proto_init(@proto[0], SizeOf(proto)) = 0 then Exit;
+  if (sh_pointer_set_handler(@proto[0], PTR_SLOT_NEW, ANew) = 0) or
+     (sh_pointer_set_handler(@proto[0], PTR_SLOT_FREE, AFree) = 0) or
+     (sh_pointer_set_handler(@proto[0], PTR_SLOT_SET, ASet) = 0) or
+     (sh_pointer_set_handler(@proto[0], PTR_SLOT_SET_NULL, ASetNull) = 0) or
+     (sh_pointer_set_handler(@proto[0], PTR_SLOT_SET_DEFAULT,
+        ASetDefault) = 0) or
+     (sh_pointer_set_handler(@proto[0], PTR_SLOT_SET_POSITION,
+        ASetPosition) = 0) then
+    Exit;
+  // FreeRDP recopie le prototype: la pile suffit
+  graphics_register_pointer(gfx, @proto[0]);
+  Result := True;
+end;
+
+function PointerInfo(APointer: Pointer; out AInfo: TRdpPointerInfo): Boolean;
+var
+  info: array[0..6] of cuint32;
+  xm, am: Pointer;
+begin
+  AInfo := Default(TRdpPointerInfo);
+  Result := False;
+  if not GShimOk then Exit;
+  xm := nil;
+  am := nil;
+  if sh_pointer_info(APointer, @info[0], Length(info), @xm, @am) = 0 then Exit;
+  AInfo.XPos := info[0];
+  AInfo.YPos := info[1];
+  AInfo.Width := info[2];
+  AInfo.Height := info[3];
+  AInfo.XorBpp := info[4];
+  AInfo.AndLength := info[5];
+  AInfo.XorLength := info[6];
+  AInfo.XorMask := xm;
+  AInfo.AndMask := am;
+  Result := True;
+end;
+
+function PointerUser(APointer: Pointer): Pointer;
+begin
+  if not GShimOk then Exit(nil);
+  Result := sh_pointer_user(APointer);
+end;
+
+function PointerSetUser(APointer, AData: Pointer): Boolean;
+begin
+  Result := GShimOk and (sh_pointer_set_user(APointer, AData) <> 0);
+end;
+
+function GdiPalette(AGdi: PRdpGdi): Pointer;
+begin
+  if not GShimOk then Exit(nil);
+  Result := sh_gdi_palette(AGdi);
 end;
 
 initialization

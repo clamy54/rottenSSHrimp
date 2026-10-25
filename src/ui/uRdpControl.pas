@@ -35,6 +35,13 @@ type
     // Cote retenu a l'ENFONCEMENT: au relachement le bit est deja retombe.
     FModRight: array[0..4] of Boolean;
     {$ENDIF}
+    {$IFDEF LCLWin32}
+    FXHeld: set of TMouseButton;
+    {$ENDIF}
+    // Deux emplacements de Screen.Cursors en alternance: celui qu'on remplace
+    // n'est jamais celui sous la souris.
+    FCursorSlots: array[0..1] of Integer;
+    FCursorFlip: Integer;
 
     procedure RefreshTick(Sender: TObject);
     procedure SyncBitmap;
@@ -59,6 +66,9 @@ type
     procedure DoEnter; override;
     procedure DoExit; override;
     procedure WMGetDlgCode(var Message: TLMNoParams); message LM_GETDLGCODE;
+    {$IFDEF LCLWin32}
+    procedure WndProc(var TheMessage: TLMessage); override;
+    {$ENDIF}
     {$IF defined(LCLGtk2) or defined(LCLGtk3) or defined(LCLCocoa)}
     // KeyDown ne voit que la virtuelle; ceux-ci arrivent avant, avec la position.
     procedure CaptureKeycode(AVk: Word; AKeyData: PtrInt; ADown: Boolean);
@@ -74,6 +84,8 @@ type
     procedure AttachSurface(ASurface: TRemoteSurface);
     procedure NotifyPainted;
     function Snapshot: TBitmap;
+    procedure SetRemoteCursor(const ACursor: TRemoteCursor);
+    procedure ResetRemoteCursor;
 
     property OnMouseEvent: TRdpMouseEvent read FOnMouse write FOnMouse;
     property OnExtMouseEvent: TRdpMouseEvent read FOnExtMouse write FOnExtMouse;
@@ -88,7 +100,7 @@ type
 implementation
 
 uses
-  uFreeRdpApi, uRdpScancodes, uTheme
+  Math, Forms, IntfGraphics, uFreeRdpApi, uRdpScancodes, uTheme
   {$IFDEF LCLCocoa}, uMacKbdLayout{$ENDIF}
   {$IFDEF LCLGtk2}, x, xlib, xkblib{$ENDIF}
   {$IFDEF LCLGtk3}, LazGtk3, LazGdk3{$ENDIF};
@@ -121,11 +133,52 @@ end;
 
 const
   REFRESH_MS = 33;
+  CURSOR_SLOT_BASE = 7000;
+
+var
+  GNextCursorSlot: Integer = CURSOR_SLOT_BASE;
+
+function CursorFromShape(const C: TRemoteCursor): HCURSOR;
+var
+  img: TLazIntfImage;
+  bmp: TBitmap;
+  ci: TCursorImage;
+  desc: TRawImageDescription;
+  x, y: Integer;
+begin
+  Result := 0;
+  if (C.Width <= 0) or (C.Height <= 0) or
+     (Length(C.Pixels) < C.Width * C.Height) then
+    Exit;
+  img := TLazIntfImage.Create(0, 0);
+  bmp := TBitmap.Create;
+  ci := TCursorImage.Create;
+  try
+    desc.Init_BPP32_B8G8R8A8_M1_BIO_TTB(C.Width, C.Height);
+    img.DataDescription := desc;
+    for y := 0 to C.Height - 1 do
+    begin
+      Move(C.Pixels[y * C.Width], img.GetDataLineStart(y)^, C.Width * 4);
+      for x := 0 to C.Width - 1 do
+        img.Masked[x, y] := (C.Pixels[y * C.Width + x] shr 24) = 0;
+    end;
+    bmp.LoadFromIntfImage(img);
+    ci.Assign(bmp);
+    ci.HotSpot := Point(C.HotX, C.HotY);
+    Result := ci.ReleaseHandle;
+  finally
+    ci.Free;
+    bmp.Free;
+    img.Free;
+  end;
+end;
 
 constructor TRottenRdpControl.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
   ControlStyle := ControlStyle + [csOpaque];
+  // un relachement hors du controle doit encore nous parvenir
+  CaptureMouseButtons := [mbLeft, mbRight, mbMiddle, mbExtra1, mbExtra2];
   TabStop := True;
   Color := clBlack;
   {$IF defined(LCLGtk2) or defined(LCLGtk3) or defined(LCLCocoa)}
@@ -140,10 +193,53 @@ begin
 end;
 
 destructor TRottenRdpControl.Destroy;
+var
+  i: Integer;
 begin
   FTimer.Enabled := False;
   FBitmap.Free;
+  if Screen <> nil then
+    for i := 0 to High(FCursorSlots) do
+      if FCursorSlots[i] <> 0 then
+        Screen.Cursors[FCursorSlots[i]] := 0;
   inherited Destroy;
+end;
+
+procedure TRottenRdpControl.SetRemoteCursor(const ACursor: TRemoteCursor);
+var
+  h: HCURSOR;
+  slot: Integer;
+begin
+  case ACursor.Kind of
+    rckHidden:
+      Cursor := crNone;
+    rckShape:
+      begin
+        h := CursorFromShape(ACursor);
+        if h = 0 then
+        begin
+          Cursor := crDefault;
+          Exit;
+        end;
+        if FCursorSlots[0] = 0 then
+        begin
+          FCursorSlots[0] := GNextCursorSlot;
+          FCursorSlots[1] := GNextCursorSlot + 1;
+          Inc(GNextCursorSlot, 2);
+        end;
+        FCursorFlip := FCursorFlip xor 1;
+        slot := FCursorSlots[FCursorFlip];
+        Screen.Cursors[slot] := h;   // detruit l'avant-dernier, pas l'actuel
+        Cursor := slot;
+      end;
+  else
+    Cursor := crDefault;
+  end;
+end;
+
+procedure TRottenRdpControl.ResetRemoteCursor;
+begin
+  Cursor := crDefault;
 end;
 
 procedure TRottenRdpControl.AttachSurface(ASurface: TRemoteSurface);
@@ -310,7 +406,13 @@ var
   ext: Boolean;
 begin
   if not ToRemote(AX, AY, rx, ry) then
-    Exit;
+  begin
+    // relachement hors image: le perdre laisse le bouton enfonce la-bas
+    if ADown or (FBitmap.Width <= 0) then
+      Exit;
+    rx := EnsureRange(AX, 0, FBitmap.Width - 1);
+    ry := EnsureRange(AY, 0, FBitmap.Height - 1);
+  end;
   flags := 0;
   ext := False;
   case AButton of
@@ -361,6 +463,52 @@ begin
   inherited MouseUp(Button, Shift, X, Y);
   SendButton(Button, False, X, Y);
 end;
+
+{$IFDEF LCLWin32}
+// La LCL deduit le bouton X des boutons ENCORE enfonces. Au relachement il n'y
+// est plus: l'evenement part a la trappe et le serveur garde le bouton appuye,
+// avec la session qui va avec. Le vrai bouton est dans le mot haut de wParam.
+procedure TRottenRdpControl.WndProc(var TheMessage: TLMessage);
+var
+  btn: TMouseButton;
+  down: Boolean;
+begin
+  case TheMessage.Msg of
+    LM_XBUTTONDOWN, LM_XBUTTONDBLCLK, LM_XBUTTONTRIPLECLK, LM_XBUTTONQUADCLK,
+    LM_XBUTTONUP:
+      begin
+        case (TheMessage.WParam shr 16) and $FFFF of
+          1: btn := mbExtra1;
+          2: btn := mbExtra2;
+        else
+          inherited WndProc(TheMessage);
+          Exit;
+        end;
+        down := TheMessage.Msg <> LM_XBUTTONUP;
+        if down then
+        begin
+          if CanFocus and (not Focused) then
+            SetFocus;
+          Include(FXHeld, btn);
+          MouseCapture := True;
+        end
+        else
+        begin
+          Exclude(FXHeld, btn);
+          if (FXHeld = []) and (GetKeyState(VK_LBUTTON) >= 0) and
+             (GetKeyState(VK_RBUTTON) >= 0) and
+             (GetKeyState(VK_MBUTTON) >= 0) then
+            MouseCapture := False;
+        end;
+        SendButton(btn, down, SmallInt(TheMessage.LParam and $FFFF),
+          SmallInt((TheMessage.LParam shr 16) and $FFFF));
+        TheMessage.Result := 1;
+        Exit;
+      end;
+  end;
+  inherited WndProc(TheMessage);
+end;
+{$ENDIF}
 
 procedure TRottenRdpControl.MouseMove(Shift: TShiftState; X, Y: Integer);
 var

@@ -35,8 +35,9 @@
  *   4: emplacements rdpgfx (surfaces et cache du pipeline graphique), pour
  *      borner ce qu'un serveur peut faire allouer.
  *   5: emplacements cliprdr FileContents (copier-coller de fichiers).
+ *   6: classe Pointer (curseur du serveur) et palette du GDI.
  */
-#define RSSH_SHIM_ABI 5u
+#define RSSH_SHIM_ABI 6u
 
 RSSH_API uint32_t rssh_abi_version(void)
 {
@@ -512,4 +513,116 @@ RSSH_API void* rssh_gfx_rdp_context(const void* g)
 	if (gdi == NULL)
 		return NULL;
 	return gdi->context;
+}
+
+/* Curseur du serveur. FreeRDP alloue chaque rdpPointer a la taille du
+ * prototype: on la gonfle d'un pointeur, ou l'appelant range sa forme. */
+
+#define RSSH_POINTER_SIZE (sizeof(rdpPointer) + sizeof(void*))
+
+RSSH_API void* rssh_ctx_graphics(const void* ctx)
+{
+	return ctx ? (void*)((const rdpContext*)ctx)->graphics : NULL;
+}
+
+/* 8 bits par pixel: sans la palette, la conversion n'a pas de couleurs */
+RSSH_API const void* rssh_gdi_palette(const void* gdi)
+{
+	return gdi ? (const void*)&((const rdpGdi*)gdi)->palette : NULL;
+}
+
+RSSH_API size_t rssh_sizeof_pointer(void)
+{
+	return RSSH_POINTER_SIZE;
+}
+
+RSSH_API int rssh_pointer_proto_init(void* buf, size_t buflen)
+{
+	if (buf == NULL || buflen < RSSH_POINTER_SIZE)
+		return 0;
+	memset(buf, 0, RSSH_POINTER_SIZE);
+	((rdpPointer*)buf)->size = RSSH_POINTER_SIZE;
+	return 1;
+}
+
+enum rssh_pointer_slot {
+	RSSH_PTR_NEW = 0,
+	RSSH_PTR_FREE = 1,
+	RSSH_PTR_SET = 2,
+	RSSH_PTR_SET_NULL = 3,
+	RSSH_PTR_SET_DEFAULT = 4,
+	RSSH_PTR_SET_POSITION = 5
+};
+
+static void** rssh_pointer_slot_addr(rdpPointer* p, uint32_t slot)
+{
+	if (p == NULL)
+		return NULL;
+	switch (slot) {
+	case RSSH_PTR_NEW:
+		return (void**)&p->New;
+	case RSSH_PTR_FREE:
+		return (void**)&p->Free;
+	case RSSH_PTR_SET:
+		return (void**)&p->Set;
+	case RSSH_PTR_SET_NULL:
+		return (void**)&p->SetNull;
+	case RSSH_PTR_SET_DEFAULT:
+		return (void**)&p->SetDefault;
+	case RSSH_PTR_SET_POSITION:
+		return (void**)&p->SetPosition;
+	default:
+		return NULL;
+	}
+}
+
+RSSH_API int rssh_pointer_set_handler(void* p, uint32_t slot, void* cb)
+{
+	void** addr = rssh_pointer_slot_addr((rdpPointer*)p, slot);
+
+	if (addr == NULL)
+		return 0;
+	memcpy(addr, &cb, sizeof(void*));
+	return 1;
+}
+
+/* info: xPos, yPos, width, height, xorBpp, lengthAndMask, lengthXorMask */
+RSSH_API int rssh_pointer_info(const void* p, uint32_t* info, size_t count,
+                               const uint8_t** xor_mask,
+                               const uint8_t** and_mask)
+{
+	const rdpPointer* ptr = (const rdpPointer*)p;
+
+	if (ptr == NULL || info == NULL || count < 7 || xor_mask == NULL ||
+	    and_mask == NULL)
+		return 0;
+	info[0] = ptr->xPos;
+	info[1] = ptr->yPos;
+	info[2] = ptr->width;
+	info[3] = ptr->height;
+	info[4] = ptr->xorBpp;
+	info[5] = ptr->lengthAndMask;
+	info[6] = ptr->lengthXorMask;
+	*xor_mask = ptr->xorMaskData;
+	*and_mask = ptr->andMaskData;
+	return 1;
+}
+
+/* un rdpPointer alloue sans notre prototype n'a pas la place: NULL */
+RSSH_API void* rssh_pointer_user(const void* p)
+{
+	void* u = NULL;
+
+	if (p == NULL || ((const rdpPointer*)p)->size < RSSH_POINTER_SIZE)
+		return NULL;
+	memcpy(&u, (const uint8_t*)p + sizeof(rdpPointer), sizeof(void*));
+	return u;
+}
+
+RSSH_API int rssh_pointer_set_user(void* p, void* data)
+{
+	if (p == NULL || ((rdpPointer*)p)->size < RSSH_POINTER_SIZE)
+		return 0;
+	memcpy((uint8_t*)p + sizeof(rdpPointer), &data, sizeof(void*));
+	return 1;
 }
