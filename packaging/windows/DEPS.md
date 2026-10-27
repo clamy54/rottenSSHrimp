@@ -18,15 +18,17 @@ Constat de revue du 2026-07-30 : 9 empreintes sur 11 étaient périmées après 
 re-provisioning que personne n'avait répercuté ici. À lancer en CI et à chaque
 re-provisioning, parce que la mémoire humaine a déjà été essayée.
 
-## Provisionnées (2026-07-21 ; FreeRDP re-provisionné 2026-07-30 puis 2026-09-09)
+## Provisionnées (2026-07-21 ; FreeRDP re-provisionné 2026-07-30, 2026-09-09 et 2026-10-25 ; OpenSSL et SQLite 2026-10-27)
 
-### sqlite3.dll : SQLite 3.53.3 (x64)
+### sqlite3.dll : SQLite 3.54.1 (x64)
 
-- Source : https://www.sqlite.org/2026/sqlite-dll-win-x64-3530300.zip
+- Source : https://www.sqlite.org/2026/sqlite-dll-win-x64-3540100.zip
 - SHA3-256 de l'archive (publiée sur sqlite.org, vérifiée) :
-  `3a494861ce24d1f330efbc6c3fb58ce4972f2cf8df4e43122246ed987109dc8a`
-- SHA-256 de l'archive : `ad713e1865bdc1e3f7647618697fad71ecf8967edabb9dcc903c1b48c6a7cce2`
-- SHA-256 de `sqlite3.dll` : `79fd9ec89dba3f8bd64529a2ca8e9dde6ae6edc486c55a1d3f1ce77975a8375c`
+  `c2d09c8babb9399277055c057c97a53f1ffd7c5f11d0c1f2118ffdfa39f2daa4`
+- SHA-256 de l'archive : `f436f53ad8f965af43f3817b42c99c0689e6787f6b7ace208fe38dab7ffc4971`
+- La 3.54 abandonne Windows XP et ses cousins : sans effet ici, l'application
+  exige déjà bien plus récent.
+- SHA-256 de `sqlite3.dll` : `4b59d3cded9dc1608544160f3b4b10ac974c6ac0d6ffc23064e5f4c8dbd05aea`
 
 ### libsodium.dll : libsodium 1.0.22 stable (x64, MSVC v143, dynamic Release)
 
@@ -41,7 +43,7 @@ re-provisioning, parce que la mémoire humaine a déjà été essayée.
 ### libssh2.dll (+ libcrypto-3-x64.dll + z.dll) : libssh2 1.11.1, backend OpenSSL
 
 Trois DLL à poser ensemble à côté de l'exe : `libssh2.dll`, sa dépendance
-crypto `libcrypto-3-x64.dll` (OpenSSL 3.6.3) et `z.dll` (zlib).
+crypto `libcrypto-3-x64.dll` (OpenSSL 3.6.5) et `z.dll` (zlib).
 
 - Construites via **vcpkg** (2026-07-22) : `libssh2[core,openssl,zlib]:x64-windows`,
   baseline vcpkg `82b6bc886d7b0f8342e34babc2e0b8943f79b0e1`, OpenSSL 3.6.3.
@@ -56,11 +58,12 @@ crypto `libcrypto-3-x64.dll` (OpenSSL 3.6.3) et `z.dll` (zlib).
   `scripts/check-win-deps.sh`). `libcrypto-3-x64.dll` et `z.dll` proviennent
   depuis 2026-07-30 du build FreeRDP (baseline
   `c1d80d9cb071c3f4a98c67c1196b137cc5b72918`) : mêmes versions (OpenSSL
-  3.6.3, zlib 1.3.2), un seul jeu cohérent pour toutes les DLL ; libssh2,
+  3.6.5 depuis le 2026-10-27, zlib 1.3.2), un seul jeu cohérent pour toutes
+  les DLL ; libssh2,
   lié à ces noms de DLL et à l'ABI stable d'OpenSSL 3, n'a pas besoin d'être
   reconstruit :
   - `libssh2.dll` : `43682e313244ec65f735de223d698cfc8cfc4b4112e3502cce04a9b351caf3e0`
-  - `libcrypto-3-x64.dll` : `acca52ccd0c3641281c1fc696d0a57a968786db9348be83e0b0f6451928edde0`
+  - `libcrypto-3-x64.dll` : `476c7457fcbd6ea3194cec7d870b29f6e7f20a96aa1dc1b3972ebb72d9d13ee6`
   - `z.dll` : `eb73c521d1d74a43fc2aaa4107ef080ec76edbc42971a6138e9c5579d1fa8fbf`
 - Dépend aussi de `VCRUNTIME140.dll` : livrée ici même, voir sa section plus
   bas (l'UCRT, elle, fait partie de Windows).
@@ -90,7 +93,7 @@ exeDir (major 3). DLL à poser ensemble :
   bibliothèque qui parle au serveur est celle qui se met à jour le plus
   souvent ; c'est attendu.)
 - `cjson.dll` (dépendance de winpr3, 1.7.19)
-- `libssl-3-x64.dll` + `libcrypto-3-x64.dll` (OpenSSL 3.6.3, **le même
+- `libssl-3-x64.dll` + `libcrypto-3-x64.dll` (OpenSSL 3.6.5, **le même
   libcrypto que libssh2**, un seul OpenSSL cohérent)
 - `legacy.dll`, **provider OpenSSL « legacy »**, INDISPENSABLE à NLA :
   l'authentification RDP passe par NTLM, qui exige MD4 + RC4, algorithmes
@@ -133,6 +136,15 @@ exeDir (major 3). DLL à poser ensemble :
   et le shim changent : OpenSSL, zlib et cJSON ressortent du build bit pour
   bit identiques aux fichiers versionnés, la baseline commune fait son
   travail.
+- **OpenSSL 3.6.5** (2026-10-27) : la baseline commune s'arrête à 3.6.3,
+  à qui manquent deux versions de correctifs de sécurité (3.6.4 et 3.6.5,
+  la plus grave classée High). Même méthode que FreeRDP : overlay port
+  `overlay/openssl`, copie du port 3.6.3, version passée à 3.6.5, SHA512 du
+  tarball GitHub `openssl-3.6.5` recalculé localement
+  (`40f0b346a9a5cf4cb37f1ecebdc74750c39a95783710061bfac58964883b0831543ecee0aee9f747ea093781b13c58a543b0b935d222519e3cb19648d77a0276`).
+  FreeRDP et libfido2 sont reconstruits contre lui dans la même passe ;
+  libssh2, lié à l'ABI stable d'OpenSSL 3, ne l'est pas. Le provider
+  `legacy` (MD4, RC4 pour NTLM) a été vérifié chargeable avant livraison.
 - Offsets de la branche non-Darwin **revérifiés contre les en-têtes 3.32.2**
   (sonde `scripts/gen-rdp-offsets.c` compilée MSVC) : les 71 offsets, dont
   `BITMAP_OFF_HDC` = 296, sont identiques à la table de `uFreeRdpApi.pas` :
@@ -144,12 +156,12 @@ exeDir (major 3). DLL à poser ensemble :
   `sizeof(rdpContext)` ; le pointeur de retour vers le transport est rangé
   après.
 - SHA-256 des DLL versionnées (même régime que libssh2 ci-dessus) :
-  - `freerdp3.dll` : `2657dd512d188b5982172f5be60119a7a031e92a14796bb11966da170c9366c8`
-  - `freerdp-client3.dll` : `c4bdc788310b060f581a392af513ff04acd707a1de0c11cc2fa1597ebeacaf19`
-  - `winpr3.dll` : `a1a4a2e9347ba43959351ac0474e416c8871d4fca0c50d6c0a045ce52638f1c5`
+  - `freerdp3.dll` : `3d317725e7421c39cb6f07a2e8fc2a57342cd535776b489479fc9650aa54e232`
+  - `freerdp-client3.dll` : `073f94f051cc5636ba256a15da7c07ece2827355d98fc0e6cf045401b9de5d70`
+  - `winpr3.dll` : `5c1e7cbafe43ae76d8497d02a9f05f0c03dfcd56f7933b8ab1635c146b28cd68`
   - `cjson.dll` : `f0935a9585349819ea2b866bb7aa06d7ddee983df9b42c84098e0729d662d8ea`
-  - `libssl-3-x64.dll` : `cf8ac5afe70e86caf12bbcebf53c33b433425df66aa4a9199ed770ededcc9380`
-  - `legacy.dll` : `c1cc942460ff0e73fa40689b58d959e48bf8d81fbb119dce8ecf137cf213e66e`
+  - `libssl-3-x64.dll` : `b1d2790b5d51dcf16a9905b3d604705ab774f662e0769abae45163a0800c0170`
+  - `legacy.dll` : `40e3dbcb0d23a853fab27b2d539970b7a52f5ad894ce97f63c0c5ca47b6715da`
   - `rssh_rdp_shim.dll` : `3420fa6f145e349e34c2fb7d60646f85f1b48ee0872a016c423b8b0b6894399a`
 - Note portage : `WaitForMultipleObjects` est résolu depuis `kernel32.dll` sous
   Windows (API native), pas depuis winpr3 qui, contrairement à l'émulation
@@ -165,9 +177,10 @@ sont indisponibles, avec un message qui dit quoi installer.
 - Construites via **vcpkg** (2026-09-02) : `libfido2:x64-windows@1.17.0`,
   baseline `c1d80d9cb071c3f4a98c67c1196b137cc5b72918`, la MEME que FreeRDP.
 - SHA-256 des DLL versionnées :
-  - `fido2.dll` : `f591e102bfc551b2c25fbc3cdf64eace25f55ba6beb256a38e413ee414814fcf`
+  - `fido2.dll` : `cb96b101e7376418435ee95ec7b1943ce44be37b100595e84c7ea40e9bd21822`
   - `cbor.dll` : `481c6a2c96ef21c167455d9a9e6c6ecc8bc7c74298bcf7c43deb8837452d8301`
-- `cbor.dll` = libcbor 0.11 (MIT), la seule dépendance qui s'ajoute : fido2.dll
+- `cbor.dll` = libcbor 0.14.0 (MIT ; la baseline la donnait déjà, ce
+  document disait 0.11 à tort), la seule dépendance qui s'ajoute : fido2.dll
   se lie pour le reste à `libcrypto-3-x64.dll` et `z.dll` **déjà livrées**, dont
   les empreintes issues de ce build sont identiques bit pour bit à celles
   consignées plus haut. C'est tout l'intérêt de la baseline commune.
