@@ -10,7 +10,8 @@ uses
   SysUtils, Classes, SyncObjs, uSessionState;
 
 const
-  MAX_SESSIONS_DEFAULT = 32;
+  // une cellule de diffusion compte pour une; 128 RDP pleine HD ~ 3,2 Go
+  MAX_SESSIONS_DEFAULT = 128;
 
 type
   ESessionLimitError = class(Exception);
