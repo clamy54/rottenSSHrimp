@@ -9,7 +9,7 @@ interface
 
 uses
   uRtMessage, Classes, SysUtils, Controls, ComCtrls, Forms, Dialogs, Graphics, StdCtrls,
-  ExtCtrls, LCLType, Clipbrd,
+  ExtCtrls, LCLType, LMessages, Clipbrd,
   uTermControl, uSshTransport, uSshKnownHosts, uSessionState,
   uSessionManager, uRshDocument, uSessionTabBase, uSshTunnel,
   uSshTunnelConnect, uKeyCompat;
@@ -21,6 +21,42 @@ type
   TClusterMode = (cmBroadcast, cmMulti);
 
   TClusterSshTab = class;
+
+  // Tab reste ici quand KeepTab: la LCL ne navigue que si le controle n'en veut pas
+  TBroadcastEdit = class(TEdit)
+  private
+    FKeepTab: Boolean;
+  protected
+    procedure WMGetDlgCode(var Msg: TLMNoParams); message LM_GETDLGCODE;
+    procedure CMWantSpecialKey(var Msg: TLMessage); message CM_WANTSPECIALKEY;
+  public
+    property KeepTab: Boolean read FKeepTab write FKeepTab;
+  end;
+
+  // La barre de diffusion: deux bascules a gauche, facon barre de recherche
+  // de rottentext, puis la saisie.
+  TBroadcastBar = class(TCustomControl)
+  private
+    FEdit: TBroadcastEdit;
+    FEcho: Boolean;
+    FHot: Integer;
+    function ToggleRect(AIdx: Integer): TRect;
+    function HitTest(X, Y: Integer): Integer;
+    procedure DrawToggle(AIdx: Integer; AOn, AHot: Boolean);
+    procedure SetHot(AIdx: Integer);
+    procedure UpdateEditHint;
+  protected
+    procedure Paint; override;
+    procedure MouseDown(Button: TMouseButton; Shift: TShiftState;
+      X, Y: Integer); override;
+    procedure MouseMove(Shift: TShiftState; X, Y: Integer); override;
+    procedure MouseLeave; override;
+  public
+    constructor Create(AOwner: TComponent); override;
+    property Edit: TBroadcastEdit read FEdit;
+    // False: la frappe part, la barre n'en garde rien (mots de passe)
+    property Echo: Boolean read FEcho;
+  end;
 
   TClusterCell = class(TCustomControl)
   private
@@ -86,7 +122,8 @@ type
   TClusterSshTab = class(TSessionTabBase)
   private
     FGridHost: TPanel;
-    FBar: TEdit;
+    FBarHost: TBroadcastBar;
+    FBar: TBroadcastEdit;
     FCells: array of TClusterCell;
     FHandles: array of TClusterCellHandle;
     FManager: TSessionManager;
@@ -141,7 +178,7 @@ type
 implementation
 
 uses
-  Math, uHostKeyDialog, uTheme, uFidoPrompt;
+  Math, Types, uHostKeyDialog, uTheme, uFidoPrompt;
 
 const
   CLUSTER_ACCENTS: array[0..15] of TColor = (
@@ -166,6 +203,11 @@ const
   CELL_BORDER = 2;
   HEADER_H    = 18;
   BAR_H       = 30;
+  TGL_SZ      = 24;
+  TGL_PAD     = 4;
+  TGL_GAP     = 3;
+  TGL_ECHO    = 0;
+  TGL_TAB     = 1;
 
 function FontSizeForCount(ACount: Integer): Integer;
 begin
@@ -180,6 +222,165 @@ constructor TClusterCellHandle.Create(ACell: TClusterCell);
 begin
   inherited Create;
   FCell := ACell;
+end;
+
+procedure TBroadcastEdit.WMGetDlgCode(var Msg: TLMNoParams);
+begin
+  inherited;
+  if FKeepTab then
+    Msg.Result := Msg.Result or DLGC_WANTTAB;
+end;
+
+procedure TBroadcastEdit.CMWantSpecialKey(var Msg: TLMessage);
+begin
+  if FKeepTab and (Msg.WParam = VK_TAB) then
+    Msg.Result := 1
+  else
+    inherited;
+end;
+
+constructor TBroadcastBar.Create(AOwner: TComponent);
+begin
+  inherited Create(AOwner);
+  FEcho := True;
+  FHot := -1;
+  ShowHint := True;
+  FEdit := TBroadcastEdit.Create(Self);
+  FEdit.Parent := Self;
+  FEdit.Align := alClient;
+  FEdit.BorderSpacing.Left := 2 * TGL_PAD + 2 * TGL_SZ + TGL_GAP;
+  FEdit.KeepTab := True;
+  UpdateEditHint;
+end;
+
+function TBroadcastBar.ToggleRect(AIdx: Integer): TRect;
+var
+  x, y: Integer;
+begin
+  x := TGL_PAD + AIdx * (TGL_SZ + TGL_GAP);
+  y := (ClientHeight - TGL_SZ) div 2;
+  Result := Rect(x, y, x + TGL_SZ, y + TGL_SZ);
+end;
+
+function TBroadcastBar.HitTest(X, Y: Integer): Integer;
+var
+  i: Integer;
+begin
+  for i := TGL_ECHO to TGL_TAB do
+    if PtInRect(ToggleRect(i), Point(X, Y)) then
+      Exit(i);
+  Result := -1;
+end;
+
+procedure TBroadcastBar.UpdateEditHint;
+begin
+  if FEcho then
+    FEdit.TextHint := 'Broadcast to all sessions…'
+  else
+    FEdit.TextHint := 'Broadcast to all sessions, not shown…';
+end;
+
+function BlendCol(A, B: TColor; APct: Integer): TColor;
+var
+  ra, ga, ba, rb, gb, bb: Byte;
+begin
+  RedGreenBlue(ColorToRGB(A), ra, ga, ba);
+  RedGreenBlue(ColorToRGB(B), rb, gb, bb);
+  Result := RGBToColor(ra + (rb - ra) * APct div 100,
+    ga + (gb - ga) * APct div 100, ba + (bb - ba) * APct div 100);
+end;
+
+procedure TBroadcastBar.DrawToggle(AIdx: Integer; AOn, AHot: Boolean);
+var
+  R: TRect;
+  cx, cy: Integer;
+  col: TColor;
+begin
+  R := ToggleRect(AIdx);
+  if AOn then
+    Canvas.Brush.Color := clFindToggleOn
+  else if AHot then
+    Canvas.Brush.Color := BlendCol(clFindToggleOff, clFindToggleOffText, 20)
+  else
+    Canvas.Brush.Color := clFindToggleOff;
+  Canvas.FillRect(R);
+  if AOn then col := clFindToggleOnText else col := clFindToggleOffText;
+  cx := (R.Left + R.Right) div 2;
+  cy := (R.Top + R.Bottom) div 2;
+  Canvas.Pen.Color := col;
+  case AIdx of
+    TGL_ECHO:
+      begin
+        // un oeil: ce qu'on tape se voit
+        Canvas.Brush.Style := bsClear;
+        Canvas.Ellipse(cx - 7, cy - 4, cx + 8, cy + 5);
+        Canvas.Brush.Style := bsSolid;
+        Canvas.Brush.Color := col;
+        Canvas.Ellipse(cx - 2, cy - 2, cx + 3, cy + 3);
+      end;
+    TGL_TAB:
+      begin
+        Canvas.Line(cx - 6, cy, cx + 4, cy);
+        Canvas.Line(cx + 4, cy, cx, cy - 4);
+        Canvas.Line(cx + 4, cy, cx, cy + 4);
+        Canvas.Line(cx + 6, cy - 5, cx + 6, cy + 6);
+      end;
+  end;
+end;
+
+procedure TBroadcastBar.Paint;
+begin
+  Canvas.Brush.Color := clSideBg;
+  Canvas.FillRect(ClientRect);
+  DrawToggle(TGL_ECHO, FEcho, FHot = TGL_ECHO);
+  DrawToggle(TGL_TAB, FEdit.KeepTab, FHot = TGL_TAB);
+end;
+
+procedure TBroadcastBar.SetHot(AIdx: Integer);
+begin
+  if AIdx = FHot then Exit;
+  FHot := AIdx;
+  case AIdx of
+    TGL_ECHO: Hint := 'Show what you type here (off for passwords)';
+    TGL_TAB: Hint := 'Send Tab to the sessions (shell completion)';
+  else
+    Hint := '';
+  end;
+  Application.CancelHint;
+  Invalidate;
+end;
+
+procedure TBroadcastBar.MouseDown(Button: TMouseButton; Shift: TShiftState;
+  X, Y: Integer);
+begin
+  inherited MouseDown(Button, Shift, X, Y);
+  if Button <> mbLeft then Exit;
+  case HitTest(X, Y) of
+    TGL_ECHO:
+      begin
+        FEcho := not FEcho;
+        UpdateEditHint;
+      end;
+    TGL_TAB:
+      FEdit.KeepTab := not FEdit.KeepTab;
+  else
+    Exit;
+  end;
+  Invalidate;
+  if FEdit.CanFocus then
+    FEdit.SetFocus;
+end;
+
+procedure TBroadcastBar.MouseMove(Shift: TShiftState; X, Y: Integer);
+begin
+  inherited MouseMove(Shift, X, Y);
+  SetHot(HitTest(X, Y));
+end;
+
+procedure TBroadcastBar.MouseLeave;
+begin
+  inherited MouseLeave;
+  SetHot(-1);
 end;
 
 function TClusterCellHandle.SessionState: TRemoteSessionState;
@@ -445,13 +646,14 @@ begin
   Caption := AGroupName + ' — ' + ModeWord;
 
   FBar := nil;
+  FBarHost := nil;
   if FMode = cmBroadcast then
   begin
-    FBar := TEdit.Create(Self);
-    FBar.Parent := Self;
-    FBar.Align := alBottom;
-    FBar.Height := BAR_H;
-    FBar.TextHint := 'Broadcast to all sessions…';
+    FBarHost := TBroadcastBar.Create(Self);
+    FBarHost.Parent := Self;
+    FBarHost.Align := alBottom;
+    FBarHost.Height := BAR_H;
+    FBar := FBarHost.Edit;
     FBar.OnKeyDown := @BarKeyDown;
     FBar.OnUTF8KeyPress := @BarUtf8KeyPress;
   end;
@@ -829,10 +1031,17 @@ begin
     VK_BACK:
       begin
         Broadcast(#127);
+        if not FBarHost.Echo then
+          Key := 0;
       end;
     VK_TAB:
+      // bascule eteinte: Tab garde son role de navigation
+      if FBar.KeepTab then
       begin
-        Broadcast(#9);
+        if ssShift in Shift then
+          Broadcast(#27'[Z')
+        else
+          Broadcast(#9);
         Key := 0;
       end;
     VK_ESCAPE:
@@ -860,8 +1069,16 @@ procedure TClusterSshTab.BarUtf8KeyPress(Sender: TObject;
   var UTF8Key: TUTF8Char);
 begin
   if UTF8Key = '' then Exit;
+  // deja parti en KeyDown; le laisser passer pose une tabulation dans la barre
+  if UTF8Key = #9 then
+  begin
+    UTF8Key := '';
+    Exit;
+  end;
   if (Length(UTF8Key) = 1) and (Ord(UTF8Key[1]) < 32) then Exit;
   Broadcast(RawByteString(UTF8Key));
+  if not FBarHost.Echo then
+    UTF8Key := '';
 end;
 
 // uTermControl.DoPasteClipboard sans bracketed paste: octets bruts
@@ -903,7 +1120,7 @@ begin
     Exit;
 
   Broadcast(cleaned);
-  if FBar <> nil then
+  if (FBar <> nil) and FBarHost.Echo then
     FBar.SelText := StringReplace(string(cleaned), #13, ' ', [rfReplaceAll]);
 end;
 
