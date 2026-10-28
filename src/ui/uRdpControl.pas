@@ -1,6 +1,7 @@
 unit uRdpControl;
 
 {$mode objfpc}{$H+}
+{$IFDEF LCLCocoa}{$modeswitch objectivec1}{$ENDIF}
 
 // Rien de FreeRDP ici: la session doit pouvoir demenager en worker.
 
@@ -42,6 +43,7 @@ type
     // n'est jamais celui sous la souris.
     FCursorSlots: array[0..1] of Integer;
     FCursorFlip: Integer;
+    FScale: Integer;   // pixels distants par point: 2 sur Retina en mode net
 
     procedure RefreshTick(Sender: TObject);
     procedure SyncBitmap;
@@ -86,6 +88,8 @@ type
     function Snapshot: TBitmap;
     procedure SetRemoteCursor(const ACursor: TRemoteCursor);
     procedure ResetRemoteCursor;
+    procedure SetScale(AValue: Integer);
+    property Scale: Integer read FScale;
 
     property OnMouseEvent: TRdpMouseEvent read FOnMouse write FOnMouse;
     property OnExtMouseEvent: TRdpMouseEvent read FOnExtMouse write FOnExtMouse;
@@ -97,11 +101,14 @@ type
     function LockFlags: Cardinal;
   end;
 
+// Pixels physiques par point de l'ecran qui porte AControl (1 hors Retina).
+function HostPixelScale(AControl: TWinControl): Integer;
+
 implementation
 
 uses
   Math, Forms, IntfGraphics, uFreeRdpApi, uRdpScancodes, uTheme
-  {$IFDEF LCLCocoa}, uMacKbdLayout{$ENDIF}
+  {$IFDEF LCLCocoa}, uMacKbdLayout, CocoaAll, Cocoa_Extra, CocoaCursor{$ENDIF}
   {$IFDEF LCLGtk2}, x, xlib, xkblib{$ENDIF}
   {$IFDEF LCLGtk3}, LazGtk3, LazGdk3{$ENDIF};
 
@@ -138,7 +145,77 @@ const
 var
   GNextCursorSlot: Integer = CURSOR_SLOT_BASE;
 
-function CursorFromShape(const C: TRemoteCursor): HCURSOR;
+{$IFDEF LCLCocoa}
+// Le detour par TCursorImage perd l'alpha et retourne le masque par groupes de
+// huit pixels: une fleche rognee posee sur un pave noir. NSCursor direct.
+function CursorFromShape(const C: TRemoteCursor; AScale: Integer): HCURSOR;
+var
+  rep: NSBitmapImageRep;
+  img: NSImage;
+  cur: NSCursor;
+  dst: PByte;
+  px: LongWord;
+  i: Integer;
+begin
+  Result := 0;
+  if (C.Width <= 0) or (C.Height <= 0) or
+     (Length(C.Pixels) < C.Width * C.Height) then
+    Exit;
+  rep := NSBitmapImageRep(NSBitmapImageRep.alloc.initWithBitmapDataPlanes_pixelsWide_pixelsHigh__colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
+    nil, C.Width, C.Height, 8, 4, True, False, NSDeviceRGBColorSpace,
+    NSAlphaNonpremultipliedBitmapFormat, C.Width * 4, 32));
+  if rep = nil then
+    Exit;
+  dst := PByte(rep.bitmapData);
+  for i := 0 to C.Width * C.Height - 1 do
+  begin
+    px := C.Pixels[i];
+    dst[0] := (px shr 16) and $FF;
+    dst[1] := (px shr 8) and $FF;
+    dst[2] := px and $FF;
+    dst[3] := px shr 24;
+    Inc(dst, 4);
+  end;
+  // taille en points: un curseur envoye a 200 % reprend sa taille a l'ecran
+  img := NSImage.alloc.initWithSize(NSMakeSize(C.Width / AScale, C.Height / AScale));
+  img.addRepresentation(rep);
+  rep.release;
+  cur := NSCursor.alloc.initWithImage_hotSpot(img,
+    NSMakePoint(C.HotX / AScale, C.HotY / AScale));
+  img.release;
+  if cur <> nil then
+    Result := HCURSOR(TCocoaCursor.CreateFromCustomCursor(cur));
+end;
+
+function HostPixelScale(AControl: TWinControl): Integer;
+var
+  f: TCustomForm;
+  win: NSWindow;
+  s: Double;
+begin
+  s := 0;
+  f := nil;
+  if AControl <> nil then
+    f := GetParentForm(AControl);
+  if f = nil then
+    f := Application.MainForm;
+  if (f <> nil) and f.HandleAllocated then
+  begin
+    win := NSView(f.Handle).window;
+    if win <> nil then
+      s := win.backingScaleFactor;
+  end;
+  if (s <= 0) and (NSScreen.mainScreen <> nil) then
+    s := NSScreen.mainScreen.backingScaleFactor;
+  Result := Max(1, Round(s));
+end;
+{$ELSE}
+function HostPixelScale(AControl: TWinControl): Integer;
+begin
+  Result := 1;
+end;
+
+function CursorFromShape(const C: TRemoteCursor; AScale: Integer): HCURSOR;
 var
   img: TLazIntfImage;
   bmp: TBitmap;
@@ -172,10 +249,12 @@ begin
     img.Free;
   end;
 end;
+{$ENDIF}
 
 constructor TRottenRdpControl.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
+  FScale := 1;
   ControlStyle := ControlStyle + [csOpaque];
   // un relachement hors du controle doit encore nous parvenir
   CaptureMouseButtons := [mbLeft, mbRight, mbMiddle, mbExtra1, mbExtra2];
@@ -215,7 +294,7 @@ begin
       Cursor := crNone;
     rckShape:
       begin
-        h := CursorFromShape(ACursor);
+        h := CursorFromShape(ACursor, FScale);
         if h = 0 then
         begin
           Cursor := crDefault;
@@ -240,6 +319,17 @@ end;
 procedure TRottenRdpControl.ResetRemoteCursor;
 begin
   Cursor := crDefault;
+end;
+
+procedure TRottenRdpControl.SetScale(AValue: Integer);
+begin
+  if AValue < 1 then
+    AValue := 1;
+  if AValue = FScale then
+    Exit;
+  FScale := AValue;
+  RecomputeLayout;
+  Invalidate;
 end;
 
 procedure TRottenRdpControl.AttachSurface(ASurface: TRemoteSurface);
@@ -308,8 +398,8 @@ end;
 procedure TRottenRdpControl.RecomputeLayout;
 begin
   if (FBitmap.Width > 0) and (FBitmap.Height > 0) then
-    if (Width <> FBitmap.Width) or (Height <> FBitmap.Height) then
-      SetBounds(Left, Top, FBitmap.Width, FBitmap.Height);
+    if (Width <> FBitmap.Width div FScale) or (Height <> FBitmap.Height div FScale) then
+      SetBounds(Left, Top, FBitmap.Width div FScale, FBitmap.Height div FScale);
 end;
 
 procedure TRottenRdpControl.Paint;
@@ -320,7 +410,12 @@ begin
     Canvas.FillRect(ClientRect);
     Exit;
   end;
-  Canvas.Draw(0, 0, FBitmap);
+  if FScale = 1 then
+    Canvas.Draw(0, 0, FBitmap)
+  else
+    // un pixel distant par pixel physique: rien a interpoler, donc rien de flou
+    Canvas.StretchDraw(Rect(0, 0, FBitmap.Width div FScale,
+      FBitmap.Height div FScale), FBitmap);
   if Focused then
   begin
     Canvas.Brush.Style := bsClear;
@@ -393,10 +488,10 @@ end;
 function TRottenRdpControl.ToRemote(AX, AY: Integer;
   out ARX, ARY: Integer): Boolean;
 begin
-  ARX := AX;
-  ARY := AY;
-  Result := (FBitmap.Width > 0) and (AX >= 0) and (AY >= 0) and
-    (AX < FBitmap.Width) and (AY < FBitmap.Height);
+  ARX := AX * FScale;
+  ARY := AY * FScale;
+  Result := (FBitmap.Width > 0) and (ARX >= 0) and (ARY >= 0) and
+    (ARX < FBitmap.Width) and (ARY < FBitmap.Height);
 end;
 
 procedure TRottenRdpControl.SendButton(AButton: TMouseButton; ADown: Boolean;
@@ -410,8 +505,8 @@ begin
     // relachement hors image: le perdre laisse le bouton enfonce la-bas
     if ADown or (FBitmap.Width <= 0) then
       Exit;
-    rx := EnsureRange(AX, 0, FBitmap.Width - 1);
-    ry := EnsureRange(AY, 0, FBitmap.Height - 1);
+    rx := EnsureRange(AX * FScale, 0, FBitmap.Width - 1);
+    ry := EnsureRange(AY * FScale, 0, FBitmap.Height - 1);
   end;
   flags := 0;
   ext := False;

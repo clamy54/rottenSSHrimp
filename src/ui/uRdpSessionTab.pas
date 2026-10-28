@@ -130,7 +130,7 @@ type
 implementation
 
 uses
-  uRdpCertDialog, uClipDropFiles, uRdpClipFiles;
+  uRdpCertDialog, uClipDropFiles, uRdpClipFiles, uPreferences;
 
 var
   // Tous onglets confondus: ce qui vient du serveur A ne repart jamais vers B.
@@ -209,6 +209,12 @@ begin
   FView := TRottenRdpControl.Create(Self);
   FView.Parent := FScroll;
   FView.SetBounds(0, 0, 800, 600);
+  // Echelle figee pour la session: la souris et l'image doivent parler la meme.
+  if PrefRdpHiDpi then
+    FView.SetScale(HostPixelScale(APages));
+  AParams.ScalePercent := 100 * FView.Scale;
+  AParams.Width := AParams.Width * FView.Scale;
+  AParams.Height := AParams.Height * FView.Scale;
   FView.AttachSurface(FSurface);
   FView.OnMouseEvent := @ViewMouse;
   FView.OnExtMouseEvent := @ViewExtMouse;
@@ -362,14 +368,14 @@ end;
 
 function TRdpSessionTab.ViewportW: Integer;
 begin
-  Result := FScroll.ClientWidth and (not 1);
+  Result := (FScroll.ClientWidth * FView.Scale) and (not 1);
   if Result < REMOTE_MIN_WIDTH then Result := REMOTE_MIN_WIDTH;
   if Result > REMOTE_MAX_WIDTH then Result := REMOTE_MAX_WIDTH;
 end;
 
 function TRdpSessionTab.ViewportH: Integer;
 begin
-  Result := FScroll.ClientHeight and (not 1);
+  Result := (FScroll.ClientHeight * FView.Scale) and (not 1);
   if Result < REMOTE_MIN_HEIGHT then Result := REMOTE_MIN_HEIGHT;
   if Result > REMOTE_MAX_HEIGHT then Result := REMOTE_MAX_HEIGHT;
 end;

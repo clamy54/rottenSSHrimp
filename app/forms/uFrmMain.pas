@@ -61,6 +61,7 @@ type
     FMiDashboard: TMenuItem;
     FDashboard: TGroupDashboard;
     FMiLogEnabled, FMiLogDebug, FMiLogConfidential: TMenuItem;
+    FMiRdpHiDpi: TMenuItem;
     FPwFailCount: Integer;
     FEditRequested: Boolean;
     FRecoveryChecked: Boolean;
@@ -219,6 +220,7 @@ type
     procedure LogEnabledClick(Sender: TObject);
     procedure LogDebugClick(Sender: TObject);
     procedure LogConfidentialClick(Sender: TObject);
+    procedure RdpHiDpiClick(Sender: TObject);
     procedure OpenLogFolderClick(Sender: TObject);
     procedure ConnectClick(Sender: TObject);
     procedure DisconnectClick(Sender: TObject);
@@ -580,6 +582,12 @@ begin
   mTools.Caption := '&Tools';
   FMenu.Items.Add(mTools);
   AddItem(mTools, 'Terminal Font…', 0, True, @TerminalFontClick);
+  {$IFDEF DARWIN}
+  FMiRdpHiDpi := AddItem(mTools, 'Sharp Remote Desktop on Retina', 0, True,
+    @RdpHiDpiClick);
+  FMiRdpHiDpi.ShowAlwaysCheckable := True;
+  FMiRdpHiDpi.Checked := PrefRdpHiDpi;
+  {$ENDIF}
   AddItem(mTools, '-', 0, True, nil);
   AddItem(mTools, 'Local Terminal', PlatformShortCut(VK_T, True), True,
     @LocalTerminalClick);
@@ -3969,6 +3977,15 @@ begin
   PrefLogConfidential := not PrefLogConfidential;
   FMiLogConfidential.Checked := PrefLogConfidential;
   ApplyLogPreferences;
+  SavePreferences;
+end;
+
+// Vaut pour les sessions suivantes: celle en cours garde son echelle.
+procedure TfrmMain.RdpHiDpiClick(Sender: TObject);
+begin
+  PrefRdpHiDpi := not PrefRdpHiDpi;
+  if FMiRdpHiDpi <> nil then
+    FMiRdpHiDpi.Checked := PrefRdpHiDpi;
   SavePreferences;
 end;
 

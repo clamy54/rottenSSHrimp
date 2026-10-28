@@ -39,6 +39,8 @@ type
     DomainName: string;
     Password: TSecureBytes;   // possede
     Width, Height: Integer;
+    // 200 sur Retina: Width/Height en pixels physiques, Windows met son interface a l'echelle
+    ScalePercent: Integer;
     ColorDepth: Integer;
     VerifyCertificate: Boolean;
     NlaEnabled: Boolean;
@@ -1087,6 +1089,7 @@ begin
   Port := 3389;
   Width := 1280;
   Height := 800;
+  ScalePercent := 100;
   ColorDepth := 32;
   // disques, imprimantes, audio: pas de champ, pas d'activation par megarde
   VerifyCertificate := True;
@@ -2510,6 +2513,11 @@ begin
 
   freerdp_settings_set_uint32(s, FreeRDP_DesktopWidth, FParams.Width);
   freerdp_settings_set_uint32(s, FreeRDP_DesktopHeight, FParams.Height);
+  if FParams.ScalePercent > 100 then
+  begin
+    freerdp_settings_set_uint32(s, FreeRDP_DesktopScaleFactor, FParams.ScalePercent);
+    freerdp_settings_set_uint32(s, FreeRDP_DeviceScaleFactor, 100);
+  end;
   freerdp_settings_set_uint32(s, FreeRDP_ColorDepth, FParams.ColorDepth);
 
   B(FreeRDP_SoftwareGdi, True);   // notre framebuffer
@@ -2746,6 +2754,12 @@ begin
   mon.Flags := DISPLAY_CONTROL_MONITOR_PRIMARY;
   mon.Width := AWidth;
   mon.Height := AHeight;
+  // a chaque layout: sans facteur, le serveur retombe a 100 % au premier redimensionnement
+  if FParams.ScalePercent > 100 then
+  begin
+    mon.DesktopScaleFactor := FParams.ScalePercent;
+    mon.DeviceScaleFactor := 100;
+  end;
   if fn(FDisp, 1, @mon) = 0 then
   begin
     FLastSentW := AWidth;

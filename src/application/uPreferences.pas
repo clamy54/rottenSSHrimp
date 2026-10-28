@@ -31,6 +31,9 @@ var
 
   PrefLockSessionPolicy: TLockSessionPolicy = lspDisconnect;
 
+  // RDP en pixels physiques sur un ecran Retina; sans effet ailleurs
+  PrefRdpHiDpi: Boolean = True;
+
 procedure ApplyLogPreferences;
 
 // Ne leve jamais: une preference illisible ne doit pas empecher de demarrer.
@@ -50,6 +53,7 @@ const
   SECTION_TERM = 'Terminal';
   SECTION_DIAG = 'Diagnostics';
   SECTION_SEC = 'Security';
+  SECTION_RDP = 'RemoteDesktop';
 
 // Nom, jamais l'ordinal: un ajout au milieu du type relirait de travers.
 function PolicyName(APolicy: TLockSessionPolicy): string;
@@ -130,6 +134,7 @@ begin
         if PrefThemeName = '' then PrefThemeName := 'Rotten';
         PrefLockSessionPolicy := PolicyFromName(
           ini.ReadString(SECTION_SEC, 'LockSessionPolicy', ''));
+        PrefRdpHiDpi := ini.ReadBool(SECTION_RDP, 'HiDpi', True);
       finally
         ini.Free;
       end;
@@ -144,6 +149,7 @@ begin
       PrefLogConfidential := False;
       PrefThemeName := 'Rotten';
       PrefLockSessionPolicy := lspDisconnect;
+      PrefRdpHiDpi := True;
     end;
   end;
   ApplyPreferencesToTheme;
@@ -166,6 +172,7 @@ begin
       ini.WriteString('Theme', 'Name', PrefThemeName);
       ini.WriteString(SECTION_SEC, 'LockSessionPolicy',
         PolicyName(PrefLockSessionPolicy));
+      ini.WriteBool(SECTION_RDP, 'HiDpi', PrefRdpHiDpi);
       ini.UpdateFile;
     finally
       ini.Free;

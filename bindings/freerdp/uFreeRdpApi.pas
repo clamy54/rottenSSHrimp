@@ -145,6 +145,8 @@ const
   FreeRDP_DesktopWidth = 129;
   FreeRDP_DesktopHeight = 130;
   FreeRDP_ColorDepth = 131;
+  FreeRDP_DesktopScaleFactor = 148;
+  FreeRDP_DeviceScaleFactor = 149;
   FreeRDP_ClientHostname = 134;
   FreeRDP_ConfigPath = 1793;
   FreeRDP_UseRdpSecurityLayer = 192;
