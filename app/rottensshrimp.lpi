@@ -11,7 +11,7 @@
       <UseAppBundle Value="False"/>
       <ResourceType Value="res"/>
       <Icon Value="0"/>
-      <Resources Count="1553">
+      <Resources Count="1577">
         <Resource_0 FileName="../resources/icons/rottensshrimp-256.png" Type="RCDATA" ResourceName="APPICON_PNG"/>
         <Resource_1 FileName="../resources/icons/tree/book_ondark_16.png" Type="RCDATA" ResourceName="TREE_BOOK_ONDARK_16"/>
         <Resource_2 FileName="../resources/icons/tree/book_ondark_24.png" Type="RCDATA" ResourceName="TREE_BOOK_ONDARK_24"/>
@@ -1505,66 +1505,90 @@
         <Resource_1490 FileName="../resources/icons/transfer/link_40.png" Type="RCDATA" ResourceName="XFER_LINK_40"/>
         <Resource_1491 FileName="../resources/icons/transfer/link_48.png" Type="RCDATA" ResourceName="XFER_LINK_48"/>
         <Resource_1492 FileName="../resources/icons/transfer/link_64.png" Type="RCDATA" ResourceName="XFER_LINK_64"/>
-        <Resource_1493 FileName="../resources/icons/transfer/player-pause_12.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_12"/>
-        <Resource_1494 FileName="../resources/icons/transfer/player-pause_14.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_14"/>
-        <Resource_1495 FileName="../resources/icons/transfer/player-pause_16.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_16"/>
-        <Resource_1496 FileName="../resources/icons/transfer/player-pause_18.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_18"/>
-        <Resource_1497 FileName="../resources/icons/transfer/player-pause_20.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_20"/>
-        <Resource_1498 FileName="../resources/icons/transfer/player-pause_22.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_22"/>
-        <Resource_1499 FileName="../resources/icons/transfer/player-pause_24.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_24"/>
-        <Resource_1500 FileName="../resources/icons/transfer/player-pause_28.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_28"/>
-        <Resource_1501 FileName="../resources/icons/transfer/player-pause_32.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_32"/>
-        <Resource_1502 FileName="../resources/icons/transfer/player-pause_40.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_40"/>
-        <Resource_1503 FileName="../resources/icons/transfer/player-pause_48.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_48"/>
-        <Resource_1504 FileName="../resources/icons/transfer/player-pause_64.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_64"/>
-        <Resource_1505 FileName="../resources/icons/transfer/player-play_12.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_12"/>
-        <Resource_1506 FileName="../resources/icons/transfer/player-play_14.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_14"/>
-        <Resource_1507 FileName="../resources/icons/transfer/player-play_16.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_16"/>
-        <Resource_1508 FileName="../resources/icons/transfer/player-play_18.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_18"/>
-        <Resource_1509 FileName="../resources/icons/transfer/player-play_20.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_20"/>
-        <Resource_1510 FileName="../resources/icons/transfer/player-play_22.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_22"/>
-        <Resource_1511 FileName="../resources/icons/transfer/player-play_24.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_24"/>
-        <Resource_1512 FileName="../resources/icons/transfer/player-play_28.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_28"/>
-        <Resource_1513 FileName="../resources/icons/transfer/player-play_32.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_32"/>
-        <Resource_1514 FileName="../resources/icons/transfer/player-play_40.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_40"/>
-        <Resource_1515 FileName="../resources/icons/transfer/player-play_48.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_48"/>
-        <Resource_1516 FileName="../resources/icons/transfer/player-play_64.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_64"/>
-        <Resource_1517 FileName="../resources/icons/transfer/refresh_12.png" Type="RCDATA" ResourceName="XFER_REFRESH_12"/>
-        <Resource_1518 FileName="../resources/icons/transfer/refresh_14.png" Type="RCDATA" ResourceName="XFER_REFRESH_14"/>
-        <Resource_1519 FileName="../resources/icons/transfer/refresh_16.png" Type="RCDATA" ResourceName="XFER_REFRESH_16"/>
-        <Resource_1520 FileName="../resources/icons/transfer/refresh_18.png" Type="RCDATA" ResourceName="XFER_REFRESH_18"/>
-        <Resource_1521 FileName="../resources/icons/transfer/refresh_20.png" Type="RCDATA" ResourceName="XFER_REFRESH_20"/>
-        <Resource_1522 FileName="../resources/icons/transfer/refresh_22.png" Type="RCDATA" ResourceName="XFER_REFRESH_22"/>
-        <Resource_1523 FileName="../resources/icons/transfer/refresh_24.png" Type="RCDATA" ResourceName="XFER_REFRESH_24"/>
-        <Resource_1524 FileName="../resources/icons/transfer/refresh_28.png" Type="RCDATA" ResourceName="XFER_REFRESH_28"/>
-        <Resource_1525 FileName="../resources/icons/transfer/refresh_32.png" Type="RCDATA" ResourceName="XFER_REFRESH_32"/>
-        <Resource_1526 FileName="../resources/icons/transfer/refresh_40.png" Type="RCDATA" ResourceName="XFER_REFRESH_40"/>
-        <Resource_1527 FileName="../resources/icons/transfer/refresh_48.png" Type="RCDATA" ResourceName="XFER_REFRESH_48"/>
-        <Resource_1528 FileName="../resources/icons/transfer/refresh_64.png" Type="RCDATA" ResourceName="XFER_REFRESH_64"/>
-        <Resource_1529 FileName="../resources/icons/transfer/upload_12.png" Type="RCDATA" ResourceName="XFER_UPLOAD_12"/>
-        <Resource_1530 FileName="../resources/icons/transfer/upload_14.png" Type="RCDATA" ResourceName="XFER_UPLOAD_14"/>
-        <Resource_1531 FileName="../resources/icons/transfer/upload_16.png" Type="RCDATA" ResourceName="XFER_UPLOAD_16"/>
-        <Resource_1532 FileName="../resources/icons/transfer/upload_18.png" Type="RCDATA" ResourceName="XFER_UPLOAD_18"/>
-        <Resource_1533 FileName="../resources/icons/transfer/upload_20.png" Type="RCDATA" ResourceName="XFER_UPLOAD_20"/>
-        <Resource_1534 FileName="../resources/icons/transfer/upload_22.png" Type="RCDATA" ResourceName="XFER_UPLOAD_22"/>
-        <Resource_1535 FileName="../resources/icons/transfer/upload_24.png" Type="RCDATA" ResourceName="XFER_UPLOAD_24"/>
-        <Resource_1536 FileName="../resources/icons/transfer/upload_28.png" Type="RCDATA" ResourceName="XFER_UPLOAD_28"/>
-        <Resource_1537 FileName="../resources/icons/transfer/upload_32.png" Type="RCDATA" ResourceName="XFER_UPLOAD_32"/>
-        <Resource_1538 FileName="../resources/icons/transfer/upload_40.png" Type="RCDATA" ResourceName="XFER_UPLOAD_40"/>
-        <Resource_1539 FileName="../resources/icons/transfer/upload_48.png" Type="RCDATA" ResourceName="XFER_UPLOAD_48"/>
-        <Resource_1540 FileName="../resources/icons/transfer/upload_64.png" Type="RCDATA" ResourceName="XFER_UPLOAD_64"/>
-        <Resource_1541 FileName="../resources/icons/transfer/x_12.png" Type="RCDATA" ResourceName="XFER_X_12"/>
-        <Resource_1542 FileName="../resources/icons/transfer/x_14.png" Type="RCDATA" ResourceName="XFER_X_14"/>
-        <Resource_1543 FileName="../resources/icons/transfer/x_16.png" Type="RCDATA" ResourceName="XFER_X_16"/>
-        <Resource_1544 FileName="../resources/icons/transfer/x_18.png" Type="RCDATA" ResourceName="XFER_X_18"/>
-        <Resource_1545 FileName="../resources/icons/transfer/x_20.png" Type="RCDATA" ResourceName="XFER_X_20"/>
-        <Resource_1546 FileName="../resources/icons/transfer/x_22.png" Type="RCDATA" ResourceName="XFER_X_22"/>
-        <Resource_1547 FileName="../resources/icons/transfer/x_24.png" Type="RCDATA" ResourceName="XFER_X_24"/>
-        <Resource_1548 FileName="../resources/icons/transfer/x_28.png" Type="RCDATA" ResourceName="XFER_X_28"/>
-        <Resource_1549 FileName="../resources/icons/transfer/x_32.png" Type="RCDATA" ResourceName="XFER_X_32"/>
-        <Resource_1550 FileName="../resources/icons/transfer/x_40.png" Type="RCDATA" ResourceName="XFER_X_40"/>
-        <Resource_1551 FileName="../resources/icons/transfer/x_48.png" Type="RCDATA" ResourceName="XFER_X_48"/>
-        <Resource_1552 FileName="../resources/icons/transfer/x_64.png" Type="RCDATA" ResourceName="XFER_X_64"/>
+        <Resource_1493 FileName="../resources/icons/transfer/lock-off_12.png" Type="RCDATA" ResourceName="XFER_LOCK_OFF_12"/>
+        <Resource_1494 FileName="../resources/icons/transfer/lock-off_14.png" Type="RCDATA" ResourceName="XFER_LOCK_OFF_14"/>
+        <Resource_1495 FileName="../resources/icons/transfer/lock-off_16.png" Type="RCDATA" ResourceName="XFER_LOCK_OFF_16"/>
+        <Resource_1496 FileName="../resources/icons/transfer/lock-off_18.png" Type="RCDATA" ResourceName="XFER_LOCK_OFF_18"/>
+        <Resource_1497 FileName="../resources/icons/transfer/lock-off_20.png" Type="RCDATA" ResourceName="XFER_LOCK_OFF_20"/>
+        <Resource_1498 FileName="../resources/icons/transfer/lock-off_22.png" Type="RCDATA" ResourceName="XFER_LOCK_OFF_22"/>
+        <Resource_1499 FileName="../resources/icons/transfer/lock-off_24.png" Type="RCDATA" ResourceName="XFER_LOCK_OFF_24"/>
+        <Resource_1500 FileName="../resources/icons/transfer/lock-off_28.png" Type="RCDATA" ResourceName="XFER_LOCK_OFF_28"/>
+        <Resource_1501 FileName="../resources/icons/transfer/lock-off_32.png" Type="RCDATA" ResourceName="XFER_LOCK_OFF_32"/>
+        <Resource_1502 FileName="../resources/icons/transfer/lock-off_40.png" Type="RCDATA" ResourceName="XFER_LOCK_OFF_40"/>
+        <Resource_1503 FileName="../resources/icons/transfer/lock-off_48.png" Type="RCDATA" ResourceName="XFER_LOCK_OFF_48"/>
+        <Resource_1504 FileName="../resources/icons/transfer/lock-off_64.png" Type="RCDATA" ResourceName="XFER_LOCK_OFF_64"/>
+        <Resource_1505 FileName="../resources/icons/transfer/lock_12.png" Type="RCDATA" ResourceName="XFER_LOCK_12"/>
+        <Resource_1506 FileName="../resources/icons/transfer/lock_14.png" Type="RCDATA" ResourceName="XFER_LOCK_14"/>
+        <Resource_1507 FileName="../resources/icons/transfer/lock_16.png" Type="RCDATA" ResourceName="XFER_LOCK_16"/>
+        <Resource_1508 FileName="../resources/icons/transfer/lock_18.png" Type="RCDATA" ResourceName="XFER_LOCK_18"/>
+        <Resource_1509 FileName="../resources/icons/transfer/lock_20.png" Type="RCDATA" ResourceName="XFER_LOCK_20"/>
+        <Resource_1510 FileName="../resources/icons/transfer/lock_22.png" Type="RCDATA" ResourceName="XFER_LOCK_22"/>
+        <Resource_1511 FileName="../resources/icons/transfer/lock_24.png" Type="RCDATA" ResourceName="XFER_LOCK_24"/>
+        <Resource_1512 FileName="../resources/icons/transfer/lock_28.png" Type="RCDATA" ResourceName="XFER_LOCK_28"/>
+        <Resource_1513 FileName="../resources/icons/transfer/lock_32.png" Type="RCDATA" ResourceName="XFER_LOCK_32"/>
+        <Resource_1514 FileName="../resources/icons/transfer/lock_40.png" Type="RCDATA" ResourceName="XFER_LOCK_40"/>
+        <Resource_1515 FileName="../resources/icons/transfer/lock_48.png" Type="RCDATA" ResourceName="XFER_LOCK_48"/>
+        <Resource_1516 FileName="../resources/icons/transfer/lock_64.png" Type="RCDATA" ResourceName="XFER_LOCK_64"/>
+        <Resource_1517 FileName="../resources/icons/transfer/player-pause_12.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_12"/>
+        <Resource_1518 FileName="../resources/icons/transfer/player-pause_14.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_14"/>
+        <Resource_1519 FileName="../resources/icons/transfer/player-pause_16.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_16"/>
+        <Resource_1520 FileName="../resources/icons/transfer/player-pause_18.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_18"/>
+        <Resource_1521 FileName="../resources/icons/transfer/player-pause_20.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_20"/>
+        <Resource_1522 FileName="../resources/icons/transfer/player-pause_22.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_22"/>
+        <Resource_1523 FileName="../resources/icons/transfer/player-pause_24.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_24"/>
+        <Resource_1524 FileName="../resources/icons/transfer/player-pause_28.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_28"/>
+        <Resource_1525 FileName="../resources/icons/transfer/player-pause_32.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_32"/>
+        <Resource_1526 FileName="../resources/icons/transfer/player-pause_40.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_40"/>
+        <Resource_1527 FileName="../resources/icons/transfer/player-pause_48.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_48"/>
+        <Resource_1528 FileName="../resources/icons/transfer/player-pause_64.png" Type="RCDATA" ResourceName="XFER_PLAYER_PAUSE_64"/>
+        <Resource_1529 FileName="../resources/icons/transfer/player-play_12.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_12"/>
+        <Resource_1530 FileName="../resources/icons/transfer/player-play_14.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_14"/>
+        <Resource_1531 FileName="../resources/icons/transfer/player-play_16.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_16"/>
+        <Resource_1532 FileName="../resources/icons/transfer/player-play_18.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_18"/>
+        <Resource_1533 FileName="../resources/icons/transfer/player-play_20.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_20"/>
+        <Resource_1534 FileName="../resources/icons/transfer/player-play_22.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_22"/>
+        <Resource_1535 FileName="../resources/icons/transfer/player-play_24.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_24"/>
+        <Resource_1536 FileName="../resources/icons/transfer/player-play_28.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_28"/>
+        <Resource_1537 FileName="../resources/icons/transfer/player-play_32.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_32"/>
+        <Resource_1538 FileName="../resources/icons/transfer/player-play_40.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_40"/>
+        <Resource_1539 FileName="../resources/icons/transfer/player-play_48.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_48"/>
+        <Resource_1540 FileName="../resources/icons/transfer/player-play_64.png" Type="RCDATA" ResourceName="XFER_PLAYER_PLAY_64"/>
+        <Resource_1541 FileName="../resources/icons/transfer/refresh_12.png" Type="RCDATA" ResourceName="XFER_REFRESH_12"/>
+        <Resource_1542 FileName="../resources/icons/transfer/refresh_14.png" Type="RCDATA" ResourceName="XFER_REFRESH_14"/>
+        <Resource_1543 FileName="../resources/icons/transfer/refresh_16.png" Type="RCDATA" ResourceName="XFER_REFRESH_16"/>
+        <Resource_1544 FileName="../resources/icons/transfer/refresh_18.png" Type="RCDATA" ResourceName="XFER_REFRESH_18"/>
+        <Resource_1545 FileName="../resources/icons/transfer/refresh_20.png" Type="RCDATA" ResourceName="XFER_REFRESH_20"/>
+        <Resource_1546 FileName="../resources/icons/transfer/refresh_22.png" Type="RCDATA" ResourceName="XFER_REFRESH_22"/>
+        <Resource_1547 FileName="../resources/icons/transfer/refresh_24.png" Type="RCDATA" ResourceName="XFER_REFRESH_24"/>
+        <Resource_1548 FileName="../resources/icons/transfer/refresh_28.png" Type="RCDATA" ResourceName="XFER_REFRESH_28"/>
+        <Resource_1549 FileName="../resources/icons/transfer/refresh_32.png" Type="RCDATA" ResourceName="XFER_REFRESH_32"/>
+        <Resource_1550 FileName="../resources/icons/transfer/refresh_40.png" Type="RCDATA" ResourceName="XFER_REFRESH_40"/>
+        <Resource_1551 FileName="../resources/icons/transfer/refresh_48.png" Type="RCDATA" ResourceName="XFER_REFRESH_48"/>
+        <Resource_1552 FileName="../resources/icons/transfer/refresh_64.png" Type="RCDATA" ResourceName="XFER_REFRESH_64"/>
+        <Resource_1553 FileName="../resources/icons/transfer/upload_12.png" Type="RCDATA" ResourceName="XFER_UPLOAD_12"/>
+        <Resource_1554 FileName="../resources/icons/transfer/upload_14.png" Type="RCDATA" ResourceName="XFER_UPLOAD_14"/>
+        <Resource_1555 FileName="../resources/icons/transfer/upload_16.png" Type="RCDATA" ResourceName="XFER_UPLOAD_16"/>
+        <Resource_1556 FileName="../resources/icons/transfer/upload_18.png" Type="RCDATA" ResourceName="XFER_UPLOAD_18"/>
+        <Resource_1557 FileName="../resources/icons/transfer/upload_20.png" Type="RCDATA" ResourceName="XFER_UPLOAD_20"/>
+        <Resource_1558 FileName="../resources/icons/transfer/upload_22.png" Type="RCDATA" ResourceName="XFER_UPLOAD_22"/>
+        <Resource_1559 FileName="../resources/icons/transfer/upload_24.png" Type="RCDATA" ResourceName="XFER_UPLOAD_24"/>
+        <Resource_1560 FileName="../resources/icons/transfer/upload_28.png" Type="RCDATA" ResourceName="XFER_UPLOAD_28"/>
+        <Resource_1561 FileName="../resources/icons/transfer/upload_32.png" Type="RCDATA" ResourceName="XFER_UPLOAD_32"/>
+        <Resource_1562 FileName="../resources/icons/transfer/upload_40.png" Type="RCDATA" ResourceName="XFER_UPLOAD_40"/>
+        <Resource_1563 FileName="../resources/icons/transfer/upload_48.png" Type="RCDATA" ResourceName="XFER_UPLOAD_48"/>
+        <Resource_1564 FileName="../resources/icons/transfer/upload_64.png" Type="RCDATA" ResourceName="XFER_UPLOAD_64"/>
+        <Resource_1565 FileName="../resources/icons/transfer/x_12.png" Type="RCDATA" ResourceName="XFER_X_12"/>
+        <Resource_1566 FileName="../resources/icons/transfer/x_14.png" Type="RCDATA" ResourceName="XFER_X_14"/>
+        <Resource_1567 FileName="../resources/icons/transfer/x_16.png" Type="RCDATA" ResourceName="XFER_X_16"/>
+        <Resource_1568 FileName="../resources/icons/transfer/x_18.png" Type="RCDATA" ResourceName="XFER_X_18"/>
+        <Resource_1569 FileName="../resources/icons/transfer/x_20.png" Type="RCDATA" ResourceName="XFER_X_20"/>
+        <Resource_1570 FileName="../resources/icons/transfer/x_22.png" Type="RCDATA" ResourceName="XFER_X_22"/>
+        <Resource_1571 FileName="../resources/icons/transfer/x_24.png" Type="RCDATA" ResourceName="XFER_X_24"/>
+        <Resource_1572 FileName="../resources/icons/transfer/x_28.png" Type="RCDATA" ResourceName="XFER_X_28"/>
+        <Resource_1573 FileName="../resources/icons/transfer/x_32.png" Type="RCDATA" ResourceName="XFER_X_32"/>
+        <Resource_1574 FileName="../resources/icons/transfer/x_40.png" Type="RCDATA" ResourceName="XFER_X_40"/>
+        <Resource_1575 FileName="../resources/icons/transfer/x_48.png" Type="RCDATA" ResourceName="XFER_X_48"/>
+        <Resource_1576 FileName="../resources/icons/transfer/x_64.png" Type="RCDATA" ResourceName="XFER_X_64"/>
       </Resources>
     </General>
     <BuildModes>

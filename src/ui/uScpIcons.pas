@@ -46,7 +46,9 @@ type
     siSettings,
     siReveal,
     siSortAsc,
-    siSortDesc);
+    siSortDesc,
+    siLock,
+    siLockOff);
 
 // ABg = ce que l'appelant vient de peindre SOUS ARect: un fond faux se voit
 // en lisere autour du trait.
@@ -345,6 +347,21 @@ begin
         Line(A, 12, 4, 12, 18);
         Poly(A, [P(7, 13), P(12, 18), P(17, 13)], False);
       end;
+    siLock:
+      begin
+        Box(A, 5, 11, 19, 21);
+        Disc(A, 12, 16, 1);
+        Poly(A, [P(8, 11), P(8, 7), P(9.2, 4.2), P(12, 3), P(14.8, 4.2),
+          P(16, 7), P(16, 11)], False);
+      end;
+    siLockOff:
+      begin
+        Box(A, 5, 11, 19, 21);
+        Disc(A, 12, 16, 1);
+        Poly(A, [P(8, 11), P(8, 7), P(9.2, 4.2), P(12, 3), P(14.8, 4.2),
+          P(16, 7), P(16, 11)], False);
+        Line(A, 3, 3, 21, 21);
+      end;
   end;
 end;
 
@@ -388,6 +405,8 @@ begin
     siWarning:    Result := 'alert-circle';
     siPause:      Result := 'player-pause';
     siPlay:       Result := 'player-play';
+    siLock:       Result := 'lock';
+    siLockOff:    Result := 'lock-off';
     // L'echec garde sa croix CERCLEE: meme colonne, pas seulement la couleur.
     siCancel:     Result := 'x';
   else

@@ -74,6 +74,8 @@ type
     FErrorMsg: string;
     FLabel: TLabel;
     FSkPrompts: TObject;
+    // deverrouillee = hors diffusion, la frappe directe passe toujours
+    FUnlocked: Boolean;
 
     procedure SkCancel(Sender: TObject);
     procedure TermSend(const AData: RawByteString);
@@ -92,6 +94,15 @@ type
     procedure TermEnter(Sender: TObject);
     procedure TermExit(Sender: TObject);
     procedure TermNeighbor(Sender: TObject; ADx, ADy: Integer);
+    function HasLock: Boolean;
+    function LockRect: TRect;
+    procedure InvalidateLock;
+  protected
+    procedure Paint; override;
+    procedure MouseDown(Button: TMouseButton; Shift: TShiftState;
+      X, Y: Integer); override;
+    procedure MouseMove(Shift: TShiftState; X, Y: Integer); override;
+    procedure MouseLeave; override;
   public
     constructor CreateCell(AOwnerTab: TClusterSshTab; ADoc: TRshDocument;
       const ADisplayName, AConnUuid: string; AParams: TSshConnectParams;
@@ -106,6 +117,7 @@ type
     property CellState: TRemoteSessionState read FState;
     property CellName: string read FDisplayName;
     property CellConnUuid: string read FConnUuid;
+    property Unlocked: Boolean read FUnlocked;
     property Terminal: TRottenTerminalControl read FTerm;
   end;
 
@@ -134,8 +146,12 @@ type
     FClosing: Boolean;
     FBulkHostKeySet: Boolean;
     FBulkHostKeyDecision: TSshHostKeyDecision;
+    FBlink: TTimer;
+    FBlinkOn: Boolean;
 
     procedure GridResize(Sender: TObject);
+    procedure BlinkTick(Sender: TObject);
+    procedure UpdateBlink;
     procedure LayoutCells;
     procedure CellFinished(ACell: TClusterCell);
     procedure DeferredRemoveCell(Data: PtrInt);
@@ -179,7 +195,7 @@ type
 implementation
 
 uses
-  Math, Types, uHostKeyDialog, uTheme, uFidoPrompt;
+  Math, Types, LCLIntf, uHostKeyDialog, uTheme, uFidoPrompt, uScpIcons;
 
 const
   CLUSTER_ACCENTS: array[0..15] of TColor = (
@@ -429,6 +445,7 @@ begin
   FLabel.Font.Color := clBlack;
   FLabel.Font.Size := 9;
   FLabel.Caption := ' ' + ADisplayName;
+  FLabel.ShowHint := False;
 
   FTerm := TRottenTerminalControl.Create(Self);
   FTerm.Parent := Self;
@@ -439,6 +456,7 @@ begin
   FTerm.OnNeighborFocus := @TermNeighbor;
   FTerm.SetTerminalFontSize(AFontSize);
   FTerm.SetDefaultColors(AAccent, clTermBg);
+  FTerm.ShowHint := False;
 
   AParams.Cols := FTerm.GridCols;
   AParams.Rows := FTerm.GridRows;
@@ -505,6 +523,7 @@ end;
 
 procedure TClusterCell.Broadcast(const AData: RawByteString);
 begin
+  if FUnlocked then Exit;
   if (FTransport <> nil) and (FState = rssConnected) then
     FTransport.SendData(AData);
 end;
@@ -622,6 +641,88 @@ begin
   end;
 end;
 
+function TClusterCell.HasLock: Boolean;
+begin
+  Result := (FOwnerTab <> nil) and (FOwnerTab.Mode = cmBroadcast);
+end;
+
+function TClusterCell.LockRect: TRect;
+begin
+  Result := Rect(ClientWidth - CELL_BORDER - HEADER_H, CELL_BORDER,
+    ClientWidth - CELL_BORDER, CELL_BORDER + HEADER_H);
+  InflateRect(Result, -1, -1);
+end;
+
+procedure TClusterCell.Paint;
+const
+  ICONS: array[Boolean] of TScpIcon = (siLock, siLockOff);
+var
+  ink: TColor;
+begin
+  Canvas.Brush.Color := Color;
+  Canvas.FillRect(ClientRect);
+  if not HasLock then Exit;
+  ink := clBlack;
+  if FUnlocked and not FOwnerTab.FBlinkOn then
+    ink := BlendCol(clBlack, Color, 75);
+  DrawScpIcon(Canvas, LockRect, ICONS[FUnlocked], ink, Color);
+end;
+
+procedure TClusterCell.InvalidateLock;
+var
+  r: TRect;
+begin
+  if not HandleAllocated then Exit;
+  r := LockRect;
+  InvalidateRect(Handle, @r, False);
+end;
+
+procedure TClusterCell.MouseDown(Button: TMouseButton; Shift: TShiftState;
+  X, Y: Integer);
+begin
+  inherited MouseDown(Button, Shift, X, Y);
+  if (Button <> mbLeft) or not HasLock or
+     not PtInRect(LockRect, Point(X, Y)) then
+    Exit;
+  FUnlocked := not FUnlocked;
+  Hint := '';
+  Application.CancelHint;
+  InvalidateLock;
+  FOwnerTab.UpdateBlink;
+end;
+
+procedure TClusterCell.MouseMove(Shift: TShiftState; X, Y: Integer);
+var
+  h: string;
+begin
+  inherited MouseMove(Shift, X, Y);
+  h := '';
+  if HasLock and PtInRect(LockRect, Point(X, Y)) then
+  begin
+    Cursor := crHandPoint;
+    if FUnlocked then
+      h := 'Excluded from broadcast (click to include)'
+    else
+      h := 'Receives broadcast (click to exclude)';
+  end
+  else
+    Cursor := crDefault;
+  if h <> Hint then
+  begin
+    Hint := h;
+    ShowHint := h <> '';
+    Application.CancelHint;
+  end;
+end;
+
+procedure TClusterCell.MouseLeave;
+begin
+  inherited MouseLeave;
+  Cursor := crDefault;
+  Hint := '';
+  ShowHint := False;
+end;
+
 procedure TClusterCell.TermEnter(Sender: TObject);
 begin
   UpdateHeader;
@@ -665,6 +766,10 @@ begin
     FBar := FBarHost.Edit;
     FBar.OnKeyDown := @BarKeyDown;
     FBar.OnUTF8KeyPress := @BarUtf8KeyPress;
+    FBlink := TTimer.Create(Self);
+    FBlink.Enabled := False;
+    FBlink.Interval := 500;
+    FBlink.OnTimer := @BlinkTick;
   end;
 
   FGridHost := TPanel.Create(Self);
@@ -713,6 +818,8 @@ var
   cb: TNotifyEvent;
 begin
   FClosing := True;
+  if FBlink <> nil then
+    FBlink.Enabled := False;
   for i := 0 to High(FCells) do
     if FCells[i] <> nil then
       FCells[i].BeginShutdown;
@@ -796,6 +903,8 @@ var
   i: Integer;
 begin
   FClosing := True;
+  if FBlink <> nil then
+    FBlink.Enabled := False;
   for i := 0 to High(FCells) do
     if FCells[i] <> nil then
       FCells[i].BeginShutdown;
@@ -965,7 +1074,34 @@ begin
   for i := 0 to High(FCells) do
     FCells[i].FTerm.SetTerminalFontSize(fsz);
   LayoutCells;
+  UpdateBlink;
   CellChanged;
+end;
+
+procedure TClusterSshTab.UpdateBlink;
+var
+  i: Integer;
+  any: Boolean;
+begin
+  if (FBlink = nil) or FClosing then Exit;
+  any := False;
+  for i := 0 to High(FCells) do
+    if (FCells[i] <> nil) and FCells[i].Unlocked then
+      any := True;
+  if any = FBlink.Enabled then Exit;
+  FBlinkOn := True;
+  FBlink.Enabled := any;
+end;
+
+procedure TClusterSshTab.BlinkTick(Sender: TObject);
+var
+  i: Integer;
+begin
+  if FClosing then Exit;
+  FBlinkOn := not FBlinkOn;
+  for i := 0 to High(FCells) do
+    if (FCells[i] <> nil) and FCells[i].Unlocked then
+      FCells[i].InvalidateLock;
 end;
 
 procedure TClusterSshTab.GridResize(Sender: TObject);
@@ -995,8 +1131,12 @@ begin
     x := (i mod cols) * cw;
     y := (i div cols) * ch;
     FCells[i].SetBounds(x, y, cw, ch);
-    FCells[i].FLabel.SetBounds(CELL_BORDER, CELL_BORDER,
-      Max(cw - 2 * CELL_BORDER, 1), HEADER_H);
+    if FCells[i].HasLock then
+      FCells[i].FLabel.SetBounds(CELL_BORDER, CELL_BORDER,
+        Max(cw - 2 * CELL_BORDER - HEADER_H, 1), HEADER_H)
+    else
+      FCells[i].FLabel.SetBounds(CELL_BORDER, CELL_BORDER,
+        Max(cw - 2 * CELL_BORDER, 1), HEADER_H);
     FCells[i].FTerm.SetBounds(CELL_BORDER, CELL_BORDER + HEADER_H,
       Max(cw - 2 * CELL_BORDER, 1),
       Max(ch - 2 * CELL_BORDER - HEADER_H, 1));

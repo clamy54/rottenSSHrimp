@@ -1,7 +1,7 @@
 // GENERE par scripts/gen-icons.lpr: NE PAS EDITER.
 // Ressources XFER_<ID>_<TAILLE>; seules ces tailles existent.
 const
-  XFER_ICON_IDS: array[0..21] of string = (
+  XFER_ICON_IDS: array[0..23] of string = (
     'alert-circle',
     'arrow-narrow-down',
     'arrow-narrow-left',
@@ -19,6 +19,8 @@ const
     'home-2',
     'link-off',
     'link',
+    'lock-off',
+    'lock',
     'player-pause',
     'player-play',
     'refresh',

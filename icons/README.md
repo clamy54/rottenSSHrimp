@@ -14,7 +14,7 @@ words from now.
 | Directory | Count | Upstream | Licence |
 |---|---|---|---|
 | `folders/` | 23 | [Tabler Icons](https://tabler.io/icons) | [MIT](../LICENSES/Tabler-MIT.txt) |
-| `transfer/` | 22 | [Tabler Icons](https://tabler.io/icons) | [MIT](../LICENSES/Tabler-MIT.txt) |
+| `transfer/` | 24 | [Tabler Icons](https://tabler.io/icons) | [MIT](../LICENSES/Tabler-MIT.txt) |
 | `hosts/` | 18 | [Tabler Icons](https://tabler.io/icons) | [MIT](../LICENSES/Tabler-MIT.txt) |
 | `extended-set/` | 85 | [Tabler Icons](https://tabler.io/icons) | [MIT](../LICENSES/Tabler-MIT.txt) |
 | `folders-dark/` + `folders-light/` | 18 pairs | [Papirus](https://github.com/PapirusDevelopmentTeam/papirus-icon-theme) | [GPL-3.0](../LICENSES/GPL-3.0-or-later.txt) |
