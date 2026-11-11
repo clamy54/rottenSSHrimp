@@ -30,6 +30,7 @@ type
     procedure WMGetDlgCode(var Msg: TLMNoParams); message LM_GETDLGCODE;
     procedure CMWantSpecialKey(var Msg: TLMessage); message CM_WANTSPECIALKEY;
   public
+    function PerformTab(ForwardTab: Boolean): Boolean; override;
     property KeepTab: Boolean read FKeepTab write FKeepTab;
   end;
 
@@ -229,6 +230,14 @@ begin
   inherited;
   if FKeepTab then
     Msg.Result := Msg.Result or DLGC_WANTTAB;
+end;
+
+// GTK3: le signal focus de GTK appelle PerformTab sans demander DLGC_WANTTAB
+function TBroadcastEdit.PerformTab(ForwardTab: Boolean): Boolean;
+begin
+  if FKeepTab then
+    Exit(True);
+  Result := inherited PerformTab(ForwardTab);
 end;
 
 procedure TBroadcastEdit.CMWantSpecialKey(var Msg: TLMessage);
