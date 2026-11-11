@@ -61,9 +61,9 @@ jobs:
 
   build-macos:
     # arm64. Pas macos-latest: l'image macos-26 refuse le mpkg FPC (format
-    # bundle). macos-14 = Xcode 15.4, le toolchain valide en local; son ld
-    # moderne casse sur les sections objc de FPC, le .lpi force -ld_classic.
-    runs-on: macos-14
+    # bundle). macos-15 = Xcode 16; son ld moderne casse sur les sections
+    # objc de FPC, le .lpi force -ld_classic.
+    runs-on: macos-15
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -93,7 +93,7 @@ jobs:
         include:
           - os: ubuntu-latest
             install: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake pkg-config zlib1g-dev libjpeg-dev
-          - os: macos-14
+          - os: macos-15
             install: brew install cmake pkg-config jpeg-turbo
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
