@@ -21,6 +21,13 @@ function ClipReadHdrop(out APaths: TStringArray): Boolean;
 // comme apres n'importe quelle copie ratee.
 function ClipWriteHdrop(const APaths: TStringArray): Boolean;
 
+// True: l'empreinte Linux n'a pas pu inclure l'horodatage du proprietaire alors
+// que le contenu n'est pas que du texte; deux copies differentes peuvent la
+// partager. Toujours False ailleurs.
+function ClipSequenceIsWeak: Boolean;
+// Pour dire « ceci vient d'un serveur »: 0 quand le compteur ne prouve rien.
+function ClipProvenanceSequence: LongWord;
+
 // Change a chaque ecriture, par qui que ce soit. Emule par empreinte sous X11.
 function ClipSequence: LongWord;
 
@@ -181,6 +188,16 @@ begin
   Result := GetClipboardSequenceNumber;
 end;
 
+function ClipSequenceIsWeak: Boolean;
+begin
+  Result := False;
+end;
+
+function ClipProvenanceSequence: LongWord;
+begin
+  Result := ClipSequence;
+end;
+
 function ClipReadHdrop(out APaths: TStringArray): Boolean;
 var
   h: PtrUInt;
@@ -317,6 +334,16 @@ const
 function ClipSequence: LongWord;
 begin
   Result := LongWord(NSPasteboard.generalPasteboard.changeCount);
+end;
+
+function ClipSequenceIsWeak: Boolean;
+begin
+  Result := False;
+end;
+
+function ClipProvenanceSequence: LongWord;
+begin
+  Result := ClipSequence;
 end;
 
 // Un pasteboard item par fichier, comme le Finder. Tout ou rien: un item
@@ -481,25 +508,46 @@ begin
   end;
 end;
 
-// X11 n'a pas de compteur: empreinte du contenu (texte + uris). Deux etats
-// differents peuvent la partager, au pire un collage en attente est pose.
+// GTK n'a pas de compteur: empreinte du contenu (texte + uris), des formats
+// offerts et de l'horodatage ICCCM du proprietaire, sans quoi deux captures
+// d'ecran successives seraient la meme. Wayland n'a pas de TIMESTAMP: on se
+// declare alors faible, et l'appelant relit pour de vrai.
+var
+  GStampFmt: TClipboardFormat = 0;
+  GSeqWeak: Boolean = False;
+
+function ClipSequenceIsWeak: Boolean;
+begin
+  Result := GSeqWeak;
+end;
+
+function ClipProvenanceSequence: LongWord;
+begin
+  Result := ClipSequence;
+  if GSeqWeak then
+    Result := 0;
+end;
+
 function ClipSequence: LongWord;
 var
   h: QWord;
   s, t: string;
+  i: Integer;
 
   procedure Mix(const A: string);
   var
-    i: Integer;
+    k: Integer;
   begin
-    for i := 1 to Length(A) do
-      h := (h xor QWord(Byte(A[i]))) * QWord($100000001b3);
+    for k := 1 to Length(A) do
+      h := (h xor QWord(Byte(A[k]))) * QWord($100000001b3);
   end;
 
 begin
   h := QWord($cbf29ce484222325);
   try
     NeedFormats;
+    if GStampFmt = 0 then
+      GStampFmt := RegisterClipboardFormat('TIMESTAMP');
     t := Clipboard.AsText;
     s := '';
     if Clipboard.HasFormat(GUriFmt) then
@@ -507,6 +555,16 @@ begin
     Mix(t);
     Mix(#1);
     Mix(s);
+    Mix(#1);
+    for i := 0 to Clipboard.FormatCount - 1 do
+      Mix(IntToStr(Clipboard.Formats[i]) + ',');
+    if Clipboard.HasFormat(GStampFmt) and ReadFormat(GStampFmt, s) then
+    begin
+      Mix(s);
+      GSeqWeak := False;
+    end
+    else
+      GSeqWeak := True;
   except
     Exit(0);
   end;

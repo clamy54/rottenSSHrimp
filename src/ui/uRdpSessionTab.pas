@@ -8,7 +8,7 @@ uses
   uRtMessage, Classes, SysUtils, Controls, ComCtrls, Forms, Dialogs, Menus, Graphics,
   ExtCtrls, StdCtrls, Clipbrd, uRshDocument, uRdpControl, uRemoteSurface, uRdpTransport,
   uRdpKnownCerts, uSessionState, uSessionManager, uSessionTabBase,
-  uClipboardBridge, uSshTunnel, uSshTunnelConnect;
+  uClipboardBridge, uClipSnapshot, uSshTunnel, uSshTunnelConnect;
 
 type
   TRdpSessionTab = class;
@@ -46,6 +46,15 @@ type
     // Pas de notification presse-papiers sur Cocoa: on sonde.
     FClipTimer: TTimer;
     FClipBridge: TClipboardBridge;
+    // Le pont ne voit qu'une cle; l'instantane qu'elle designe vit ici. Relu
+    // seulement quand le compteur systeme bouge: une capture 4K toutes les
+    // 700 ms, non merci.
+    FLocalSnap: TClipSnapshot;
+    FLocalKey: string;
+    FLocalSeq: LongWord;
+    FLocalSeqOk: Boolean;
+    FLocalReadTick: QWord;
+    FIncomingSnap: TClipSnapshot;
     // Dernier CF_HDROP vu: ni echo vers le serveur, ni double envoi.
     FClipFilesSig: string;
     FFilesPrimed: Boolean;
@@ -78,7 +87,7 @@ type
     procedure TransportResized(AWidth, AHeight: Integer);
     procedure TransportFinished;
     procedure TransportCursor(const ACursor: TRemoteCursor);
-    procedure ClipboardFromRemote(const AText: UnicodeString);
+    procedure ClipboardFromRemote(const ASnap: TClipSnapshot);
     procedure ClipboardFilesFromRemote(const APaths: TStringArray);
     procedure ClipNoteFromTransport(const AText: string);
     function TryReadLocalFiles(out APaths: TStringArray): Boolean;
@@ -86,7 +95,7 @@ type
     procedure PollLocalFiles;
     procedure ClipPoll(Sender: TObject);
     function TryReadLocalClipboard(out AText: string): Boolean;
-    function WriteLocalClipboard(const AText: string): Boolean;
+    function WriteLocalClipboard(const AKey: string): Boolean;
     procedure SendClipToServer(const AText: string);
     function ClipForeground: Boolean;
     procedure TransportReconnect(const AStatus: string; AActive: Boolean);
@@ -130,7 +139,7 @@ type
 implementation
 
 uses
-  uRdpCertDialog, uClipDropFiles, uRdpClipFiles, uPreferences;
+  uRdpCertDialog, uClipDropFiles, uClipLocal, uRdpClipFiles, uPreferences;
 
 var
   // Tous onglets confondus: ce qui vient du serveur A ne repart jamais vers B.
@@ -204,7 +213,7 @@ begin
   // Le transport coupe a 2 Mo d'unites UTF-16, jusqu'a 3 octets UTF-8 chacune.
   FClipBridge := TClipboardBridge.Create(
     @TryReadLocalClipboard, @SendClipToServer, 3 * 2 * 1024 * 1024,
-    @ClipForeground);
+    @ClipForeground, @ClipProvenanceSequence);
 
   FView := TRottenRdpControl.Create(Self);
   FView.Parent := FScroll;
@@ -559,43 +568,59 @@ begin
   UpdateCaption;
 end;
 
-procedure TRdpSessionTab.ClipboardFromRemote(const AText: UnicodeString);
-var
-  u: string;
+procedure TRdpSessionTab.ClipboardFromRemote(const ASnap: TClipSnapshot);
 begin
-  if AText = '' then
+  if ClipSnapshotEmpty(ASnap) then
     Exit;
-  u := UTF8Encode(AText);
-  FClipBridge.NoteRemote(u, @WriteLocalClipboard);
+  FIncomingSnap := ASnap;
+  FClipBridge.NoteRemote(ClipSnapshotKey(ASnap), @WriteLocalClipboard);
+  FIncomingSnap := Default(TClipSnapshot);
 end;
 
-function TRdpSessionTab.WriteLocalClipboard(const AText: string): Boolean;
+// AKey designe FIncomingSnap. Le cache est aligne tout de suite: la relecture
+// ne rendrait pas forcement les memes octets.
+function TRdpSessionTab.WriteLocalClipboard(const AKey: string): Boolean;
 begin
-  Result := False;
-  try
-    Clipboard.AsText := AText;
-    Result := True;
-  except
-  end;
+  Result := ClipWriteSnapshot(FIncomingSnap);
+  if not Result then
+    Exit;
+  FLocalSnap := FIncomingSnap;
+  FLocalKey := AKey;
+  FLocalSeq := ClipSequence;
+  FLocalSeqOk := True;
 end;
 
 // False = echec franc; un presse-papiers vide est une reference valide.
 function TRdpSessionTab.TryReadLocalClipboard(out AText: string): Boolean;
+var
+  seq: LongWord;
+  snap: TClipSnapshot;
 begin
   AText := '';
-  try
-    if Clipboard.HasFormat(CF_TEXT) then
-      AText := Clipboard.AsText;
-    Result := True;
-  except
-    Result := False;
+  seq := ClipSequence;
+  // Linux sans horodatage (Wayland): deux images de suite ont la meme empreinte, le
+  // compteur ne prouve rien et on relit de temps en temps
+  if FLocalSeqOk and (seq = FLocalSeq) and not (ClipSequenceIsWeak and
+     (GetTickCount64 - FLocalReadTick > 2000)) then
+  begin
+    AText := FLocalKey;
+    Exit(True);
   end;
+  if not ClipReadSnapshot(snap) or (ClipSequence <> seq) then
+    Exit(False);
+  FLocalReadTick := GetTickCount64;
+  FLocalSnap := snap;
+  FLocalKey := ClipSnapshotKey(snap);
+  FLocalSeq := seq;
+  FLocalSeqOk := True;
+  AText := FLocalKey;
+  Result := True;
 end;
 
 procedure TRdpSessionTab.SendClipToServer(const AText: string);
 begin
-  if FTransport <> nil then
-    FTransport.AnnounceLocalClipboard(UTF8Decode(AText));
+  if (FTransport <> nil) and (AText = FLocalKey) then
+    FTransport.AnnounceLocalSnapshot(FLocalSnap);
 end;
 
 // Un onglet cache n'annonce rien: ce que A vient de poser partirait chez B.
@@ -670,6 +695,9 @@ var
 begin
   if Length(APaths) = 0 then
     Exit;
+  // Un lot plus recent rend caduc celui qui attendait: le transport ne garde
+  // que le dernier remis, l'ancien partirait sous nos pieds.
+  FPendingFiles := nil;
   if not ClipForeground then
   begin
     // Poser maintenant ecraserait ce que l'utilisateur manipule AILLEURS.
@@ -695,7 +723,9 @@ begin
     if Assigned(FOnNotice) then
       FOnNotice(Format('%s: the remote files could not be placed on the ' +
         'clipboard.', [FDisplayName]));
-  end;
+  end
+  else if FTransport <> nil then
+    FTransport.ClipFilesPlaced(APaths[0]);   // le lot precedent peut partir
 end;
 
 procedure TRdpSessionTab.ClipNoteFromTransport(const AText: string);

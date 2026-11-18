@@ -16,10 +16,16 @@ uses
 const
   // Depasser = REFUS, pas troncature.
   RDPCLIP_MAX_FILES = 4096;
-  RDPCLIP_MAX_TOTAL_BYTES = Int64(256) * 1024 * 1024;
+  // Rapatries des la copie, avant tout collage, par le canal qui porte aussi
+  // l'image de la session: au-dela, c'est un transfert de fichiers, pas un
+  // presse-papiers. Le disque, lui, est verifie avant et pendant.
+  RDPCLIP_MAX_TOTAL_BYTES = Int64(1024) * 1024 * 1024;
+  // ce qui doit rester libre une fois le lot pose
+  RDPCLIP_DISK_RESERVE = Int64(1024) * 1024 * 1024;
   RDPCLIP_MAX_DEPTH = 32;
-  // assez petit pour que l'annulation reste reactive
-  RDPCLIP_CHUNK_BYTES = 512 * 1024;
+  // assez gros pour ne pas payer un aller-retour par demi-mega, assez petit
+  // pour que l'annulation reste reactive
+  RDPCLIP_CHUNK_BYTES = 4 * 1024 * 1024;
 
   // FILEDESCRIPTORW.dwFlags
   FD_ATTRIBUTES = $0004;
@@ -80,6 +86,10 @@ function RdpClipMakeDirOwnerOnly(const APath: string): Boolean;
 // Un lien part seul, meme pose en pleine course; sa cible reste.
 procedure RdpClipRemoveTree(const APath: string);
 
+// Octets libres pour un utilisateur ordinaire sur le volume de ADir; -1 = on
+// ne sait pas, et on ne bloque pas sur une ignorance.
+function RdpClipFreeBytes(const ADir: string): Int64;
+
 // False: ne PAS l'annoncer, on ne saurait pas verifier ce qu'on sert.
 function CaptureLocalFileId(const APath: string; out AId: TRdpFileId): Boolean;
 
@@ -94,7 +104,7 @@ implementation
 
 {$IFNDEF WINDOWS}
 uses
-  BaseUnix{$IFDEF LINUX}, Syscall{$ENDIF}, uRshSafeSave;
+  BaseUnix, Unix{$IFDEF LINUX}, Syscall{$ENDIF}, uRshSafeSave;
 {$ENDIF}
 
 {$IFDEF WINDOWS}
@@ -367,11 +377,36 @@ begin
     (info.nFileIndexHigh = AId.IdHigh) and (info.nFileIndexLow = AId.IdLow);
 end;
 
+function GetDiskFreeSpaceExW(ADir: PWideChar; AFree, ATotal,
+  ATotalFree: PQWord): LongBool; stdcall; external 'kernel32.dll';
+
+function RdpClipFreeBytes(const ADir: string): Int64;
+var
+  u: UnicodeString;
+  free: QWord;
+begin
+  u := UnicodeString(ADir);
+  if GetDiskFreeSpaceExW(PWideChar(u), @free, nil, nil) then
+    Result := Int64(free)
+  else
+    Result := -1;
+end;
+
 function RdpClipOpenServed(const APath: string): THandleStream;
 begin
   Result := TFileStream.Create(APath, fmOpenRead or fmShareDenyNone);
 end;
 {$ELSE}
+function RdpClipFreeBytes(const ADir: string): Int64;
+var
+  st: TStatfs;
+begin
+  if fpStatFS(PChar(ADir), @st) = 0 then
+    Result := Int64(st.bavail) * Int64(st.bsize)
+  else
+    Result := -1;
+end;
+
 const
   {$IFDEF LINUX}
   O_CLOEXEC_ = $80000;

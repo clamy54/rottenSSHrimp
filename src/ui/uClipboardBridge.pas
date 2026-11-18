@@ -22,6 +22,9 @@ type
   { False: l'ancien contenu y est toujours. }
   TClipWriteFunc = function(const AText: string): Boolean of object;
 
+  // Compteur du presse-papiers systeme; 0 = inconnu, la signature seule juge.
+  TClipSeqFunc = function: LongWord;
+
   TClipboardBridge = class
   private
     FSig: string;
@@ -32,10 +35,12 @@ type
     FRead: TClipReadFunc;
     FSend: TClipSendProc;
     FForeground: TClipForegroundFunc;
+    FSeq: TClipSeqFunc;
     function Signature(const S: string): string;
   public
     constructor Create(ARead: TClipReadFunc; ASend: TClipSendProc;
-      ASigBound: Integer; AForeground: TClipForegroundFunc = nil);
+      ASigBound: Integer; AForeground: TClipForegroundFunc = nil;
+      ASeq: TClipSeqFunc = nil);
 
     procedure PrimeBaseline;
 
@@ -57,6 +62,11 @@ uses
 var
   // dernier texte recu, tous serveurs confondus; non bornee
   GRemoteSig: string = '';
+  // Compteur juste apres l'ecriture d'un contenu recu. Une relecture qui ne
+  // rend pas les memes octets (HTML reemballe, image reencodee) reste ainsi
+  // reconnue comme venue d'un serveur.
+  GRemoteSeq: LongWord = 0;
+  GRemoteSeqSet: Boolean = False;
 
 function ClipSignature(const S: string; ABound: Integer): string;
 var
@@ -73,12 +83,13 @@ begin
 end;
 
 constructor TClipboardBridge.Create(ARead: TClipReadFunc; ASend: TClipSendProc;
-  ASigBound: Integer; AForeground: TClipForegroundFunc);
+  ASigBound: Integer; AForeground: TClipForegroundFunc; ASeq: TClipSeqFunc);
 begin
   inherited Create;
   FRead := ARead;
   FSend := ASend;
   FForeground := AForeground;
+  FSeq := ASeq;
   FSigBound := ASigBound;
   FPrimed := False;
   FGuardSeen := False;
@@ -110,8 +121,16 @@ var
   cur, sig: string;
   gen: LongInt;
   guarded: Boolean;
+  seq: LongWord;
 begin
+  // Une copie au milieu de la lecture donnerait un melange de deux contenus,
+  // dont l'un venu d'un serveur: on relira au tick suivant.
+  seq := 0;
+  if Assigned(FSeq) then
+    seq := FSeq();
   if not FRead(cur) then
+    Exit;
+  if (seq <> 0) and (FSeq() <> seq) then
     Exit;
   if not FPrimed then
   begin
@@ -142,6 +161,8 @@ begin
   // recu d'un serveur: adopte, jamais retransmis
   if (GRemoteSig <> '') and (ClipSignature(cur, 0) = GRemoteSig) then
     Exit;
+  if GRemoteSeqSet and (seq <> 0) and (seq = GRemoteSeq) then
+    Exit;
   FSend(cur);
 end;
 
@@ -149,11 +170,14 @@ function TClipboardBridge.NoteRemote(const AText: string;
   AWrite: TClipWriteFunc): Boolean;
 var
   prevSig, prevRemote: string;
-  prevPrimed: Boolean;
+  prevPrimed, prevSeqSet: Boolean;
+  prevSeq: LongWord;
 begin
   prevSig := FSig;
   prevPrimed := FPrimed;
   prevRemote := GRemoteSig;
+  prevSeq := GRemoteSeq;
+  prevSeqSet := GRemoteSeqSet;
   FSig := Signature(AText);
   FPrimed := True;
   GRemoteSig := ClipSignature(AText, 0);
@@ -163,11 +187,18 @@ begin
   except
     Result := False;
   end;
+  if Result and Assigned(FSeq) then
+  begin
+    GRemoteSeq := FSeq();
+    GRemoteSeqSet := GRemoteSeq <> 0;
+  end;
   if not Result then
   begin
     FSig := prevSig;
     FPrimed := prevPrimed;
     GRemoteSig := prevRemote;
+    GRemoteSeq := prevSeq;
+    GRemoteSeqSet := prevSeqSet;
   end;
 end;
 

@@ -116,6 +116,9 @@ type
 
 implementation
 
+uses
+  uClipDropFiles;
+
 const
   PAINT_MS = 33;
   CLIP_POLL_MS = 400;
@@ -186,7 +189,8 @@ begin
   FPaintTimer.Enabled := True;
 
   FClipBridge := TClipboardBridge.Create(
-    @TryReadClip, @SendClipToServer, VNC_CLIP_SEND_MAX, @ClipForeground);
+    @TryReadClip, @SendClipToServer, VNC_CLIP_SEND_MAX, @ClipForeground,
+    @ClipProvenanceSequence);
 
   if FClipEnabled and (not AConfig.ViewOnly) then
   begin

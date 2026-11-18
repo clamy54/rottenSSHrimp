@@ -12,6 +12,8 @@ RottenSSHrimp is distributed under GPL-3.0-or-later (see GPL-3.0-or-later.txt).
 | Tabler Icons (monochrome tree and transfer icons) | 3.x | MIT | Tabler-MIT.txt |
 | Papirus icon theme (colour tree icons) | 20250501 | GPL-3.0 | GPL-3.0-or-later.txt |
 | Lazarus LCL | 4.x | modified LGPL with linking exception | FPC-LCL-modified-LGPL.txt |
+| Free Pascal RTL and FCL (fcl-image PNG codec included) | 3.2.2 | modified LGPL with linking exception | FPC-LCL-modified-LGPL.txt |
+| paszlib (FCL port of zlib, used by the PNG codec) | 3.2.2 | zlib | zlib.txt |
 
 ## Dynamically loaded libraries
 

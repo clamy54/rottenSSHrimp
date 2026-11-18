@@ -8,7 +8,7 @@ interface
 
 uses
   Classes, SysUtils, SyncObjs, ctypes, uSecureBytes, uSessionState,
-  uRemoteSurface, uRdpClipFiles;
+  uRemoteSurface, uRdpClipFiles, uClipSnapshot;
 
 type
   ERdpTransportError = class(Exception);
@@ -69,11 +69,18 @@ type
     const AFingerprint: string; out AVerdict: Integer;
     out AKnownFingerprint: string) of object;
   TRdpCertSave = procedure(const AInfo: TRdpCertInfo) of object;
-  TRdpClipboardEvent = procedure(const AText: UnicodeString) of object;
+  TRdpClipboardEvent = procedure(const ASnap: TClipSnapshot) of object;
   TRdpClipFilesEvent = procedure(const APaths: TStringArray) of object;
   TRdpClipNoteEvent = procedure(const AText: string) of object;
   TRdpReconnectEvent = procedure(const AStatus: string; AActive: Boolean) of object;
   TRdpCursorEvent = procedure(const ACursor: TRemoteCursor) of object;
+
+  TRdpClipKind = (rcFiles, rcText, rcHtml, rcRtf, rcPng, rcDib);
+  TRdpClipWant = record
+    Id: cuint32;
+    Kind: TRdpClipKind;
+  end;
+  TRdpClipWants = array of TRdpClipWant;
 
   TRdpTransport = class(TThread)
   private
@@ -95,11 +102,21 @@ type
     FLastSentW, FLastSentH: Integer;
 
     FCliprdr: Pointer;
-    FClipLock: TCriticalSection;  // les 3 champs texte + le drapeau
-    FClipLocalText: UnicodeString;
-    FClipIncoming: UnicodeString;
+    FClipLock: TCriticalSection;  // les deux instantanes + le drapeau
+    FClipLocal: TClipSnapshot;
+    FClipLocalGen: Cardinal;      // une conversion d'image ne s'applique qu'a SON instantane
+    FClipIncoming: TClipSnapshot;
     FClipAdvertise: Boolean;
-    FClipReqFmt: cuint32;         // pour decoder la reponse
+    FClipHtmlId, FClipRtfId, FClipPngId: cuint32;   // ids LOCAUX, comme celui des fichiers
+
+    // Demandes au serveur, une a la fois: une reponse ne dit pas a QUELLE
+    // demande elle repond. Thread du canal, sans verrou.
+    FClipWant: TRdpClipWants;
+    FClipWantPos: Integer;
+    FClipGot: TClipSnapshot;
+    FClipBusy: Boolean;
+    FClipNext: TRdpClipWants;
+    FClipNextPending: Boolean;
 
     // Fichiers: hors annonce et remise a l'UI, threads du canal, sans verrou.
     FClipFilesFmtId: cuint32;        // id LOCAL de FileGroupDescriptorW
@@ -107,14 +124,21 @@ type
     FClipServed: TRdpClipFileArray;
     FClipServedStream: THandleStream;
     FClipServedIdx: Integer;
-    FClipReqIsFiles: Boolean;
     FClipFetch: TRdpClipFileArray;
     FClipFetchIdx: Integer;
     FClipFetchOff: Int64;
     FClipFetchStream: TFileStream;
     FClipFetchDir: string;
+    // Lots COMPLETS (sous FClipLock). Survivent: le plus recent, le dernier
+    // remis a l'onglet (qui l'ecrit, ou le garde tant qu'il est cache), et
+    // celui que l'onglet dit avoir pose sur le presse-papiers. Le reste part.
+    FClipDoneDirs: TStringArray;
+    FClipHeldDir: string;
+    FClipPlacedDir: string;
     FClipFetchStreamId: cuint32;
     FClipFetchGot: Int64;            // pour le plafond
+    FClipFetchTotal: Int64;          // annonce, 0 = inconnu: pour la progression
+    FClipFetchQuarter: Integer;
     FClipFetchActive: Boolean;
     FClipTempRoot: string;
     FClipBatchSeq: Integer;
@@ -192,6 +216,7 @@ type
     procedure ClipFetchAdvance;
     procedure ClipSendRange;
     procedure ClipAbortFetch(const AWhy: string);
+    procedure ClipPruneBatches;
     procedure ClipHandleFileResponse(AMsg: Pointer);
     procedure PublishReconnect;
     function TryAutoReconnect: Boolean;
@@ -204,6 +229,12 @@ type
     procedure ClipHandleServerFormatList(AMsg: Pointer);
     procedure ClipHandleDataRequest(AFormatId: cuint32);
     procedure ClipHandleServerDataResponse(AMsg: Pointer);
+    procedure ClipStartWants(const AWants: TRdpClipWants);
+    procedure ClipRequestNext;
+    procedure ClipStoreReply(const AWant: TRdpClipWant; AData: PByte; ALen: cuint32);
+    procedure ClipKeepImage(const AImg: TClipImage);
+    function ClipLocalImage(const ASnap: TClipSnapshot; AGen: Cardinal;
+      APng: Boolean): RawByteString;
 
     // TOUJOURS appareille avec EndInput: sinon Cleanup attend un fantome.
     function BeginInput(out AInput: Pointer): Boolean;
@@ -242,8 +273,10 @@ type
     // ca, le pave numerique tape des fleches.
     procedure SendSynchronize(AFlags: Cardinal);
     procedure RequestResize(AWidth, AHeight: Integer);
-    procedure AnnounceLocalClipboard(const AText: UnicodeString);
+    procedure AnnounceLocalSnapshot(const ASnap: TClipSnapshot);
     procedure AnnounceLocalFiles(const APaths: TStringArray);
+    // Thread UI: ces chemins (d'un lot recu) sont maintenant sur le presse-papiers.
+    procedure ClipFilesPlaced(const APath: string);
     procedure Shutdown;
 
     function State: TRemoteSessionState;
@@ -290,6 +323,12 @@ function RegisterClipboardFormatW(AName: PWideChar): LongWord;
 const
   // Nom OBLIGE; l'id, lui, est local.
   CLIP_FILES_FMT: AnsiString = 'FileGroupDescriptorW';
+  CLIP_HTML_FMT: AnsiString = 'HTML Format';
+  CLIP_RTF_FMT: AnsiString = 'Rich Text Format';
+  CLIP_PNG_FMT: AnsiString = 'PNG';
+  RDP_CF_DIB = 8;
+  RDP_CF_DIBV5 = 17;
+
   // le serveur demande la taille qu'il veut, on alloue celle qu'on veut
   RDPCLIP_SERVE_MAX = 4 * 1024 * 1024;
 
@@ -1316,16 +1355,17 @@ end;
 
 procedure TRdpTransport.PublishClipboard;
 var
-  s: UnicodeString;
+  snap: TClipSnapshot;
 begin
   FClipLock.Acquire;
   try
-    s := FClipIncoming;
+    snap := FClipIncoming;
+    FClipIncoming := Default(TClipSnapshot);
   finally
     FClipLock.Release;
   end;
-  if (s <> '') and Assigned(FOnClipboard) then
-    FOnClipboard(s);
+  if not ClipSnapshotEmpty(snap) and Assigned(FOnClipboard) then
+    FOnClipboard(snap);
 end;
 
 procedure TRdpTransport.PublishReconnect;
@@ -1492,6 +1532,13 @@ begin
   if ACliprdr = nil then
     Exit;
   FCliprdr := ACliprdr;
+  // canal neuf (reconnexion comprise): la reponse attendue ne viendra plus
+  FClipBusy := False;
+  FClipNextPending := False;
+  FClipNext := nil;
+  FClipWant := nil;
+  FClipWantPos := 0;
+  FClipGot := Default(TClipSnapshot);
   CliprdrSetCustom(ACliprdr, Self);
   CliprdrSetHandler(ACliprdr, CLIPRDR_OFF_MONITOR_READY, @CbClipMonitorReady);
   CliprdrSetHandler(ACliprdr, CLIPRDR_OFF_SERVER_CAPABILITIES, @CbClipServerCaps);
@@ -1512,9 +1559,18 @@ begin
   FClipFilesFmtId := cuint32(RegisterClipboardFormatW('FileGroupDescriptorW'));
   if FClipFilesFmtId = 0 then
     FClipFilesFmtId := $C004;
+  FClipHtmlId := cuint32(RegisterClipboardFormatW('HTML Format'));
+  FClipRtfId := cuint32(RegisterClipboardFormatW('Rich Text Format'));
+  FClipPngId := cuint32(RegisterClipboardFormatW('PNG'));
   {$ELSE}
   FClipFilesFmtId := $C004;
+  FClipHtmlId := 0;
+  FClipRtfId := 0;
+  FClipPngId := 0;
   {$ENDIF}
+  if FClipHtmlId = 0 then FClipHtmlId := $C010;
+  if FClipRtfId = 0 then FClipRtfId := $C011;
+  if FClipPngId = 0 then FClipPngId := $C012;
 end;
 
 procedure TRdpTransport.ClipMonitorReady;
@@ -1545,16 +1601,25 @@ end;
 procedure TRdpTransport.ClipDoAdvertise;
 var
   list: TCliprdrFormatList;
-  fmts: array[0..0] of TCliprdrFormat;
-  hasText, hasFiles: Boolean;
-  n: cuint32;
+  fmts: array[0..4] of TCliprdrFormat;
+  snap: TClipSnapshot;
+  hasFiles: Boolean;
+  n: Integer;
   fn: TCliprdrFn;
+
+  procedure Add(AId: cuint32; AName: PAnsiChar);
+  begin
+    fmts[n].formatId := AId;
+    fmts[n].formatName := AName;
+    Inc(n);
+  end;
+
 begin
   if FCliprdr = nil then
     Exit;
   FClipLock.Acquire;
   try
-    hasText := FClipLocalText <> '';
+    snap := FClipLocal;
     hasFiles := Length(FClipLocalFiles) > 0;
   finally
     FClipLock.Release;
@@ -1563,19 +1628,23 @@ begin
   FillChar(list, SizeOf(list), 0);
   n := 0;
   if hasFiles then
+    Add(FClipFilesFmtId, PAnsiChar(CLIP_FILES_FMT))
+  else
   begin
-    fmts[0].formatId := FClipFilesFmtId;
-    fmts[0].formatName := PAnsiChar(CLIP_FILES_FMT);
-    n := 1;
-    list.formats := @fmts[0];
-  end
-  else if hasText then
-  begin
-    fmts[0].formatId := CF_UNICODETEXT;
-    fmts[0].formatName := nil;
-    n := 1;
-    list.formats := @fmts[0];
+    if snap.Text <> '' then
+      Add(CF_UNICODETEXT, nil);
+    if snap.Html <> '' then
+      Add(FClipHtmlId, PAnsiChar(CLIP_HTML_FMT));
+    if snap.Rtf <> '' then
+      Add(FClipRtfId, PAnsiChar(CLIP_RTF_FMT));
+    if ClipSnapshotHasImage(snap) then
+    begin
+      Add(RDP_CF_DIB, nil);
+      Add(FClipPngId, PAnsiChar(CLIP_PNG_FMT));
+    end;
   end;
+  if n > 0 then
+    list.formats := @fmts[0];
   list.common.msgType := CB_FORMAT_LIST;
   list.numFormats := n;
   fn := CliprdrCall(FCliprdr, CLIPRDR_OFF_CLIENT_FORMAT_LIST);
@@ -1588,11 +1657,19 @@ var
   list: PCliprdrFormatList;
   fmt: PCliprdrFormat;
   i, count: Integer;
-  id, chosen: cuint32;
-  found, isFiles: Boolean;
+  id, filesId, textId, htmlId, rtfId, pngId, dibId: cuint32;
+  name: string;
   resp: TCliprdrFormatListResponse;
-  req: TCliprdrFormatDataRequest;
-  fnResp, fnReq: TCliprdrFn;
+  fnResp: TCliprdrFn;
+  wants: TRdpClipWants;
+
+  procedure Want(AId: cuint32; AKind: TRdpClipKind);
+  begin
+    SetLength(wants, Length(wants) + 1);
+    wants[High(wants)].Id := AId;
+    wants[High(wants)].Kind := AKind;
+  end;
+
 begin
   if (FCliprdr = nil) or (AMsg = nil) then
     Exit;
@@ -1601,36 +1678,30 @@ begin
     ClipAbortFetch('the remote clipboard changed while files were coming ' +
       'over');
   count := list^.numFormats;
-  chosen := 0;
-  found := False;
-  isFiles := False;
+  filesId := 0; textId := 0; htmlId := 0; rtfId := 0; pngId := 0; dibId := 0;
   if list^.formats <> nil then
     for i := 0 to count - 1 do
     begin
       fmt := PCliprdrFormat(PByte(list^.formats) + i * SizeOf(TCliprdrFormat));
       id := fmt^.formatId;
-      // Fichiers d'abord: une copie de fichiers annonce AUSSI leurs noms en
-      // texte.
-      if (fmt^.formatName <> nil) and
-         SameText(string(AnsiString(fmt^.formatName)),
-           string(CLIP_FILES_FMT)) then
+      name := '';
+      if fmt^.formatName <> nil then
+        name := string(AnsiString(fmt^.formatName));
+      if name <> '' then
       begin
-        chosen := id;
-        found := True;
-        isFiles := True;
-        Break;
-      end;
-      if id = CF_UNICODETEXT then
-      begin
-        chosen := CF_UNICODETEXT;
-        found := True;
+        if SameText(name, string(CLIP_FILES_FMT)) then filesId := id
+        else if SameText(name, string(CLIP_HTML_FMT)) then htmlId := id
+        else if SameText(name, string(CLIP_RTF_FMT)) then rtfId := id
+        else if SameText(name, string(CLIP_PNG_FMT)) then pngId := id;
       end
-      else if (id = CF_TEXT) or (id = CF_OEMTEXT) then
-        if not found then
-        begin
-          chosen := id;
-          found := True;
-        end;
+      else if id = CF_UNICODETEXT then
+        textId := id
+      else if ((id = CF_TEXT) or (id = CF_OEMTEXT)) and (textId = 0) then
+        textId := id
+      else if id = RDP_CF_DIBV5 then
+        dibId := id
+      else if (id = RDP_CF_DIB) and (dibId = 0) then
+        dibId := id;
     end;
   FillChar(resp, SizeOf(resp), 0);
   resp.common.msgType := CB_FORMAT_LIST_RESPONSE;
@@ -1638,26 +1709,85 @@ begin
   fnResp := CliprdrCall(FCliprdr, CLIPRDR_OFF_CLIENT_FORMAT_LIST_RESPONSE);
   if fnResp <> nil then
     fnResp(FCliprdr, @resp);
-  if not found then
+  wants := nil;
+  // Fichiers d'abord, et seuls: une copie de fichiers annonce AUSSI leurs
+  // noms en texte, et une icone en image.
+  if filesId <> 0 then
+    Want(filesId, rcFiles)
+  else
+  begin
+    if textId <> 0 then Want(textId, rcText);
+    if htmlId <> 0 then Want(htmlId, rcHtml);
+    if rtfId <> 0 then Want(rtfId, rcRtf);
+    // PNG d'abord: plus leger sur le fil, reencode de toute facon
+    if pngId <> 0 then Want(pngId, rcPng)
+    else if dibId <> 0 then Want(dibId, rcDib);
+  end;
+  ClipStartWants(wants);
+end;
+
+procedure TRdpTransport.ClipStartWants(const AWants: TRdpClipWants);
+begin
+  // Demande en vol: sa reponse viendra quand meme, et passerait pour la
+  // premiere de la nouvelle liste. On attend qu'elle tombe, sans delai de
+  // grace: un serveur muet fige son presse-papiers, il ne melange rien.
+  if FClipBusy then
+  begin
+    FClipNext := Copy(AWants);
+    FClipNextPending := True;
     Exit;
-  FClipReqFmt := chosen;
-  FClipReqIsFiles := isFiles;
+  end;
+  FClipNextPending := False;
+  FClipNext := nil;
+  FClipBusy := False;
+  FClipWant := Copy(AWants);
+  FClipWantPos := 0;
+  FClipGot := Default(TClipSnapshot);
+  ClipRequestNext;
+end;
+
+procedure TRdpTransport.ClipRequestNext;
+var
+  req: TCliprdrFormatDataRequest;
+  fn: TCliprdrFn;
+begin
+  if FClipWantPos >= Length(FClipWant) then
+  begin
+    FClipWant := nil;
+    if not ClipSnapshotEmpty(FClipGot) then
+    begin
+      FClipLock.Acquire;
+      try
+        FClipIncoming := FClipGot;
+      finally
+        FClipLock.Release;
+      end;
+      Queue(@PublishClipboard);
+    end;
+    FClipGot := Default(TClipSnapshot);
+    Exit;
+  end;
+  fn := CliprdrCall(FCliprdr, CLIPRDR_OFF_CLIENT_FORMAT_DATA_REQUEST);
+  if fn = nil then
+  begin
+    FClipWant := nil;
+    Exit;
+  end;
   FillChar(req, SizeOf(req), 0);
   req.common.msgType := CB_FORMAT_DATA_REQUEST;
-  req.requestedFormatId := chosen;
-  fnReq := CliprdrCall(FCliprdr, CLIPRDR_OFF_CLIENT_FORMAT_DATA_REQUEST);
-  if fnReq <> nil then
-    fnReq(FCliprdr, @req);
+  req.requestedFormatId := FClipWant[FClipWantPos].Id;
+  FClipBusy := True;
+  fn(FCliprdr, @req);
 end;
 
 procedure TRdpTransport.ClipHandleDataRequest(AFormatId: cuint32);
 var
-  txt: UnicodeString;
+  snap: TClipSnapshot;
+  gen: Cardinal;
   ansi: RawByteString;
-  buf: TBytes;
+  buf: RawByteString;
   resp: TCliprdrFormatDataResponse;
   fn: TCliprdrFn;
-  isText: Boolean;
 begin
   if FCliprdr = nil then
     Exit;
@@ -1668,32 +1798,41 @@ begin
   end;
   FClipLock.Acquire;
   try
-    txt := FClipLocalText;
+    snap := FClipLocal;
+    gen := FClipLocalGen;
   finally
     FClipLock.Release;
   end;
-  isText := (AFormatId = CF_UNICODETEXT) or (AFormatId = CF_TEXT) or
-    (AFormatId = CF_OEMTEXT);
-  FillChar(resp, SizeOf(resp), 0);
-  resp.common.msgType := CB_FORMAT_DATA_RESPONSE;
-  buf := nil;
-  if (txt <> '') and isText then
+  buf := '';
+  if snap.Text <> '' then
   begin
     if AFormatId = CF_UNICODETEXT then
     begin
-      SetLength(buf, (Length(txt) + 1) * 2);   // UTF-16LE + NUL final
-      Move(txt[1], buf[0], Length(txt) * 2);
+      SetLength(buf, (Length(snap.Text) + 1) * 2);   // UTF-16LE + NUL final
+      Move(snap.Text[1], buf[1], Length(snap.Text) * 2);
+      buf[Length(buf) - 1] := #0;
+      buf[Length(buf)] := #0;
     end
-    else
+    else if (AFormatId = CF_TEXT) or (AFormatId = CF_OEMTEXT) then
     begin
-      ansi := AnsiString(txt);
-      SetLength(buf, Length(ansi) + 1);
-      if Length(ansi) > 0 then
-        Move(ansi[1], buf[0], Length(ansi));
+      ansi := AnsiString(snap.Text);
+      buf := ansi + #0;
     end;
+  end;
+  if (buf = '') and (AFormatId = FClipHtmlId) and (snap.Html <> '') then
+    buf := CfHtmlWrap(snap.Html) + #0
+  else if (buf = '') and (AFormatId = FClipRtfId) and (snap.Rtf <> '') then
+    buf := snap.Rtf + #0
+  else if (buf = '') and ClipSnapshotHasImage(snap) and
+          ((AFormatId = RDP_CF_DIB) or (AFormatId = FClipPngId)) then
+    buf := ClipLocalImage(snap, gen, AFormatId = FClipPngId);
+  FillChar(resp, SizeOf(resp), 0);
+  resp.common.msgType := CB_FORMAT_DATA_RESPONSE;
+  if buf <> '' then
+  begin
     resp.common.msgFlags := CB_RESPONSE_OK;
     resp.common.dataLen := Length(buf);
-    resp.requestedFormatData := @buf[0];
+    resp.requestedFormatData := @buf[1];
   end
   else
     resp.common.msgFlags := CB_RESPONSE_FAIL;
@@ -1702,86 +1841,198 @@ begin
     fn(FCliprdr, @resp);   // buf doit vivre jusqu'ici
 end;
 
+// L'image locale est servie dans le format demande; la conversion ne vaut
+// que pour l'instantane qui l'a vue naitre.
+function TRdpTransport.ClipLocalImage(const ASnap: TClipSnapshot;
+  AGen: Cardinal; APng: Boolean): RawByteString;
+var
+  img: TClipImage;
+  why: string;
+  ok: Boolean;
+begin
+  if APng and (ASnap.Png <> '') then
+    Exit(ASnap.Png);
+  if (not APng) and (ASnap.Dib <> '') then
+    Exit(ASnap.Dib);
+  Result := '';
+  try
+    if ASnap.Png <> '' then
+      ok := PngDecode(ASnap.Png, img, why)
+    else
+      ok := DibDecode(PByte(@ASnap.Dib[1]), Length(ASnap.Dib), img, why);
+    if not ok then
+    begin
+      ClipNote('The local image was not offered: ' + why + '.');
+      Exit;
+    end;
+    if APng then
+      Result := PngEncode(img)
+    else
+      Result := DibEncode(img);
+  except
+    Result := '';
+  end;
+  if Result = '' then
+    Exit;
+  FClipLock.Acquire;
+  try
+    if FClipLocalGen = AGen then
+      if APng then
+        FClipLocal.Png := Result
+      else
+        FClipLocal.Dib := Result;
+  finally
+    FClipLock.Release;
+  end;
+end;
+
 procedure TRdpTransport.ClipHandleServerDataResponse(AMsg: Pointer);
 var
   resp: PCliprdrFormatDataResponse;
-  flags: cuint16;
-  len: cuint32;
-  data: PByte;
-  u: UnicodeString;
-  a: RawByteString;
-  p: Integer;
-  wasFiles: Boolean;
-  files: TRdpClipFileArray;
-  why: string;
+  w: TRdpClipWant;
+  next: TRdpClipWants;
+  ok: Boolean;
 begin
   if AMsg = nil then
     Exit;
   resp := PCliprdrFormatDataResponse(AMsg);
-  flags := resp^.common.msgFlags;
-  len := resp^.common.dataLen;
-  data := resp^.requestedFormatData;
-  // Desarme AVANT les sorties, sinon le texte suivant passe pour un descripteur.
-  wasFiles := FClipReqIsFiles;
-  FClipReqIsFiles := False;
-  if (flags and CB_RESPONSE_OK) = 0 then
-    Exit;
-  if (data = nil) or (len = 0) then
-    Exit;
-  if wasFiles then
+  FClipBusy := False;
+  if FClipNextPending then
   begin
-    // Tronquer fabriquerait un descripteur menteur: refus.
-    if len > 4 + LongWord(RDPCLIP_MAX_FILES) * FILEDESC_W_SIZE then
-    begin
-      ClipNote(Format('The remote file list was refused: more than %d files.',
-        [RDPCLIP_MAX_FILES]));
-      Exit;
-    end;
-    if not ParseFileGroupDescriptor(data, len, files, why) then
-    begin
-      ClipNote('The remote file list was refused: ' + why + '.');
-      Exit;
-    end;
-    ClipStartFetch(files);
+    // reponse a l'ancienne liste: jetee sans etre lue
+    next := FClipNext;
+    ClipStartWants(next);
     Exit;
   end;
-  // dataLen vient du serveur: tronquer, pas allouer sa demande
-  if len > MAX_CLIP_INCOMING_BYTES then
-    len := MAX_CLIP_INCOMING_BYTES;
-  if FClipReqFmt = CF_UNICODETEXT then
-  begin
-    SetLength(u, len div 2);
-    if Length(u) > 0 then
-      Move(data^, u[1], Length(u) * 2);
-  end
-  else
-  begin
-    SetLength(a, len);
-    Move(data^, a[1], len);
-    u := UnicodeString(a);
+  if FClipWantPos >= Length(FClipWant) then
+    Exit;   // personne ne l'a demandee
+  w := FClipWant[FClipWantPos];
+  ok := ((resp^.common.msgFlags and CB_RESPONSE_OK) <> 0) and
+    (resp^.requestedFormatData <> nil) and (resp^.common.dataLen > 0);
+  if ok then
+    ClipStoreReply(w, resp^.requestedFormatData, resp^.common.dataLen);
+  Inc(FClipWantPos);
+  ClipRequestNext;
+end;
+
+// dataLen vient du serveur: chaque format a son plafond, et un refus motive
+// vaut mieux qu'une troncature qui ment.
+procedure TRdpTransport.ClipStoreReply(const AWant: TRdpClipWant; AData: PByte;
+  ALen: cuint32);
+var
+  u: UnicodeString;
+  raw, html: RawByteString;
+  files: TRdpClipFileArray;
+  img: TClipImage;
+  why: string;
+  p: Integer;
+  len: cuint32;
+begin
+  case AWant.Kind of
+    rcFiles:
+      begin
+        if ALen > 4 + LongWord(RDPCLIP_MAX_FILES) * FILEDESC_W_SIZE then
+        begin
+          ClipNote(Format('The remote file list was refused: more than %d files.',
+            [RDPCLIP_MAX_FILES]));
+          Exit;
+        end;
+        if not ParseFileGroupDescriptor(AData, ALen, files, why) then
+        begin
+          ClipNote('The remote file list was refused: ' + why + '.');
+          Exit;
+        end;
+        ClipStartFetch(files);
+      end;
+    rcText:
+      begin
+        len := ALen;
+        if len > MAX_CLIP_INCOMING_BYTES then
+          len := MAX_CLIP_INCOMING_BYTES;
+        if AWant.Id = CF_UNICODETEXT then
+        begin
+          SetLength(u, len div 2);
+          if Length(u) > 0 then
+            Move(AData^, u[1], Length(u) * 2);
+        end
+        else
+        begin
+          SetString(raw, PAnsiChar(AData), len);
+          u := UnicodeString(raw);
+        end;
+        p := Pos(#0, u);   // formats texte Windows: NUL-termines
+        if p > 0 then
+          SetLength(u, p - 1);
+        FClipGot.Text := u;
+      end;
+    rcHtml, rcRtf:
+      begin
+        if ALen > CLIP_RICH_MAX_BYTES then
+        begin
+          ClipNote('The remote formatted text was too large; plain text only.');
+          Exit;
+        end;
+        SetString(raw, PAnsiChar(AData), ALen);
+        if AWant.Kind = rcRtf then
+          RtfSane(raw, FClipGot.Rtf)
+        else if CfHtmlUnwrap(raw, html) then
+          FClipGot.Html := HtmlSane(html);
+      end;
+    rcPng, rcDib:
+      begin
+        if ALen > CLIP_IMAGE_MAX_BYTES then
+        begin
+          ClipNote('The remote image was refused: too large.');
+          Exit;
+        end;
+        if AWant.Kind = rcPng then
+        begin
+          SetString(raw, PAnsiChar(AData), ALen);
+          if not PngDecode(raw, img, why) then
+          begin
+            ClipNote('The remote image was refused: ' + why + '.');
+            Exit;
+          end;
+        end
+        else if not DibDecode(AData, ALen, img, why) then
+        begin
+          ClipNote('The remote image was refused: ' + why + '.');
+          Exit;
+        end;
+        ClipKeepImage(img);
+      end;
   end;
-  p := Pos(#0, u);   // formats texte Windows: NUL-termines
-  if p > 0 then
-    SetLength(u, p - 1);
-  if u = '' then
-    Exit;
-  FClipLock.Acquire;
+end;
+
+// Seuls des pixels traversent: rien du fichier d'origine n'atteint un lecteur local.
+procedure TRdpTransport.ClipKeepImage(const AImg: TClipImage);
+begin
   try
-    FClipIncoming := u;
-  finally
-    FClipLock.Release;
+    FClipGot.Png := PngEncode(AImg);
+    {$IFDEF WINDOWS}
+    FClipGot.Dib := DibEncode(AImg);
+    {$ENDIF}
+  except
+    FClipGot.Png := '';
+    FClipGot.Dib := '';
+    ClipNote('The remote image could not be converted.');
   end;
-  Queue(@PublishClipboard);
 end;
 
 procedure TRdpTransport.PublishClipboardFiles;
 var
   paths: TStringArray;
+  i: Integer;
 begin
   FClipLock.Acquire;
   try
     paths := FClipIncomingFiles;
     FClipIncomingFiles := nil;
+    if Length(paths) > 0 then
+      for i := 0 to High(FClipDoneDirs) do
+        if Copy(paths[0], 1, Length(FClipDoneDirs[i]) + 1) =
+           FClipDoneDirs[i] + PathDelim then
+          FClipHeldDir := FClipDoneDirs[i];
   finally
     FClipLock.Release;
   end;
@@ -1978,7 +2229,7 @@ end;
 procedure TRdpTransport.ClipStartFetch(const AFiles: TRdpClipFileArray);
 var
   i, files: Integer;
-  total: Int64;
+  total, avail: Int64;
 begin
   total := 0;
   files := 0;
@@ -2000,7 +2251,7 @@ begin
   if total > RDPCLIP_MAX_TOTAL_BYTES then
   begin
     ClipNote(Format('The remote clipboard holds %d MB of files; only up to ' +
-      '%d MB come over automatically.',
+      '%d MB come over automatically. Copy them in smaller batches.',
       [total div (1024 * 1024), RDPCLIP_MAX_TOTAL_BYTES div (1024 * 1024)]));
     Exit;
   end;
@@ -2009,7 +2260,16 @@ begin
       if not ClipMakeFreshDir(IncludeTrailingPathDelimiter(GetTempDir) +
          'rssh-rdpclip-' + IntToStr(GetProcessID) + '-', FClipTempRoot) then
         raise EInOutError.Create('temp folder refused');
-    // le presse-papiers ne designe que le dernier lot
+    // remplir le disque pour un collage qui n'aura peut-etre jamais lieu: non
+    avail := RdpClipFreeBytes(FClipTempRoot);
+    if (avail >= 0) and (avail < total + RDPCLIP_DISK_RESERVE) then
+    begin
+      ClipNote(Format('The remote files (%d MB) were not copied: only %d MB ' +
+        'free on the local disk.', [total div (1024 * 1024),
+        avail div (1024 * 1024)]));
+      Exit;
+    end;
+    // un lot inacheve ne sert a personne
     if FClipFetchDir <> '' then
       RdpClipRemoveTree(FClipFetchDir);
     Inc(FClipBatchSeq);
@@ -2033,6 +2293,8 @@ begin
   FClipFetch := AFiles;
   FClipFetchIdx := -1;
   FClipFetchGot := 0;
+  FClipFetchTotal := total;
+  FClipFetchQuarter := 0;
   FClipFetchActive := True;
   // Tetes de lot, remises a l'UI a la FIN seulement: une publication en
   // retard du lot precedent offrirait sinon celui-ci incomplet.
@@ -2067,11 +2329,15 @@ begin
       SetLength(FClipFetch, 0);
       FClipLock.Acquire;
       try
+        SetLength(FClipDoneDirs, Length(FClipDoneDirs) + 1);
+        FClipDoneDirs[High(FClipDoneDirs)] := FClipFetchDir;
         FClipIncomingFiles := FClipFetchTops;
       finally
         FClipLock.Release;
       end;
       FClipFetchTops := nil;
+      FClipFetchDir := '';
+      ClipPruneBatches;
       Queue(@PublishClipboardFiles);
       ClipNote('The remote files are ready to paste.');
       Exit;
@@ -2145,6 +2411,7 @@ procedure TRdpTransport.ClipHandleFileResponse(AMsg: Pointer);
 var
   resp: PCliprdrFileContentsResponse;
   got: cuint32;
+  avail: Int64;
 begin
   if (not FClipFetchActive) or (FClipFetchStream = nil) then
     Exit;
@@ -2157,8 +2424,12 @@ begin
     Exit;
   end;
   got := resp^.cbRequested;
+  // plus que demande: le surplus n'est pas a nous de le jeter en silence
   if got > RDPCLIP_CHUNK_BYTES then
-    got := RDPCLIP_CHUNK_BYTES;
+  begin
+    ClipAbortFetch('the server sent more file data than requested');
+    Exit;
+  end;
   if (got > 0) and (resp^.requestedData = nil) then
   begin
     ClipAbortFetch('the server sent an empty buffer');
@@ -2172,6 +2443,27 @@ begin
       [RDPCLIP_MAX_TOTAL_BYTES div (1024 * 1024)]));
     Exit;
   end;
+  // le disque a pu se remplir d'autre chose entre-temps: on regarde tous
+  // les 64 Mo, a la frontiere franchie
+  if (FClipFetchGot shr 26) <> ((FClipFetchGot - got) shr 26) then
+  begin
+    avail := RdpClipFreeBytes(FClipFetchDir);
+    if (avail >= 0) and (avail < RDPCLIP_DISK_RESERVE) then
+    begin
+      ClipAbortFetch('the local disk is almost full');
+      Exit;
+    end;
+  end;
+  // un lot de plusieurs Go sans nouvelles, c'est un logiciel qu'on croit gele
+  if (FClipFetchTotal >= Int64(256) * 1024 * 1024) and
+     (FClipFetchGot * 4 div FClipFetchTotal > FClipFetchQuarter) and
+     (FClipFetchQuarter < 3) then
+  begin
+    FClipFetchQuarter := FClipFetchGot * 4 div FClipFetchTotal;
+    if FClipFetchQuarter > 3 then FClipFetchQuarter := 3;
+    ClipNote(Format('Remote files: %d%% of %d MB copied...',
+      [FClipFetchQuarter * 25, FClipFetchTotal div (1024 * 1024)]));
+  end;
   try
     if got > 0 then
       FClipFetchStream.WriteBuffer(resp^.requestedData^, got);
@@ -2183,24 +2475,94 @@ begin
     end;
   end;
   Inc(FClipFetchOff, got);
-  if (got < RDPCLIP_CHUNK_BYTES) or
-     (FClipFetch[FClipFetchIdx].SizeKnown and
-      (FClipFetchOff >= FClipFetch[FClipFetchIdx].Size)) then
+  // Taille annoncee: un bloc court n'est pas une fin de fichier, on demande
+  // la suite; le fichier n'est livre qu'a sa taille exacte. Rien du tout,
+  // en revanche, c'est un serveur qui ne donnera plus rien.
+  if FClipFetch[FClipFetchIdx].SizeKnown then
+  begin
+    if FClipFetchOff > FClipFetch[FClipFetchIdx].Size then
+      ClipAbortFetch('a remote file is larger than announced')
+    else if FClipFetchOff = FClipFetch[FClipFetchIdx].Size then
+      ClipFetchAdvance
+    else if got = 0 then
+      ClipAbortFetch('a remote file came over truncated')
+    else
+      ClipSendRange;
+  end
+  else if got < RDPCLIP_CHUNK_BYTES then
     ClipFetchAdvance
   else
     ClipSendRange;
 end;
 
-procedure TRdpTransport.AnnounceLocalClipboard(const AText: UnicodeString);
+// Supprime hors verrou ce que le verrou a designe: deux threads peuvent
+// elaguer, jamais le meme dossier deux fois.
+procedure TRdpTransport.ClipPruneBatches;
 var
-  t: UnicodeString;
+  doomed, keep: TStringArray;
+  i: Integer;
 begin
-  t := AText;   // div 2: borne en octets, longueur en UTF-16
-  if Length(t) > MAX_CLIP_INCOMING_BYTES div 2 then
-    SetLength(t, MAX_CLIP_INCOMING_BYTES div 2);
+  doomed := nil;
+  keep := nil;
   FClipLock.Acquire;
   try
-    FClipLocalText := t;
+    for i := 0 to High(FClipDoneDirs) do
+      if (i = High(FClipDoneDirs)) or (FClipDoneDirs[i] = FClipPlacedDir) or
+         (FClipDoneDirs[i] = FClipHeldDir) then
+      begin
+        SetLength(keep, Length(keep) + 1);
+        keep[High(keep)] := FClipDoneDirs[i];
+      end
+      else
+      begin
+        SetLength(doomed, Length(doomed) + 1);
+        doomed[High(doomed)] := FClipDoneDirs[i];
+      end;
+    FClipDoneDirs := keep;
+  finally
+    FClipLock.Release;
+  end;
+  for i := 0 to High(doomed) do
+    RdpClipRemoveTree(doomed[i]);
+end;
+
+procedure TRdpTransport.ClipFilesPlaced(const APath: string);
+var
+  i: Integer;
+begin
+  FClipLock.Acquire;
+  try
+    for i := 0 to High(FClipDoneDirs) do
+      if Copy(APath, 1, Length(FClipDoneDirs[i]) + 1) =
+         FClipDoneDirs[i] + PathDelim then
+        FClipPlacedDir := FClipDoneDirs[i];
+  finally
+    FClipLock.Release;
+  end;
+  ClipPruneBatches;
+end;
+
+procedure TRdpTransport.AnnounceLocalSnapshot(const ASnap: TClipSnapshot);
+var
+  snap: TClipSnapshot;
+begin
+  snap := ASnap;   // div 2: borne en octets, longueur en UTF-16
+  if Length(snap.Text) > MAX_CLIP_INCOMING_BYTES div 2 then
+    SetLength(snap.Text, MAX_CLIP_INCOMING_BYTES div 2);
+  if Length(snap.Html) > CLIP_RICH_MAX_BYTES then
+    snap.Html := '';
+  if Length(snap.Rtf) > CLIP_RICH_MAX_BYTES then
+    snap.Rtf := '';
+  if (Length(snap.Png) > CLIP_IMAGE_MAX_BYTES) or
+     (Length(snap.Dib) > CLIP_IMAGE_MAX_BYTES) then
+  begin
+    snap.Png := '';
+    snap.Dib := '';
+  end;
+  FClipLock.Acquire;
+  try
+    FClipLocal := snap;
+    Inc(FClipLocalGen);
     SetLength(FClipLocalFiles, 0);
     FClipAdvertise := True;
   finally
@@ -2217,7 +2579,8 @@ begin
     SetLength(FClipLocalFiles, Length(APaths));
     for i := 0 to High(APaths) do
       FClipLocalFiles[i] := APaths[i];
-    FClipLocalText := '';
+    FClipLocal := Default(TClipSnapshot);
+    Inc(FClipLocalGen);
     FClipAdvertise := True;
   finally
     FClipLock.Release;
