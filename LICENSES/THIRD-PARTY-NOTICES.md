@@ -28,7 +28,7 @@ library into `Contents/Frameworks/`. Everything it ships, it also
 |---|---|---|---|---|
 | libvncclient (LibVNCServer) | 0.9.15 | GPL-2.0-**or-later** | GPL-3.0-or-later.txt (see below) | yes (built by us) |
 | libssh2 | 1.11.1 | BSD-3-Clause | libssh2-BSD-3-Clause.txt | yes |
-| FreeRDP / WinPR | 3.32.2 | Apache-2.0 | FreeRDP-Apache-2.0.txt | yes |
+| FreeRDP / WinPR | 3.33.1 | Apache-2.0 | FreeRDP-Apache-2.0.txt | yes |
 | libsodium | 1.0.22 | ISC | libsodium-ISC.txt | yes |
 | SQLite | system | Public domain | - | no on macOS (system `/usr/lib`); **yes on Windows** |
 
@@ -62,7 +62,7 @@ Distributing a Windows build means distributing these:
 | libssh2.dll | libssh2 | BSD-3-Clause | libssh2-BSD-3-Clause.txt |
 | freerdp3.dll, freerdp-client3.dll, winpr3.dll | FreeRDP / WinPR | Apache-2.0 | FreeRDP-Apache-2.0.txt |
 | libcrypto-3-x64.dll, libssl-3-x64.dll, legacy.dll | OpenSSL 3 | Apache-2.0 | OpenSSL-Apache-2.0.txt |
-| z.dll | zlib | zlib | zlib.txt |
+| libz.dll | zlib | zlib | zlib.txt |
 | cjson.dll | cJSON | MIT | cJSON-MIT.txt |
 | jpeg62.dll | libjpeg-turbo | BSD-3-Clause + IJG | libjpeg-turbo.txt |
 | vncclient.dll | libvncclient (LibVNCServer) | GPL-2.0-or-later | GPL-3.0-or-later.txt (see below) |

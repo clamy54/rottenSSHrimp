@@ -18,7 +18,7 @@ Constat de revue du 2026-07-30 : 9 empreintes sur 11 étaient périmées après 
 re-provisioning que personne n'avait répercuté ici. À lancer en CI et à chaque
 re-provisioning, parce que la mémoire humaine a déjà été essayée.
 
-## Provisionnées (2026-07-21 ; FreeRDP re-provisionné 2026-07-30, 2026-09-09 et 2026-10-25 ; OpenSSL et SQLite 2026-10-27)
+## Provisionnées (2026-07-21 ; FreeRDP re-provisionné 2026-07-30, 2026-09-09, 2026-10-25 et 2026-11-18 ; OpenSSL et SQLite 2026-10-27 ; zlib 1.4 2026-11-18)
 
 ### sqlite3.dll : SQLite 3.54.1 (x64)
 
@@ -40,13 +40,14 @@ re-provisioning, parce que la mémoire humaine a déjà été essayée.
   intégrer quand l'outil sera disponible sur la machine de build (clé
   publique libsodium : `RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3`).
 
-### libssh2.dll (+ libcrypto-3-x64.dll + z.dll) : libssh2 1.11.1, backend OpenSSL
+### libssh2.dll (+ libcrypto-3-x64.dll + libz.dll) : libssh2 1.11.1, backend OpenSSL
 
 Trois DLL à poser ensemble à côté de l'exe : `libssh2.dll`, sa dépendance
-crypto `libcrypto-3-x64.dll` (OpenSSL 3.6.5) et `z.dll` (zlib).
+crypto `libcrypto-3-x64.dll` (OpenSSL 3.6.5) et `libz.dll` (zlib 1.4).
 
-- Construites via **vcpkg** (2026-07-22) : `libssh2[core,openssl,zlib]:x64-windows`,
-  baseline vcpkg `82b6bc886d7b0f8342e34babc2e0b8943f79b0e1`, OpenSSL 3.6.3.
+- Construites via **vcpkg** (2026-07-22, reconstruite le 2026-11-18 pour zlib
+  1.4) : `libssh2[core,openssl,zlib]:x64-windows@1.11.1#3`, désormais dans le
+  même manifeste que FreeRDP (baseline `c1d80d9cb071c3f4a98c67c1196b137cc5b72918`).
 - **Backend OpenSSL, PAS WinCNG.** Un premier build WinCNG (sans dépendance
   externe) échouait la négociation de kex avec des serveurs OpenSSH durcis :
   WinCNG n'offre pas les échanges Diffie-Hellman `group14/16/18-sha2` ni
@@ -55,16 +56,13 @@ crypto `libcrypto-3-x64.dll` (OpenSSL 3.6.5) et `z.dll` (zlib).
   backend qu'utilisait déjà la version macOS. Ne pas revenir à WinCNG.
 - SHA-256 des DLL versionnées (builds vcpkg non reproductibles au bit près :
   l'empreinte fait foi pour le FICHIER SUIVI, contrôlée par
-  `scripts/check-win-deps.sh`). `libcrypto-3-x64.dll` et `z.dll` proviennent
-  depuis 2026-07-30 du build FreeRDP (baseline
-  `c1d80d9cb071c3f4a98c67c1196b137cc5b72918`) : mêmes versions (OpenSSL
-  3.6.5 depuis le 2026-10-27, zlib 1.3.2), un seul jeu cohérent pour toutes
-  les DLL ; libssh2,
-  lié à ces noms de DLL et à l'ABI stable d'OpenSSL 3, n'a pas besoin d'être
-  reconstruit :
-  - `libssh2.dll` : `43682e313244ec65f735de223d698cfc8cfc4b4112e3502cce04a9b351caf3e0`
+  `scripts/check-win-deps.sh`). `libcrypto-3-x64.dll` et `libz.dll` sortent
+  du même build que FreeRDP : un seul OpenSSL, une seule zlib pour toutes les
+  DLL. Une montée d'OpenSSL 3.x ne demande pas de reconstruire libssh2 (ABI
+  stable) ; une montée de zlib, si, dès que le nom de la DLL change :
+  - `libssh2.dll` : `4903d52d41796b5a2771196109b439296c8252e06953185edbe0a5221474d646`
   - `libcrypto-3-x64.dll` : `476c7457fcbd6ea3194cec7d870b29f6e7f20a96aa1dc1b3972ebb72d9d13ee6`
-  - `z.dll` : `eb73c521d1d74a43fc2aaa4107ef080ec76edbc42971a6138e9c5579d1fa8fbf`
+  - `libz.dll` : `fd5b3c43925fd323119824c76fbab28dc78e3ddb0ea2a2bc41cdaa5d261c39aa`
 - Dépend aussi de `VCRUNTIME140.dll` : livrée ici même, voir sa section plus
   bas (l'UCRT, elle, fait partie de Windows).
 - À terme : `bindings/libssh2` documente déjà `<exeDir>\libssh2.dll` ; les deux
@@ -76,8 +74,10 @@ crypto `libcrypto-3-x64.dll` (OpenSSL 3.6.5) et `z.dll` (zlib).
 Le binding charge `freerdp3.dll`, `freerdp-client3.dll`, `winpr3.dll` depuis
 exeDir (major 3). DLL à poser ensemble :
 
-- `freerdp3.dll`, `freerdp-client3.dll`, `winpr3.dll` (FreeRDP **3.32.2**,
-  re-provisioning sécurité 2026-10-25 : la 3.31.1 en retard de trois
+- `freerdp3.dll`, `freerdp-client3.dll`, `winpr3.dll` (FreeRDP **3.33.1**,
+  re-provisioning sécurité 2026-11-18 : une vingtaine d'avis entre 3.33.0 et
+  3.33.1 ; la 3.33.0 ajoute beaucoup, la 3.33.1 en corrige les régressions,
+  d'où le saut direct. Le 2026-10-25, la 3.31.1 en retard de trois
   versions, environ 70 avis corrigés entre 3.32.0 et 3.32.2, dont une
   majorité contre des messages de serveur piégés, c'est-à-dire notre côté
   du câble. La 3.32.0 seule est à éviter : elle rejetait les PDU de canal
@@ -105,16 +105,16 @@ exeDir (major 3). DLL à poser ensemble :
   `ERRCONNECT_LOGON_FAILURE` → écran noir + déconnexion. Le code pose
   `OPENSSL_MODULES` sur le dossier de l'exe (`uRdpTransport`) pour qu'OpenSSL
   l'y trouve après relocalisation des DLL.
-- `z.dll` (zlib 1.3.2, déjà livré pour libssh2)
+- `libz.dll` (zlib 1.4, partagée avec libssh2)
 - `rssh_rdp_shim.dll`, **l'oracle de disposition mémoire**
   (`bindings/freerdp/shim/rssh_rdp_shim.c`, ABI 6), compilé MSVC contre les
-  en-têtes du build vcpkg 3.32.2. Ne lie PAS FreeRDP (importe uniquement
+  en-têtes du build vcpkg 3.33.1. Ne lie PAS FreeRDP (importe uniquement
   kernel32) ; le binding le charge depuis exeDir et l'écarte de lui-même si
-  sa version bâtie (3.32) ne correspond pas à la DLL chargée. À
+  sa version bâtie (3.33) ne correspond pas à la DLL chargée. À
   **reconstruire à chaque re-provisioning FreeRDP** (voir ci-dessous),
   sinon il se désactive et l'application retombe sur les offsets en dur.
 
-- Construits via **vcpkg** (2026-10-25) : `freerdp[client]:x64-windows@3.32.2`,
+- Construits via **vcpkg** (2026-11-18) : `freerdp[client]:x64-windows@3.33.1`,
   baseline `c1d80d9cb071c3f4a98c67c1196b137cc5b72918`, outil vcpkg
   `2026-07-27`, la même recette que le 2026-07-30 : le port `freerdp` du
   registre vcpkg est resté à **3.26.0**, même à la baseline la plus
@@ -122,8 +122,9 @@ exeDir (major 3). DLL à poser ensemble :
   encore une bibliothèque vulnérable à deux débordements de tas corrigés
   depuis la 3.27.0. Les versions suivantes se construisent donc via un
   **overlay port** local : copie de `ports/freerdp`, version passée à
-  3.32.2, SHA512 du tarball GitHub recalculé localement
-  (`2f036908fc96650fcec0810c05cf7fbad08f7c47a27aa7951b25e4bc1f390eb47223eaeaf622715bf2df6bd056e7f245502a3af57e606fd53d214c121a862a7e` ;
+  3.33.1, SHA512 du tarball GitHub recalculé localement
+  (`639698e02bebdbd6cf59e0fe7eae3bf80ded3915d3d364e0cbdd681cbb4e1b8760347911317980241adb865691513eeb9be0d2ac5c5dc16c0ccaee55c0d412a5` ;
+  3.32.2 : `2f036908fc96650fcec0810c05cf7fbad08f7c47a27aa7951b25e4bc1f390eb47223eaeaf622715bf2df6bd056e7f245502a3af57e606fd53d214c121a862a7e` ;
   3.31.1 : `f01cbcf5504fbc609d50205e772f95bbb915caea6e87ee8d7c1d9a18a0c0f477d5ff2cec489d6e57c841a8a32232ac51b6f5df24fc8f207654fd38e501c5996d` ;
   3.30.0 : `5559616755c3050077589c1000ea451b195cfb450c74d2278c6a09e0c2bfff718293dbc0041428c0a8e8ca321131daa14c92483f70bb5bed4482bb7962f1ef92`),
   feature `client` demandée explicitement (le port n'a pas de features par
@@ -145,10 +146,17 @@ exeDir (major 3). DLL à poser ensemble :
   FreeRDP et libfido2 sont reconstruits contre lui dans la même passe ;
   libssh2, lié à l'ABI stable d'OpenSSL 3, ne l'est pas. Le provider
   `legacy` (MD4, RC4 pour NTLM) a été vérifié chargeable avant livraison.
-- Offsets de la branche non-Darwin **revérifiés contre les en-têtes 3.32.2**
+- **zlib 1.4** (2026-11-18), overlay `overlay/zlib` repris tel quel du port
+  vcpkg amont (commit `98d7375b`). Elle corrige une série de débordements
+  (`inflateGetDictionary`, `inflateSync`, `inflatePrime`, gzip) et change le
+  nom de la DLL MSVC : `z.dll` devient **`libz.dll`**. Toutes les DLL qui la
+  tirent sont donc reconstruites dans la même passe (FreeRDP, libssh2,
+  libfido2, puis vncclient à la main) ; l'installeur supprime l'ancienne
+  `z.dll` d'une installation précédente.
+- Offsets de la branche non-Darwin **revérifiés contre les en-têtes 3.33.1**
   (sonde `scripts/gen-rdp-offsets.c` compilée MSVC) : les 71 offsets, dont
   `BITMAP_OFF_HDC` = 296, sont identiques à la table de `uFreeRdpApi.pas` :
-  aucun changement entre 3.26.0 et 3.32.2 sur x64 Windows.
+  aucun changement entre 3.26.0 et 3.33.1 sur x64 Windows.
 - Taille du contexte : depuis la 3.32, le code client de FreeRDP vérifie que
   le contexte alloué contient un `rdpClientContext` (3064 octets en x64) et
   refuse sinon ses propres traitements, en le disant dans le journal à chaque
@@ -156,13 +164,13 @@ exeDir (major 3). DLL à poser ensemble :
   `sizeof(rdpContext)` ; le pointeur de retour vers le transport est rangé
   après.
 - SHA-256 des DLL versionnées (même régime que libssh2 ci-dessus) :
-  - `freerdp3.dll` : `3d317725e7421c39cb6f07a2e8fc2a57342cd535776b489479fc9650aa54e232`
-  - `freerdp-client3.dll` : `073f94f051cc5636ba256a15da7c07ece2827355d98fc0e6cf045401b9de5d70`
-  - `winpr3.dll` : `5c1e7cbafe43ae76d8497d02a9f05f0c03dfcd56f7933b8ab1635c146b28cd68`
+  - `freerdp3.dll` : `6cf7f2688fedfb938a962a512955e5a3f77fe14f338dcd06626817c056f6b8a1`
+  - `freerdp-client3.dll` : `d410a354047a9e779b0e4f026d736dd338a78e7b5b190af5b9a85b8b14a9237a`
+  - `winpr3.dll` : `507aa41b93124af83d98554690ecc4ddf3fadedeb907559e9b9b23d24a8017b8`
   - `cjson.dll` : `f0935a9585349819ea2b866bb7aa06d7ddee983df9b42c84098e0729d662d8ea`
   - `libssl-3-x64.dll` : `b1d2790b5d51dcf16a9905b3d604705ab774f662e0769abae45163a0800c0170`
   - `legacy.dll` : `40e3dbcb0d23a853fab27b2d539970b7a52f5ad894ce97f63c0c5ca47b6715da`
-  - `rssh_rdp_shim.dll` : `3420fa6f145e349e34c2fb7d60646f85f1b48ee0872a016c423b8b0b6894399a`
+  - `rssh_rdp_shim.dll` : `4f305ec812593d8fe415e408e14a630d40d2af22221636a1bbc66f2d6b421c36`
 - Note portage : `WaitForMultipleObjects` est résolu depuis `kernel32.dll` sous
   Windows (API native), pas depuis winpr3 qui, contrairement à l'émulation
   WinPR d'Unix, ne la réexporte pas.
@@ -177,13 +185,12 @@ sont indisponibles, avec un message qui dit quoi installer.
 - Construites via **vcpkg** (2026-09-02) : `libfido2:x64-windows@1.17.0`,
   baseline `c1d80d9cb071c3f4a98c67c1196b137cc5b72918`, la MEME que FreeRDP.
 - SHA-256 des DLL versionnées :
-  - `fido2.dll` : `cb96b101e7376418435ee95ec7b1943ce44be37b100595e84c7ea40e9bd21822`
+  - `fido2.dll` : `2a3305a0c421de7f8329450e5ef276abd3bde043429b18254142494028a46a33`
   - `cbor.dll` : `481c6a2c96ef21c167455d9a9e6c6ecc8bc7c74298bcf7c43deb8837452d8301`
 - `cbor.dll` = libcbor 0.14.0 (MIT ; la baseline la donnait déjà, ce
   document disait 0.11 à tort), la seule dépendance qui s'ajoute : fido2.dll
-  se lie pour le reste à `libcrypto-3-x64.dll` et `z.dll` **déjà livrées**, dont
-  les empreintes issues de ce build sont identiques bit pour bit à celles
-  consignées plus haut. C'est tout l'intérêt de la baseline commune.
+  se lie pour le reste à `libcrypto-3-x64.dll` et `libz.dll` **déjà livrées**,
+  issues du même build. C'est tout l'intérêt de la baseline commune.
 
 **Pourquoi pas les binaires officiels de Yubico.** L'archive
 `libfido2-1.17.0-win.zip` publiée par Yubico est parfaitement redistribuable
@@ -237,7 +244,7 @@ un tas partagé : `_msize` sur un pointeur venu d'un autre tas est un
 comportement indéfini, et c'est précisément le contrôle de disposition mémoire
 de `vncclient` qui se casserait.
 
-### VNC : vncclient.dll (+ jpeg62.dll + z.dll)
+### VNC : vncclient.dll (+ jpeg62.dll + libz.dll)
 
 libvncclient 0.9.15 **vendorisée + patchée** (comme sous Unix : 3 patchs CVE
 Tight/UltraZip, config figée zlib+JPEG, tout le reste OFF). Le binding charge
@@ -250,10 +257,15 @@ Tight/UltraZip, config figée zlib+JPEG, tout le reste OFF). Le binding charge
   (MSVC n'exporte rien sans `__declspec`, la source LibVNC n'annote pas) ;
   zlib + libjpeg-turbo fournis via vcpkg. Lie l'UCRT (cohérent avec le
   `c_malloc`/`_msize` du binding liés à `ucrtbase.dll`).
-- Dépendances à livrer avec : `z.dll` (déjà présent), `jpeg62.dll` (libjpeg
+- Dépendances à livrer avec : `libz.dll` (déjà présent), `jpeg62.dll` (libjpeg
   3.2.0, vcpkg).
+- Reconstruite le 2026-11-18 contre zlib 1.4 (`libz.lib`), même source, mêmes
+  patchs, même configuration : `rfbconfig.h` généré identique au build
+  précédent, et les 45 offsets de `scripts/gen-vnc-offsets.c` identiques à la
+  table Windows de `uLibVncApi`. Les en-têtes zlib et jpeg sont passés depuis
+  des dossiers séparés : celui de vcpkg-jpeg contient encore la `zlib.h` 1.3.2.
 - SHA-256 des DLL versionnées (même régime que libssh2 ci-dessus) :
-  - `vncclient.dll` : `0e2b44102ebb4fb94a410ac3c2651d2c3a33c4e75eff58bd440d749c9e93bed0`
+  - `vncclient.dll` : `242c6b7d0741e59478ac36b48ca45efeeb97b8681c594ea63245c785a1a7a580`
   - `jpeg62.dll` : `4a0b915d9d29be3b6c9f812f3b0c47e7347007292bf6f3b292841af2b9805e29`
 - **Offsets `rfbClient` régénérés pour Windows** (LLP64 : `SOCKET sock` = 8 o
   vs int=4, padding différent) → bloc conditionnel `{$IFDEF WINDOWS}` dans
@@ -265,7 +277,7 @@ Tight/UltraZip, config figée zlib+JPEG, tout le reste OFF). Le binding charge
 
 Les trois protocoles s'appuient sur des builds vcpkg : baseline
 `82b6bc886d7b0f8342e34babc2e0b8943f79b0e1` (libssh2, libjpeg),
-`c1d80d9cb071c3f4a98c67c1196b137cc5b72918` (FreeRDP 3.32.2 + OpenSSL/zlib/
+`c1d80d9cb071c3f4a98c67c1196b137cc5b72918` (FreeRDP 3.33.1 + OpenSSL/zlib/
 cjson, via overlay port : voir la section FreeRDP), ou, pour libvnc, sur la
 source épinglée + patchs. Scripts de provisioning Windows versionnés à
 ajouter (pendants de `build-libvnc.sh`). **Piège** : builder

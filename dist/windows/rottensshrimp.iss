@@ -81,7 +81,7 @@ Source: "..\..\libcrypto-3-x64.dll"; DestDir: "{app}"; Flags: ignoreversion
 ; par NTLM, qui exige MD4 + RC4, qu'OpenSSL 3.x ne fournit que par ce module.
 ; Sans lui: ERRCONNECT_LOGON_FAILURE, ecran noir, deconnexion.
 Source: "..\..\legacy.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\..\z.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\libz.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\jpeg62.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\vncclient.dll"; DestDir: "{app}"; Flags: ignoreversion
 ; l'oracle de disposition memoire FreeRDP: absent, RDP retombe sur les offsets
@@ -89,7 +89,7 @@ Source: "..\..\vncclient.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\rssh_rdp_shim.dll"; DestDir: "{app}"; Flags: ignoreversion
 ; Cles de securite FIDO2. OPTIONNELLES a l'execution: sans elles l'application
 ; demarre et tout marche sauf les identifiants FIDO2. fido2.dll se lie a
-; libcrypto-3-x64.dll et z.dll deja livrees; cbor.dll est sa seule dependance
+; libcrypto-3-x64.dll et libz.dll deja livrees; cbor.dll est sa seule dependance
 ; propre.
 Source: "..\..\fido2.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\cbor.dll"; DestDir: "{app}"; Flags: ignoreversion
@@ -113,6 +113,11 @@ Source: "..\..\LICENSES\*"; DestDir: "{app}\LICENSES"
 Source: "..\..\third_party\libvnc\*"; DestDir: "{app}\source\libvnc"; Flags: recursesubdirs createallsubdirs; Excludes: "cache\*,work\*,out\*"
 Source: "..\..\scripts\build-libvnc.sh"; DestDir: "{app}\source\libvnc"
 Source: "..\..\scripts\gen-vnc-offsets.c"; DestDir: "{app}\source\libvnc"
+
+[InstallDelete]
+; zlib 1.4 s'appelle libz.dll; l'ancienne z.dll ne servirait plus qu'a
+; tromper le prochain qui cherche quelle zlib est chargee
+Type: files; Name: "{app}\z.dll"
 
 [Icons]
 Name: "{group}\RottenSSHrimp"; Filename: "{app}\{#AppExe}"; IconFilename: "{app}\rottensshrimp.ico"
